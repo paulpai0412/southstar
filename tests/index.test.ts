@@ -46,4 +46,5 @@ await import("./unit/app-shell-stats-regression.test.ts");
 await import("./unit/file-explorer-regression.test.ts");
 await import("./unit/session-sidebar-regression.test.ts");
 await import("./unit/session-reader-slimming.test.ts");
+await import("./unit/workflow-session-persistence.test.ts");
 await import("./unit/workflow-node-profile.test.ts");

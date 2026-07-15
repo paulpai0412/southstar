@@ -30,6 +30,7 @@ import {
   goalRequirementDraftReadiness,
   reviseGoalRequirementDraft,
   validateGoalRequirementDraft,
+  validateGoalRequirementDraftForRevision,
   type GoalRequirementDraftInterpreter,
   type GoalRequirementDraftIssue,
   type GoalRequirementDraftRevisionOperation,
@@ -216,7 +217,7 @@ export async function persistGoalRequirementDraftRevisionPg(
   db: SouthstarDb,
   input: { draftId: string; draft: GoalRequirementDraftV1; actor?: string },
 ): Promise<void> {
-  const issues = validateGoalRequirementDraft(input.draft);
+  const issues = validateGoalRequirementDraftForRevision(input.draft);
   if (issues.length > 0) {
     throw new Error(`invalid Goal Requirement draft: ${issues.map((issue) => `${issue.code} at ${issue.path}`).join("; ")}`);
   }
@@ -396,9 +397,22 @@ export async function preparePostgresGoalRequirementDraft(
   });
   assertGoalRequirementDraftMatchesRequest(draft, input);
   const draftId = `draft-goal-requirements-${draft.draftHash.slice(0, 12)}`;
-  const uiInteractionContracts: UiInteractionContractV1[] = [];
+  const uiInteractionContracts = input.requirementInterpreter.designUiInteractionContracts
+    ? await input.requirementInterpreter.designUiInteractionContracts({
+      requirementDraft: draft,
+      goalDesignSkill: skill,
+    })
+    : [];
   const readiness = goalRequirementReviewReadiness(draft, "requirements_review", uiInteractionContracts);
   await persistGoalRequirementDraftRevisionPg(db, { draftId, draft });
+  for (const contract of uiInteractionContracts) {
+    await persistUiInteractionContractRevisionPg(db, {
+      draftId,
+      contract,
+      requirementDraft: draft,
+      actor: "goal-requirement-interpreter",
+    });
+  }
   await persistPlannerDraftResource(db, {
     resourceType: "planner_draft",
     resourceKey: draftId,
@@ -1553,7 +1567,7 @@ async function persistPlannerDraftResource(
 function goalRequirementDraftFromStored(value: unknown): GoalRequirementDraftV1 | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const draft = value as GoalRequirementDraftV1;
-  return validateGoalRequirementDraft(draft).length === 0 ? draft : undefined;
+  return validateGoalRequirementDraftForRevision(draft).length === 0 ? draft : undefined;
 }
 
 function goalDesignPhaseFromPayload(payload: Record<string, unknown>): GoalDesignPhase | undefined {
@@ -1567,7 +1581,7 @@ function assertGoalRequirementDraftMatchesRequest(
   draft: GoalRequirementDraftV1,
   input: { goalPrompt: string; cwd: string; projectRef?: string },
 ): void {
-  const issues = validateGoalRequirementDraft(draft);
+  const issues = validateGoalRequirementDraftForRevision(draft);
   if (issues.length > 0) {
     throw new Error(`invalid Goal Requirement draft: ${issues.map((issue) => `${issue.code} at ${issue.path}`).join("; ")}`);
   }

@@ -55,10 +55,18 @@ test("LLM composer sends bounded candidate packet and explicit output schema con
   assert.doesNotMatch(prompts[0] ?? "", /agentSpec/);
   assert.match(prompts[0] ?? "", /GraphMetadataCandidates:/);
   assert.match(prompts[0] ?? "", /Use GraphMetadataCandidates as the direct source of selectable refs/);
+  assert.match(prompts[0] ?? "", /independently approved agents and skills may be combined dynamically/i);
+  assert.match(prompts[0] ?? "", /host binds those refs to real harness tools and rejects missing runtime bindings/i);
   assert.match(prompts[0] ?? "", /agent\.frontend-developer/);
   assert.match(prompts[0] ?? "", /uses/);
   assert.match(prompts[0] ?? "", /ProfilePrimitiveCandidates:/);
   assert.match(prompts[0] ?? "", /"agents":\["agent\.frontend-developer"\]/);
+  assert.match(prompts[0] ?? "", /AllowedRefsByField:/);
+  assert.match(prompts[0] ?? "", /"agentDefinitionRef":\["agent\.frontend-developer"\]/);
+  assert.match(prompts[0] ?? "", /evaluatorProfileRef, toolGrantRefs, and artifact refs are different kinds and can never be used as agentDefinitionRef/i);
+  assert.match(prompts[0] ?? "", /Never invent generated\.\* refs for primitive fields/i);
+  assert.match(prompts[0] ?? "", /EvaluatorArtifactCompatibility:/);
+  assert.match(prompts[0] ?? "", /A task evaluatorProfileRef must be paired with outputArtifactRefs that appear in that evaluator's compatibility list/i);
   assert.match(prompts[0] ?? "", /CandidatePacketSummary:/);
   assert.match(prompts[0] ?? "", /template.keep-19/);
   assert.doesNotMatch(prompts[0] ?? "", /template.drop-20/);
@@ -568,8 +576,8 @@ function candidatePacket(): CandidatePacket {
       nodes: [
         { ref: "agent.frontend-developer", kind: "agent_definition", status: "approved", versionRef: "agent.frontend-developer@1", scope: "software", title: "Frontend Developer", aliases: [] },
         { ref: "skill.react-ui", kind: "skill_spec", status: "approved", versionRef: "skill.react-ui@1", scope: "software", title: "React UI", aliases: [] },
-        { ref: "tool.workspace-read", kind: "tool_definition", status: "approved", versionRef: "tool.workspace-read@1", scope: "global", title: "Workspace Read", aliases: [] },
-        { ref: "tool.workspace-write", kind: "tool_definition", status: "approved", versionRef: "tool.workspace-write@1", scope: "global", title: "Workspace Write", aliases: [] },
+        { ref: "tool.workspace-read", kind: "tool_definition", status: "approved", versionRef: "tool.workspace-read@1", scope: "global", title: "Workspace Read", aliases: [], runtime: { runtimeToolNames: ["read", "grep", "find", "ls"] } },
+        { ref: "tool.workspace-write", kind: "tool_definition", status: "approved", versionRef: "tool.workspace-write@1", scope: "global", title: "Workspace Write", aliases: [], runtime: { runtimeToolNames: ["edit", "write"] } },
         { ref: "instruction.software-maker", kind: "instruction_template", status: "approved", versionRef: "instruction.software-maker@1", scope: "software", title: "Software Maker", aliases: [] },
         { ref: "instruction.software-checker", kind: "instruction_template", status: "approved", versionRef: "instruction.software-checker@1", scope: "software", title: "Software Checker", aliases: [] },
       ],

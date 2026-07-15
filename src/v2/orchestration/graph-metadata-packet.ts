@@ -6,6 +6,7 @@ import type {
   GraphMetadataEdgeCandidate,
   GraphMetadataNodeCandidate,
   LibraryDefinitionKind,
+  RequirementSpecV2,
 } from "../design-library/types.ts";
 
 const INCLUDED_KINDS: ReadonlySet<LibraryDefinitionKind> = new Set([
@@ -23,29 +24,121 @@ const INCLUDED_KINDS: ReadonlySet<LibraryDefinitionKind> = new Set([
 ]);
 
 const BODY_PREVIEW_CHARS = 160;
+const NODE_LIMITS: Partial<Record<LibraryDefinitionKind, number>> = {
+  agent_definition: 64,
+  skill_spec: 48,
+  skill_definition: 48,
+  tool_definition: 24,
+  mcp_tool_grant: 0,
+  instruction_template: 16,
+  artifact_contract: 48,
+  evaluator_profile: 48,
+  capability_spec: 48,
+  policy_bundle: 12,
+  workflow_template: 12,
+  vault_lease_policy: 12,
+};
 
 export async function buildGraphMetadataCandidatePacket(
   db: SouthstarDb,
-  input: { scope: string },
+  input: { scope: string; requirementSpec?: RequirementSpecV2 },
 ): Promise<GraphMetadataCandidatePacket> {
-  const objects = (await listLibraryObjects(db, { scope: input.scope, status: "approved" }))
+  const objects = (await listLibraryObjects(db, { status: "approved" }))
     .filter((object) => INCLUDED_KINDS.has(object.objectKind) && isRuntimeProfilePrimitiveCandidate(object));
-  const objectKeys = new Set(objects.map((object) => object.objectKey));
-  const edges = (await listLibraryEdges(db, { scope: input.scope, status: "active" }))
-    .filter((edge) => objectKeys.has(edge.fromObjectKey) && objectKeys.has(edge.toObjectKey));
+  const availableKeys = new Set(objects.map((object) => object.objectKey));
+  const edges = (await listLibraryEdges(db, { status: "active" }))
+    .filter((edge) => availableKeys.has(edge.fromObjectKey) && availableKeys.has(edge.toObjectKey));
+  const requiredRefs = new Set([
+    ...(input.requirementSpec?.requiredCapabilities ?? []),
+    ...(input.requirementSpec?.expectedArtifacts ?? []),
+  ]);
+  const pinnedRefs = new Set(requiredRefs);
+  for (const edge of edges) {
+    if (requiredRefs.has(edge.fromObjectKey)) pinnedRefs.add(edge.toObjectKey);
+    if (requiredRefs.has(edge.toObjectKey)) pinnedRefs.add(edge.fromObjectKey);
+  }
+  const queryTokens = requirementTokens(input.requirementSpec);
+  const nodes = selectRankedNodes(
+    objects.map(toNode),
+    { scope: input.scope, queryTokens, pinnedRefs },
+  );
+  const selectedKeys = new Set(nodes.map((node) => node.ref));
+  const selectedEdges = edges
+    .filter((edge) => selectedKeys.has(edge.fromObjectKey) && selectedKeys.has(edge.toObjectKey));
 
   return {
     schemaVersion: "southstar.graph_metadata_candidates.v1",
     scope: input.scope,
-    nodes: objects.map(toNode).sort((left, right) => left.ref.localeCompare(right.ref)),
-    edges: edges.map(toEdge).sort((left, right) => `${left.from}|${left.type}|${left.to}`.localeCompare(`${right.from}|${right.type}|${right.to}`)),
+    nodes,
+    edges: selectedEdges.map(toEdge).sort((left, right) => `${left.from}|${left.type}|${left.to}`.localeCompare(`${right.from}|${right.type}|${right.to}`)),
   };
+}
+
+function selectRankedNodes(
+  nodes: GraphMetadataNodeCandidate[],
+  input: { scope: string; queryTokens: Set<string>; pinnedRefs: Set<string> },
+): GraphMetadataNodeCandidate[] {
+  const byKind = new Map<LibraryDefinitionKind, GraphMetadataNodeCandidate[]>();
+  for (const node of nodes) {
+    const bucket = byKind.get(node.kind) ?? [];
+    bucket.push(node);
+    byKind.set(node.kind, bucket);
+  }
+  const selected: GraphMetadataNodeCandidate[] = [];
+  for (const [kind, candidates] of byKind) {
+    const limit = NODE_LIMITS[kind] ?? 24;
+    if (limit === 0) continue;
+    candidates.sort((left, right) => {
+      const scoreDelta = relevanceScore(right, input) - relevanceScore(left, input);
+      return scoreDelta || left.ref.localeCompare(right.ref);
+    });
+    const pinned = candidates.filter((candidate) => input.pinnedRefs.has(candidate.ref));
+    const ranked = candidates.filter((candidate) => !input.pinnedRefs.has(candidate.ref)).slice(0, limit);
+    selected.push(...pinned, ...ranked);
+  }
+  return [...new Map(selected.map((node) => [node.ref, node])).values()]
+    .sort((left, right) => {
+      const scoreDelta = relevanceScore(right, input) - relevanceScore(left, input);
+      return scoreDelta || left.ref.localeCompare(right.ref);
+    });
+}
+
+function relevanceScore(
+  node: GraphMetadataNodeCandidate,
+  input: { scope: string; queryTokens: Set<string>; pinnedRefs: Set<string> },
+): number {
+  let score = input.pinnedRefs.has(node.ref) ? 10_000 : 0;
+  if (node.scope === input.scope) score += 100;
+  if (node.scope === "global") score += 25;
+  const haystack = [node.ref, node.title, node.description, node.bodyPreview, ...node.aliases]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ")
+    .toLocaleLowerCase();
+  for (const token of input.queryTokens) {
+    if (haystack.includes(token)) score += token.length >= 6 ? 12 : 5;
+  }
+  return score;
+}
+
+function requirementTokens(requirementSpec: RequirementSpecV2 | undefined): Set<string> {
+  if (!requirementSpec) return new Set();
+  const text = [
+    requirementSpec.summary,
+    requirementSpec.workType,
+    ...requirementSpec.requiredCapabilities,
+    ...requirementSpec.expectedArtifacts,
+    ...requirementSpec.acceptanceCriteria,
+    ...requirementSpec.riskNotes,
+    ...requirementSpec.workspaceAssumptions,
+  ].join(" ").toLocaleLowerCase();
+  return new Set((text.match(/[\p{L}\p{N}]+/gu) ?? []).filter((token) => token.length >= 2));
 }
 
 function toNode(object: Awaited<ReturnType<typeof listLibraryObjects>>[number]): GraphMetadataNodeCandidate {
   const state = object.state;
   const title = stringValue(state.title) ?? stringValue(state.displayName) ?? object.objectKey;
   const bodyPreview = previewBody(stringValue(state.body));
+  const description = stringValue(state.description) ?? descriptionFromBody(stringValue(state.body));
   return {
     ref: object.objectKey,
     kind: object.objectKind,
@@ -53,7 +146,7 @@ function toNode(object: Awaited<ReturnType<typeof listLibraryObjects>>[number]):
     versionRef: object.headVersionId,
     scope: stringValue(state.scope) ?? "global",
     title,
-    ...(stringValue(state.description) ? { description: stringValue(state.description) } : {}),
+    ...(description ? { description } : {}),
     aliases: stringArray(state.aliases),
     ...(bodyPreview ? { bodyPreview } : {}),
     runtime: compactRuntimeState(object.objectKind, state),
@@ -72,7 +165,7 @@ function toEdge(edge: Awaited<ReturnType<typeof listLibraryEdges>>[number]): Gra
 }
 
 function compactRuntimeState(kind: LibraryDefinitionKind, state: Record<string, unknown>): Record<string, unknown> {
-  if (kind === "tool_definition") return pickDefined(state, ["toolName", "proxyToolName", "allowedCommands", "access"]);
+  if (kind === "tool_definition") return pickDefined(state, ["runtimeToolNames", "operations", "allowedCommands", "access"]);
   if (kind === "mcp_tool_grant") return pickDefined(state, ["serverId", "allowedTools"]);
   if (kind === "skill_spec") return pickDefined(state, ["allowedTools", "requiredMounts", "mcpRequirements", "artifactContracts", "sourcePath", "assetBundlePath"]);
   if (kind === "agent_definition") return pickDefined(state, ["runtimeRole"]);
@@ -100,8 +193,14 @@ function previewBody(body: string | undefined): string | undefined {
   const compact = body
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .filter(Boolean)
+    .filter((line) => Boolean(line) && line !== "---" && !/^# (Identity|Source Definition)$/i.test(line) && !/^Imported .+ candidate from library import draft/i.test(line))
     .slice(0, 2)
     .join("\n");
   return compact.length > 0 ? compact.slice(0, BODY_PREVIEW_CHARS) : undefined;
+}
+
+function descriptionFromBody(body: string | undefined): string | undefined {
+  if (!body) return undefined;
+  const match = body.match(/^description:\s*["']?(.+?)["']?\s*$/mi);
+  return match?.[1]?.trim().slice(0, BODY_PREVIEW_CHARS);
 }

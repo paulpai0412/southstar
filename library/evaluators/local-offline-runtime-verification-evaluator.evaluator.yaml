@@ -1,0 +1,58 @@
+schemaVersion: southstar.library.evaluator_profile_file.v1
+id: evaluator.local-offline-runtime-verification-evaluator
+title: "Local Offline Runtime Verification Evaluator"
+scope: "software"
+status: approved
+validatesArtifactRefs:
+  - "artifact.local-offline-runtime-verification-evidence"
+requiredInputs:
+  - "artifactRef"
+  - "startupCommand"
+  - "localBaseUrl"
+  - "networkPolicyStatement"
+  - "testCommand"
+evidenceKinds:
+  - "command-output"
+  - "policy-decision"
+  - "screenshot"
+  - "test-result"
+  - "url"
+verificationModes:
+  - "deterministic"
+  - "browser_interaction"
+  - "semantic_review"
+verificationProcedures:
+  - id: "deterministic-local-startup-and-test-check"
+    checkKind: "deterministic"
+    instruction: "Verify startup command outputs and local test results show successful execution of required flows on a local endpoint."
+    allowedEvidenceKinds:
+      - "command-output"
+      - "test-result"
+      - "url"
+  - id: "browser-local-endpoint-reachability-check"
+    checkKind: "browser_interaction"
+    instruction: "Confirm the application is reachable in a browser at the reported local URL and screenshots match required flow surfaces."
+    allowedEvidenceKinds:
+      - "url"
+      - "screenshot"
+      - "command-output"
+  - id: "offline-dependency-policy-consistency-review"
+    checkKind: "semantic_review"
+    instruction: "Cross-check command output, policy decision, screenshots, test results, and URL evidence to confirm core functionality runs locally without external integrations."
+    allowedEvidenceKinds:
+      - "command-output"
+      - "policy-decision"
+      - "screenshot"
+      - "test-result"
+      - "url"
+independencePolicy: "independent"
+resultSchemaRef: "southstar.requirement_evaluator_result.v2"
+failureClassifications:
+  - "missing-required-evidence"
+  - "startup-verification-failed"
+  - "endpoint-unreachable"
+  - "offline-dependency-violation"
+  - "policy-evidence-inconsistent"
+importDraftId: "library-import-goal-908fab7db13a530ebf495d0169dd3a63"
+importCandidateKey: "evaluator.local-offline-runtime-verification-evaluator"
+importSourcePath: "Confirmed-Goal-validation-gaps.md"

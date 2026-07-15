@@ -430,22 +430,13 @@ export async function reconcileLibraryCatalogLockedPg(
       }
     }
     const existingByKey = new Map(existing.map((item) => [item.objectKey, item]));
-    const effectiveExecutable = closed.included.filter((file) => {
-      const current = existingByKey.get(file.objectKey);
-      const versionRef = `${file.objectKey}@${file.sourceHash.slice(0, 12)}`;
-      return !(current?.headVersionId === versionRef && (current.status === "blocked" || current.status === "deprecated"));
-    });
+    const effectiveExecutable = closed.included;
     const effectivePurposeDiagnostics = validateRequiredLibraryPurposes(effectiveExecutable);
     if (effectivePurposeDiagnostics.length > 0) throw new LibraryReconcileError(effectivePurposeDiagnostics);
 
     const includedKeys = new Set(effectiveExecutable.map((item) => item.objectKey));
     const excludedKeys = new Set(closed.excluded.map((item) => item.objectKey));
     const nonExecutableStatus = (file: LibraryFileRecord): "draft" | "deprecated" | "blocked" => {
-      const current = existingByKey.get(file.objectKey);
-      const versionRef = `${file.objectKey}@${file.sourceHash.slice(0, 12)}`;
-      if (current?.headVersionId === versionRef && (current.status === "blocked" || current.status === "deprecated")) {
-        return current.status;
-      }
       if (excludedKeys.has(file.objectKey)) return "blocked";
       if (file.status === "deprecated" || file.status === "blocked") return file.status;
       return "draft";

@@ -27,6 +27,11 @@ test("builds a Tork job projection from task execution specs only", () => {
   assert.equal(projection.job.tasks[0].env.SOUTHSTAR_ATTEMPT_ID, "attempt-1");
   assert.equal(projection.job.tasks[0].env.SOUTHSTAR_HEARTBEAT_URL, "http://127.0.0.1:3000/api/v2/executor/heartbeat");
   assert.equal(projection.job.tasks[0].env.SOUTHSTAR_LIVE_EVENT_URL, "http://127.0.0.1:3000/api/v2/executor/live-event");
+  if (process.getuid && process.getgid) {
+    assert.equal(projection.job.tasks[0].env.SOUTHSTAR_WORKSPACE_UID, String(process.getuid()));
+    assert.equal(projection.job.tasks[0].env.SOUTHSTAR_WORKSPACE_GID, String(process.getgid()));
+    assert.equal(projection.job.tasks[0].env.SOUTHSTAR_WORKSPACE_PATH, "/workspace/repo");
+  }
   assert.equal(projection.job.tasks[0].webhook, "http://127.0.0.1:3000/api/v2/tork/callback");
 });
 

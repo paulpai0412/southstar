@@ -5,6 +5,24 @@ import type { UiInteractionContractV1 } from "../orchestration/ui-interaction-co
 export const CONTEXT_ASSEMBLY_TRACE_RESOURCE_TYPE = "context_assembly_trace";
 export const CONTEXT_ASSEMBLY_TRACE_SCHEMA_VERSION = "southstar.context_assembly_trace.v1";
 
+export type GoalRequirementContext = {
+  schemaVersion: "southstar.task_goal_requirement_context.v1";
+  goalContractHash: string;
+  targetRequirementIds: string[];
+  blockingRequirementIds: string[];
+  requirements: Array<{
+    id: string;
+    statement: string;
+    blocking: boolean;
+    acceptanceCriteria: string[];
+    expectedArtifacts: Array<{ mediaType: string; description: string }>;
+    producerTaskIds: string[];
+    evaluatorTaskIds: string[];
+    criterionIds: string[];
+    requiredEvidenceKinds: string[];
+  }>;
+};
+
 export type ContextPacket = {
   id: string;
   runId: string;
@@ -16,6 +34,8 @@ export type ContextPacket = {
   taskGoal: string;
   roleInstruction: string;
   nodePromptSpec?: WorkflowNodePromptSpec;
+  /** Frozen Goal Contract requirements and DAG coverage lineage for this run. */
+  goalRequirementContext?: GoalRequirementContext;
   systemInstruction?: string;
   agentsMdBlocks: ContextBlock[];
   artifactContracts: ContextBlock[];

@@ -1,0 +1,374 @@
+- button "Southstar":
+  - generic: Southstar
+- button "New":
+  - text: New
+- button "Refresh":
+- button ".../apps/southstar-vocab"
+- generic: Workflow Sessions
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 3m ago
+- generic: 2 messages
+- generic: Build a small local vocabulary flashcard system in this workspace. Users can add and list words with translations and examples, run flashcard quizzes, submit answers with persisted...
+- button "Rename":
+- button "Delete":
+- generic: 4m ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 20m ago
+- generic: 2 messages
+- generic: Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+- button "Rename":
+- button "Delete":
+- generic: 1h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to turn only the Requirement Draft's declared interactionContractRefs into reviewable UI interaction contracts. GoalDesignSkillRef: skill.southst..."
+- button "Rename":
+- button "Delete":
+- generic: 1h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to turn only the Requirement Draft's declared interactionContractRefs into reviewable UI interaction contracts. GoalDesignSkillRef: skill.southst..."
+- button "Rename":
+- button "Delete":
+- generic: 1h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 1h ago
+- generic: 2 messages
+- generic: (no messages)
+- button "Rename":
+- button "Delete":
+- generic: 3h ago
+- generic: 0 messages
+- generic: (no messages)
+- button "Rename":
+- button "Delete":
+- generic: 3h ago
+- generic: 0 messages
+- generic: (no messages)
+- button "Rename":
+- button "Delete":
+- generic: 3h ago
+- generic: 0 messages
+- generic: "Return exactly: vocab-ok"
+- button "Rename":
+- button "Delete":
+- generic: 3h ago
+- generic: 2 messages
+- generic: "Return exactly this text and nothing else: second-ok"
+- button "Rename":
+- button "Delete":
+- generic: 3h ago
+- generic: 2 messages
+- generic: "Return exactly this text and nothing else: first-ok"
+- button "Rename":
+- button "Delete":
+- generic: 3h ago
+- generic: 2 messages
+- generic: Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+- button "Rename":
+- button "Delete":
+- generic: 3h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 3h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 3h ago
+- generic: 2 messages
+- generic: Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+- button "Rename":
+- button "Delete":
+- generic: 4h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 4h ago
+- generic: 2 messages
+- generic: (no messages)
+- button "Rename":
+- button "Delete":
+- generic: 4h ago
+- generic: 0 messages
+- generic: (no messages)
+- button "Rename":
+- button "Delete":
+- generic: 4h ago
+- generic: 0 messages
+- generic: "Use the approved Library Goal Design SOP to design outcome slices from the confirmed Goal Contract and frozen validation bindings. GoalDesignSkillRef: skill.southstar-goal-design G..."
+- button "Rename":
+- button "Delete":
+- generic: 4h ago
+- generic: 2 messages
+- generic: Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+- button "Rename":
+- button "Delete":
+- generic: 4h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 4h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to turn only the Requirement Draft's declared interactionContractRefs into reviewable UI interaction contracts. GoalDesignSkillRef: skill.southst..."
+- button "Rename":
+- button "Delete":
+- generic: 4h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 4h ago
+- generic: 2 messages
+- generic: Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+- button "Rename":
+- button "Delete":
+- generic: 4h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to turn only the Requirement Draft's declared interactionContractRefs into reviewable UI interaction contracts. GoalDesignSkillRef: skill.southst..."
+- button "Rename":
+- button "Delete":
+- generic: 4h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to turn only the Requirement Draft's declared interactionContractRefs into reviewable UI interaction contracts. GoalDesignSkillRef: skill.southst..."
+- button "Rename":
+- button "Delete":
+- generic: 5h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 5h ago
+- generic: 2 messages
+- generic: Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+- button "Rename":
+- button "Delete":
+- generic: 5h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 5h ago
+- generic: 2 messages
+- generic: (no messages)
+- button "Rename":
+- button "Delete":
+- generic: 5h ago
+- generic: 0 messages
+- generic: "Use the approved Library Goal Design SOP to design outcome slices from the confirmed Goal Contract and frozen validation bindings. GoalDesignSkillRef: skill.southstar-goal-design G..."
+- button "Rename":
+- button "Delete":
+- generic: 5h ago
+- generic: 2 messages
+- generic: Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+- button "Rename":
+- button "Delete":
+- generic: 5h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to turn only the Requirement Draft's declared interactionContractRefs into reviewable UI interaction contracts. GoalDesignSkillRef: skill.southst..."
+- button "Rename":
+- button "Delete":
+- generic: 5h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 5h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 5h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 5h ago
+- generic: 2 messages
+- generic: Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+- button "Rename":
+- button "Delete":
+- generic: 6h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 6h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 6h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 6h ago
+- generic: 2 messages
+- generic: Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+- button "Rename":
+- button "Delete":
+- generic: 6h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 6h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 7h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 7h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 7h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 7h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 7h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 7h ago
+- generic: 2 messages
+- button "Workflow Library":
+  - text: Workflow Library
+- button "Refresh workflow library":
+- button "all":
+  - generic: all
+- button "workflows":
+  - generic: workflows
+- button "Models":
+  - text: Models
+- button "Skills":
+  - text: Skills
+- button "MCP":
+  - text: MCP
+- button "Hide sidebar":
+- button "Switch to dark mode":
+- button "Export HTML":
+- button "Branches":
+- button "Chat":
+  - text: Chat
+- button "Library":
+  - text: Library
+- button "Workflow" [pressed]:
+  - text: Workflow
+- button "Operator":
+  - text: Operator
+- 'button "in: 0 | out: 0 | cache read: 0 | cache write: 0"'
+- paragraph: Build a small local vocabulary flashcard system in this workspace. Users can add and list words with translations and examples, run flashcard quizzes, submit answers with persisted history, and see session and cumulative accuracy. The product must produce a vocabulary-specific persisted-answer and accuracy evidence artifact contract; generic repository implementation or verification reports do not represent that product outcome. Include a browser-accessible local UI, automated tests, and verification evidence for every blocking requirement. Do not use external services or network integrations.
+- button "Copy":
+  - text: Copy
+- generic: 19:11
+- generic: workflow-generate
+- paragraph: "[request.normalized] request.normalized [goal_requirements] draft-goal-requirements-83aa602e7f63 83aa602e7f63 [requirements.persisted] requirements.persisted [draft.requirements_review] draft.requirements_review [draft] draft-goal-requirements-83aa602e7f63 requirements_review"
+- heading "Create a local, browser-accessible vocabulary flashcard product in this workspace where users can manage vocabulary entries, run quizzes, persist answer history, and view session plus cumulative accuracy, with automated tests and vocabulary-specific evidence artifacts proving persisted-answer and accuracy outcomes without external integrations." [level=3]
+- generic: draft draft-goal-requirements-83aa602e7f63 · requirements_review · rev 1
+- generic: 6 requirements
+- generic: 6 explicit
+- generic: 0 inferred
+- generic: 6 blocking
+- generic: clarification clear
+- button "Vocabulary entries can be added and listed with translation and example content explicit blocking The system must let a user add vocabulary words with their translation and example text, persist those entries locally, and list saved entries in the browser UI. 2 AC ready coverage unknown no visual contract":
+  - strong: Vocabulary entries can be added and listed with translation and example content
+  - generic: explicit
+  - generic: blocking
+  - generic: The system must let a user add vocabulary words with their translation and example text, persist those entries locally, and list saved entries in the browser UI.
+  - generic: 2 AC
+  - generic: ready
+  - generic: coverage unknown
+  - generic: no visual contract
+- button "Flashcard quizzes can run and submitted answers are persisted as history explicit blocking The system must let a user run vocabulary flashcard quizzes and submit answers, with each submission persisted as historical quiz-answer data. 2 AC ready coverage unknown no visual contract":
+  - strong: Flashcard quizzes can run and submitted answers are persisted as history
+  - generic: explicit
+  - generic: blocking
+  - generic: The system must let a user run vocabulary flashcard quizzes and submit answers, with each submission persisted as historical quiz-answer data.
+  - generic: 2 AC
+  - generic: ready
+  - generic: coverage unknown
+  - generic: no visual contract
+- button "Session and cumulative accuracy are calculated and visible explicit blocking The system must compute and display both current-session accuracy and cumulative accuracy across persisted answer history. 2 AC ready coverage unknown no visual contract":
+  - strong: Session and cumulative accuracy are calculated and visible
+  - generic: explicit
+  - generic: blocking
+  - generic: The system must compute and display both current-session accuracy and cumulative accuracy across persisted answer history.
+  - generic: 2 AC
+  - generic: ready
+  - generic: coverage unknown
+  - generic: no visual contract
+- button "Vocabulary-specific evidence artifact contract exists for persisted answers and accuracy explicit blocking The product must define and produce a vocabulary-domain evidence artifact contract that demonstrates persisted-answer history and resulting accuracy metrics; generic repository implementation or verification reports alone are insufficient. 2 AC ready coverage unknown no visual contract":
+  - strong: Vocabulary-specific evidence artifact contract exists for persisted answers and accuracy
+  - generic: explicit
+  - generic: blocking
+  - generic: The product must define and produce a vocabulary-domain evidence artifact contract that demonstrates persisted-answer history and resulting accuracy metrics; generic repository implementation or verification reports alone are insufficient.
+  - generic: 2 AC
+  - generic: ready
+  - generic: coverage unknown
+  - generic: no visual contract
+- button "System is browser-accessible locally and avoids external services or network integrations explicit blocking The product must run as a local browser-accessible application in this workspace and must not depend on external services or network integrations for core functionality. 2 AC ready coverage unknown no visual contract":
+  - strong: System is browser-accessible locally and avoids external services or network integrations
+  - generic: explicit
+  - generic: blocking
+  - generic: The product must run as a local browser-accessible application in this workspace and must not depend on external services or network integrations for core functionality.
+  - generic: 2 AC
+  - generic: ready
+  - generic: coverage unknown
+  - generic: no visual contract
+- button "Automated tests and requirement-mapped verification evidence cover all blocking outcomes explicit blocking The workspace must include automated tests and produced verification evidence that maps to every blocking requirement in this draft. 2 AC ready coverage unknown no visual contract":
+  - strong: Automated tests and requirement-mapped verification evidence cover all blocking outcomes
+  - generic: explicit
+  - generic: blocking
+  - generic: The workspace must include automated tests and produced verification evidence that maps to every blocking requirement in this draft.
+  - generic: 2 AC
+  - generic: ready
+  - generic: coverage unknown
+  - generic: no visual contract
+- paragraph:
+  - strong: "Non-goals:"
+  - text: Cloud deployment, remote hosting, or production-scale operations. · User authentication, multi-user tenancy, or account management. · External translation APIs, third-party quiz content providers, or network-based integrations. · Advanced spaced-repetition optimization beyond required quiz, history, and accuracy behavior.
+- generic: Host marked this requirement draft confirmable.
+- button "Confirm requirements"
+- button "Copy":
+  - text: Copy
+- generic: 19:13
+- textbox "Message… Type / for commands"
+- button "Send" [disabled]:
+  - text: Send
+- button "Attach image":
+- button "GPT-5.3 Codex":
+  - generic: GPT-5.3 Codex
+- button "auto":
+  - generic: auto
+- button "default":
+  - generic: default
+- button "Compact":
+  - text: Compact
+- button "关闭完成提示音":
+- button "Show sidecar":
+- button "Open Next.js Dev Tools":
+- alert

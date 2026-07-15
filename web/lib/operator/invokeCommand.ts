@@ -30,8 +30,17 @@ export async function invokeOperatorCommand(input: {
     }),
   });
   if (!response.ok) throw new Error(`${command.label} failed with ${response.status}`);
-  const result = await response.json() as { result?: { accepted?: unknown; message?: unknown }; accepted?: unknown; message?: unknown };
-  const accepted = typeof result.result?.accepted === "boolean" ? result.result.accepted : result.accepted;
+  const result = await response.json() as {
+    ok?: unknown;
+    result?: { accepted?: unknown; message?: unknown };
+    accepted?: unknown;
+    message?: unknown;
+  };
+  const accepted = typeof result.result?.accepted === "boolean"
+    ? result.result.accepted
+    : typeof result.accepted === "boolean"
+      ? result.accepted
+      : result.ok === true;
   if (accepted !== true) {
     const message = typeof result.result?.message === "string" ? result.result.message : typeof result.message === "string" ? result.message : "command was not accepted";
     throw new Error(message);

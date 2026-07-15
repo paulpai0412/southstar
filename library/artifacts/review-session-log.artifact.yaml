@@ -4,10 +4,24 @@ title: "Review Session Log Contract"
 scope: "general"
 status: approved
 artifactType: "review-session-log"
+mediaTypes:
+  - "application/json"
+schemaRef: "schema.review-session-log.v1"
+requiredFields:
+  - "sessionId"
+  - "startedAt"
+  - "completedAt"
+  - "answers"
+validationRules:
+  - "rule.session-time-order-valid"
+  - "rule.answers-reference-presented-cards"
 evidenceKinds:
-  - "artifact-ref"
-  - "command-output"
   - "test-result"
-importDraftId: "library-import-draft-5b27e3ac-0add-43e4-af93-312d4f120c0f"
+  - "command-output"
+  - "artifact-ref"
+provenanceRequirements:
+  - "accepted-flashcard-deck"
+  - "recorded-review-session"
+importDraftId: "library-import-draft-954a4960-e0ca-4c76-af4c-4a5733d390b5"
 importCandidateKey: "artifact.review-session-log"
 importSourcePath: "Library-chat-prompt.md"

@@ -85,7 +85,10 @@ export function OperatorActionsPanel({
               <span>Checkpoint</span>
               <select
                 value={checkpointByCommand[command.id] || ""}
-                onChange={(event) => setCheckpointByCommand((current) => ({ ...current, [command.id]: event.currentTarget.value }))}
+                onChange={(event) => {
+                  const value = event.currentTarget.value;
+                  setCheckpointByCommand((current) => ({ ...current, [command.id]: value }));
+                }}
               >
                 <option value="">Fresh session</option>
                 {command.inputOptions.checkpointRefs.map((ref) => <option key={ref} value={ref}>{ref}</option>)}
@@ -97,7 +100,10 @@ export function OperatorActionsPanel({
               <span>Workspace snapshot</span>
               <select
                 value={snapshotByCommand[command.id] || command.inputOptions.workspaceSnapshotRefs[0] || ""}
-                onChange={(event) => setSnapshotByCommand((current) => ({ ...current, [command.id]: event.currentTarget.value }))}
+                onChange={(event) => {
+                  const value = event.currentTarget.value;
+                  setSnapshotByCommand((current) => ({ ...current, [command.id]: value }));
+                }}
               >
                 {command.inputOptions.workspaceSnapshotRefs.map((ref) => <option key={ref} value={ref}>{ref}</option>)}
               </select>

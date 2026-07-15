@@ -1,0 +1,180 @@
+- button "Southstar":
+  - generic: Southstar
+- button "New" [disabled]:
+  - text: New
+- button "Refresh workflow runs":
+- button ".../apps/southstar-vocab"
+- generic: Running Workflow Runs
+- 'button "Workflow status: running Build a small local vocabulary flashcard system in this workspace. Users can add and list words with translations and examples, run flashcard quizzes, submit answers with persisted history, and see session and cumulative accuracy. The product must produce a vocabulary-specific persisted-answer and accuracy evidence artifact contract; generic repository implementation or verification reports do not represent that product outcome. Include a browser-accessible local UI, automated tests, and verification evidence for every blocking requirement. Do not use external services or network integrations. 3m ago 1 attention" [pressed]':
+  - 'generic "Workflow status: running"':
+  - generic: Build a small local vocabulary flashcard system in this workspace. Users can add and list words with translations and examples, run flashcard quizzes, submit answers with persisted history, and see session and cumulative accuracy. The product must produce a vocabulary-specific persisted-answer and accuracy evidence artifact contract; generic repository implementation or verification reports do not represent that product outcome. Include a browser-accessible local UI, automated tests, and verification evidence for every blocking requirement. Do not use external services or network integrations.
+  - emphasis: 3m ago
+  - generic "1 attention":
+    - generic: "1"
+- generic: Completed Workflow Runs
+- paragraph: No completed workflows for this project.
+- button "Models":
+  - text: Models
+- button "Skills":
+  - text: Skills
+- button "MCP":
+  - text: MCP
+- button "Hide sidebar":
+- button "Switch to dark mode":
+- button "Chat":
+  - text: Chat
+- button "Library":
+  - text: Library
+- button "Workflow":
+  - text: Workflow
+- button "Operator" [pressed]:
+  - text: Operator
+- main:
+  - heading "State Dashboard" [level=2]
+  - paragraph: Workflow lifecycle by project, newest first.
+  - generic: active 1
+  - generic: attention 1
+  - generic: exception 0
+  - generic: runs 1
+  - button "State Dashboard"
+  - strong: 2 attention
+  - generic "Workflow state dashboard":
+    - generic: created
+    - strong: "0"
+    - paragraph: No workflow runs
+    - generic: scheduling
+    - strong: "0"
+    - paragraph: No workflow runs
+    - generic: running
+    - strong: "1"
+    - button "execution running outcome in_progress health healthy Build a small local vocabulary flashcard system in this workspace. Users can add and list words with translations and examples, run flashcard quizzes, submit answers with persisted history, and see session and cumulative accuracy. The product must produce a vocabulary-specific persisted-answer and accuracy evidence artifact contract; generic repository implementation or verification reports do not represent that product outcome. Include a browser-accessible local UI, automated tests, and verification evidence for every blocking requirement. Do not use external services or network integrations. southstar-vocab · software run-wf-com...84899 · 3m ago 2 attention · Review and run Approve Workflow run actions" [active] [pressed]:
+      - generic: execution running
+      - generic: outcome in_progress
+      - generic: health healthy
+      - strong: Build a small local vocabulary flashcard system in this workspace. Users can add and list words with translations and examples, run flashcard quizzes, submit answers with persisted history, and see session and cumulative accuracy. The product must produce a vocabulary-specific persisted-answer and accuracy evidence artifact contract; generic repository implementation or verification reports do not represent that product outcome. Include a browser-accessible local UI, automated tests, and verification evidence for every blocking requirement. Do not use external services or network integrations.
+      - generic: southstar-vocab · software
+      - generic: run-wf-com...84899 · 3m ago
+      - generic: 2 attention · Review and run Approve
+      - generic "Workflow run actions":
+        - button "Pause"
+        - button "Cancel"
+    - generic: verifying
+    - strong: "0"
+    - paragraph: No workflow runs
+    - generic: exception
+    - strong: "0"
+    - paragraph: No workflow runs
+    - generic: paused
+    - strong: "0"
+    - paragraph: No workflow runs
+    - generic: completed
+    - strong: "0"
+    - paragraph: No workflow runs
+    - generic: cancelled
+    - strong: "0"
+    - paragraph: No workflow runs
+  - separator "Resize task DAG"
+  - heading "Build a small local vocabulary flashcard system in this workspace. Users can add and list words with translations and examples, run flashcard quizzes, submit answers with persisted history, and see session and cumulative accuracy. The product must produce a vocabulary-specific persisted-answer and accuracy evidence artifact contract; generic repository implementation or verification reports do not represent that product outcome. Include a browser-accessible local UI, automated tests, and verification evidence for every blocking requirement. Do not use external services or network integrations." [level=2]
+  - generic: running
+  - generic: completed · Implement vocabulary entry create/list browser flow with local persistence
+  - generic: "warning: Goal execution approval"
+  - application:
+    - article:
+      - strong: Implement vocabulary entry create/list browser flow with local persistence
+      - generic: completed
+      - paragraph: "taskId: task-s1-implement-entry-flow"
+      - paragraph: "roleRef: engineering-software-architect"
+      - paragraph: "agentProfileRef: generated.agent_profile.task-s1-implement-entry-flow"
+      - paragraph: "artifactKind: implementation_report"
+      - generic: artifact accepted
+      - generic: executor completed
+    - article:
+      - strong: Verify entry create/list behavior and emit vocabulary-learning evidence
+      - generic: running
+      - paragraph: "taskId: task-s1-verify-entry-flow"
+      - paragraph: "roleRef: testing-evidence-collector"
+      - paragraph: "agentProfileRef: generated.agent_profile.task-s1-verify-entry-flow"
+      - paragraph: "artifactKind: implementation_report"
+      - generic: executor running
+    - article:
+      - strong: Implement quiz session start, answer submission, and persisted answer history
+      - generic: pending
+      - paragraph: "taskId: task-s2-implement-quiz-history"
+      - paragraph: "roleRef: engineering-software-architect"
+      - paragraph: "agentProfileRef: generated.agent_profile.task-s2-implement-quiz-history"
+      - paragraph: "artifactKind: implementation_report"
+    - article:
+      - strong: Verify quiz execution and persisted answer history evidence
+      - generic: pending
+      - paragraph: "taskId: task-s2-verify-quiz-history"
+      - paragraph: "roleRef: testing-evidence-collector"
+      - paragraph: "agentProfileRef: generated.agent_profile.task-s2-verify-quiz-history"
+      - paragraph: "artifactKind: implementation_report"
+    - article:
+      - strong: Implement session and cumulative accuracy computation plus UI display
+      - generic: pending
+      - paragraph: "taskId: task-s3-implement-accuracy"
+      - paragraph: "roleRef: engineering-software-architect"
+      - paragraph: "agentProfileRef: generated.agent_profile.task-s3-implement-accuracy"
+      - paragraph: "artifactKind: implementation_report"
+    - article:
+      - strong: Verify accuracy metrics correctness and UI visibility evidence
+      - generic: pending
+      - paragraph: "taskId: task-s3-verify-accuracy"
+      - paragraph: "roleRef: testing-evidence-collector"
+      - paragraph: "agentProfileRef: generated.agent_profile.task-s3-verify-accuracy"
+      - paragraph: "artifactKind: implementation_report"
+    - article:
+      - strong: Implement vocabulary-domain outcome artifact contract and evidence generation pipeline
+      - generic: pending
+      - paragraph: "taskId: task-s4-implement-outcome-artifact"
+      - paragraph: "roleRef: engineering-software-architect"
+      - paragraph: "agentProfileRef: generated.agent_profile.task-s4-implement-outcome-artifact"
+      - paragraph: "artifactKind: implementation_report"
+    - article:
+      - strong: Verify vocabulary outcome evidence artifact conformance
+      - generic: pending
+      - paragraph: "taskId: task-s4-verify-outcome-artifact"
+      - paragraph: "roleRef: testing-evidence-collector"
+      - paragraph: "agentProfileRef: generated.agent_profile.task-s4-verify-outcome-artifact"
+      - paragraph: "artifactKind: implementation_report"
+    - article:
+      - strong: Implement local startup/runtime flow and offline dependency guardrails
+      - generic: pending
+      - paragraph: "taskId: task-s5-implement-local-offline-runtime"
+      - paragraph: "roleRef: engineering-software-architect"
+      - paragraph: "agentProfileRef: generated.agent_profile.task-s5-implement-local-offline-runtime"
+      - paragraph: "artifactKind: implementation_report"
+    - article:
+      - strong: Verify local browser runtime and offline operation evidence
+      - generic: pending
+      - paragraph: "taskId: task-s5-verify-local-offline-runtime"
+      - paragraph: "roleRef: testing-evidence-collector"
+      - paragraph: "agentProfileRef: generated.agent_profile.task-s5-verify-local-offline-runtime"
+      - paragraph: "artifactKind: implementation_report"
+    - article:
+      - strong: Implement full automated test run and requirement-to-evidence mapping artifact generation
+      - generic: pending
+      - paragraph: "taskId: task-s6-implement-test-evidence-mapping"
+      - paragraph: "roleRef: engineering-software-architect"
+      - paragraph: "agentProfileRef: generated.agent_profile.task-s6-implement-test-evidence-mapping"
+      - paragraph: "artifactKind: implementation_report"
+    - article:
+      - strong: Verify cross-evidence bundle and blocking requirement coverage
+      - generic: pending
+      - paragraph: "taskId: task-s6-verify-cross-evidence-coverage"
+      - paragraph: "roleRef: testing-test-results-analyzer"
+      - paragraph: "agentProfileRef: generated.agent_profile.task-s6-verify-cross-evidence-coverage"
+      - paragraph: "artifactKind: implementation_report"
+    - img "Mini Map"
+    - generic "Control Panel":
+      - button "Zoom In":
+      - button "Zoom Out" [disabled]:
+      - button "Fit View":
+      - button "Toggle Interactivity":
+    - link "React Flow attribution":
+      - /url: https://reactflow.dev/attribution
+      - text: React Flow
+- button "Show sidecar":
+- button "Open Next.js Dev Tools":
+- alert

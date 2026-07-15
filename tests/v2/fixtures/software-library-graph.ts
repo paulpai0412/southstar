@@ -448,17 +448,26 @@ const SOFTWARE_OBJECTS: readonly SeedObject[] = [
   {
     objectKey: "tool.workspace-read",
     objectKind: "tool_definition",
-    state: { access: "read", toolName: "workspace-read", proxyToolName: "workspace-read-proxy" },
+    state: {
+      access: "read",
+      runtimeToolNames: ["read", "grep", "find", "ls"],
+    },
   },
   {
     objectKey: "tool.workspace-write",
     objectKind: "tool_definition",
-    state: { access: "write", toolName: "workspace-write", proxyToolName: "workspace-write-proxy" },
+    state: {
+      access: "write",
+      runtimeToolNames: ["edit", "write"],
+    },
   },
   {
     objectKey: "tool.shell-command",
     objectKind: "tool_definition",
-    state: { access: "shell", toolName: "shell", proxyToolName: "shell-proxy" },
+    state: {
+      access: "shell",
+      runtimeToolNames: ["bash"],
+    },
   },
   {
     objectKey: "mcp.filesystem-workspace",
@@ -469,6 +478,9 @@ const SOFTWARE_OBJECTS: readonly SeedObject[] = [
       allowedTools: ["read_file", "write_file", "list_files"],
       sideEffect: "write",
       requiresApproval: false,
+      command: "node",
+      args: ["/app/test-mcp-server.js"],
+      cwd: "/workspace/repo",
     },
   },
   {

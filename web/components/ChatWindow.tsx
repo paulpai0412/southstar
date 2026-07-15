@@ -1,8 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { AgentMessage, ExtensionUiRequest, GoalRequirementSelection, GoalRequirementsContent, GoalSliceSelection, SessionInfo, SessionTreeNode, WorkspaceSurface } from "@/lib/types";
-import type { GoalRequirementsConfirmation } from "./GoalRequirementListBlock";
+import type { AgentMessage, ExtensionUiRequest, GoalDesignContent, GoalRequirementSelection, GoalRequirementsContent, GoalSliceSelection, LibraryImportCandidatesContent, SessionInfo, SessionTreeNode, WorkspaceSurface } from "@/lib/types";
+import type { GoalRequirementsConfirmation, GoalRequirementsConfirmationResult } from "./GoalRequirementListBlock";
 import { MessageView } from "./MessageView";
 import { ChatInput, type ChatInputHandle } from "./ChatInput";
 import { ChatMinimap, useMessageRefs } from "./ChatMinimap";
@@ -37,10 +37,13 @@ interface Props {
   onGoalSliceSelect?: (selection: GoalSliceSelection) => void;
   onConfirmGoalDesign?: (selection: GoalSliceSelection) => void;
   onGoalRequirementSelect?: (selection: GoalRequirementSelection) => void;
-  onConfirmRequirements?: (confirmation: GoalRequirementsConfirmation) => void | Promise<GoalRequirementsContent | void>;
+  onConfirmRequirements?: (confirmation: GoalRequirementsConfirmation) => void | Promise<GoalRequirementsConfirmationResult | void>;
   goalDesignRevisionAnchor?: GoalSliceSelection | null;
   goalRequirementRevisionAnchor?: GoalRequirementSelection | null;
   goalRequirementContentOverride?: GoalRequirementsContent | null;
+  goalDesignContentOverride?: GoalDesignContent | null;
+  goalLibraryImportCandidatesOverride?: LibraryImportCandidatesContent | null;
+  onGoalValidationResume?: (value: unknown) => void;
   onGoalContractSelect?: (dag: WorkflowDag) => void;
   onWorkflowGoalRevise?: (dag: WorkflowDag, choice?: string) => void;
   onLibraryGraphNodeSelect?: (node: LibraryGraphChartNode) => void;
@@ -119,7 +122,7 @@ function Typewriter({ phrases }: { phrases: string[] }) {
   );
 }
 
-export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, sessionKind, libraryScope, workflowMode, workflowTemplate, workflowCwd, onWorkflowDagNodeSelect, onGoalRequirements, onGoalSliceSelect, onConfirmGoalDesign, onGoalRequirementSelect, onConfirmRequirements, goalDesignRevisionAnchor, goalRequirementRevisionAnchor, goalRequirementContentOverride, onGoalContractSelect, onWorkflowGoalRevise, onLibraryGraphNodeSelect, onWorkspaceSurfaceChange }: Props) {
+export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, sessionKind, libraryScope, workflowMode, workflowTemplate, workflowCwd, onWorkflowDagNodeSelect, onGoalRequirements, onGoalSliceSelect, onConfirmGoalDesign, onGoalRequirementSelect, onConfirmRequirements, goalDesignRevisionAnchor, goalRequirementRevisionAnchor, goalRequirementContentOverride, goalDesignContentOverride, goalLibraryImportCandidatesOverride, onGoalValidationResume, onGoalContractSelect, onWorkflowGoalRevise, onLibraryGraphNodeSelect, onWorkspaceSurfaceChange }: Props) {
   const {
     loading, error, messages, entryIds, streamState,
     agentRunning, modelNames, modelList, modelThinkingLevels, modelThinkingLevelMaps, toolPreset, thinkingLevel,
@@ -446,6 +449,9 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
                     onGoalRequirementSelect={onGoalRequirementSelect}
                     onConfirmRequirements={onConfirmRequirements}
                     goalRequirementContentOverride={goalRequirementContentOverride}
+                    goalDesignContentOverride={goalDesignContentOverride}
+                    goalLibraryImportCandidatesOverride={goalLibraryImportCandidatesOverride}
+                    onGoalValidationResume={onGoalValidationResume}
                     onGoalContractSelect={onGoalContractSelect}
                     onWorkflowGoalRevise={onWorkflowGoalRevise}
                     onLibraryGraphNodeSelect={onLibraryGraphNodeSelect}
@@ -465,7 +471,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
             })()}
 
             {streamState.isStreaming && streamState.streamingMessage && (
-              <MessageView message={streamState.streamingMessage as AgentMessage} isStreaming modelNames={modelNames} workflowCwd={workflowCwd} onWorkflowDagNodeSelect={onWorkflowDagNodeSelect} onGoalSliceSelect={onGoalSliceSelect} onConfirmGoalDesign={onConfirmGoalDesign ?? handleConfirmGoalDesign} onGoalRequirementSelect={onGoalRequirementSelect} onConfirmRequirements={onConfirmRequirements} goalRequirementContentOverride={goalRequirementContentOverride} onGoalContractSelect={onGoalContractSelect} onWorkflowGoalRevise={onWorkflowGoalRevise} onLibraryGraphNodeSelect={onLibraryGraphNodeSelect} onWorkspaceSurfaceChange={onWorkspaceSurfaceChange} />
+              <MessageView message={streamState.streamingMessage as AgentMessage} isStreaming modelNames={modelNames} workflowCwd={workflowCwd} onWorkflowDagNodeSelect={onWorkflowDagNodeSelect} onGoalSliceSelect={onGoalSliceSelect} onConfirmGoalDesign={onConfirmGoalDesign ?? handleConfirmGoalDesign} onGoalRequirementSelect={onGoalRequirementSelect} onConfirmRequirements={onConfirmRequirements} goalRequirementContentOverride={goalRequirementContentOverride} goalDesignContentOverride={goalDesignContentOverride} goalLibraryImportCandidatesOverride={goalLibraryImportCandidatesOverride} onGoalValidationResume={onGoalValidationResume} onGoalContractSelect={onGoalContractSelect} onWorkflowGoalRevise={onWorkflowGoalRevise} onLibraryGraphNodeSelect={onLibraryGraphNodeSelect} onWorkspaceSurfaceChange={onWorkspaceSurfaceChange} />
             )}
 
             {agentRunning && !streamState.streamingMessage && (

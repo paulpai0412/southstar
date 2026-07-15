@@ -44,6 +44,9 @@ id: tool.workspace-write
 title: Workspace Write
 scope: global
 status: draft
+runtimeToolNames:
+  - edit
+  - write
 operations:
   - edit_file
   - apply_patch
@@ -61,6 +64,45 @@ providesCapabilityRefs:
   assert.equal(parsed.file.id, "tool.workspace-write");
   assert.equal(parsed.file.objectKind, "tool_definition");
   assert.deepEqual(parsed.file.frontmatter.operations, ["edit_file", "apply_patch"]);
+  assert.deepEqual(parsed.file.frontmatter.runtimeToolNames, ["edit", "write"]);
+});
+
+test("rejects tool files that only describe operations without an executable runtime binding", () => {
+  const parsed = parseLibraryFileContent({
+    path: "library/tools/metadata-only.tool.yaml",
+    content: `schemaVersion: southstar.library.tool_definition_file.v1
+id: tool.metadata-only
+title: Metadata Only
+scope: global
+status: approved
+operations:
+  - describe
+`,
+  });
+
+  assert.equal(parsed.ok, false);
+  if (parsed.ok) throw new Error("expected tool binding rejection");
+  assert.equal(parsed.issues[0]?.code, "runtime_tool_binding_required");
+});
+
+test("rejects tool files that name tools unavailable in the Pi harness", () => {
+  const parsed = parseLibraryFileContent({
+    path: "library/tools/imaginary.tool.yaml",
+    content: `schemaVersion: southstar.library.tool_definition_file.v1
+id: tool.imaginary
+title: Imaginary
+scope: global
+status: approved
+runtimeToolNames:
+  - imaginary-tool
+operations:
+  - imagine
+`,
+  });
+
+  assert.equal(parsed.ok, false);
+  if (parsed.ok) throw new Error("expected unsupported tool rejection");
+  assert.equal(parsed.issues[0]?.code, "runtime_tool_binding_unsupported");
 });
 
 test("parses vocabulary yaml files", () => {

@@ -5,7 +5,9 @@ scope: software
 status: approved
 description: Inspect source files, package metadata, and tests in a workspace repository.
 requiredOperations:
-  - workspace-read
+  - read_file
+  - list_files
+  - search_files
 risk:
   level: low
   dataSensitivity: workspace

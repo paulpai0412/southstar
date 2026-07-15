@@ -1,0 +1,39 @@
+schemaVersion: southstar.library.artifact_contract_file.v1
+id: artifact.software-validation-evidence-bundle
+title: "Software Validation Evidence Bundle"
+scope: "software"
+status: approved
+artifactType: "validation-evidence-bundle"
+mediaTypes:
+  - "application/json"
+evidenceKinds:
+  - "artifact-ref"
+  - "command-output"
+  - "screenshot"
+  - "test-result"
+  - "url"
+  - "workspace-snapshot"
+validationRules:
+  - "Require explicit mapping from each evidence item to one or more requirement criteria."
+  - "Reject evidence items whose kind is outside the contract evidenceKinds list."
+  - "Require stable locators or embedded references for every evidence item."
+  - "Require captured timestamps and collector identity for all evidence items."
+  - "Require consistency checks between declared evidence summary and itemized evidence list."
+schemaRef: "southstar.artifact.software_validation_evidence_bundle.v1"
+requiredFields:
+  - "artifactId"
+  - "summary"
+  - "evidenceItems"
+  - "evidenceItems[].kind"
+  - "evidenceItems[].locator"
+  - "evidenceItems[].criterionRefs"
+  - "evidenceItems[].capturedAt"
+  - "provenance"
+provenanceRequirements:
+  - "Record collector identity and execution context."
+  - "Record source revision or run identifier for traceability."
+  - "Record UTC capture timestamp per evidence item."
+  - "Record tool or process used to capture each evidence item."
+importDraftId: "library-import-goal-f04e32703d35e2384f2bc201680759e4"
+importCandidateKey: "artifact.software-validation-evidence-bundle"
+importSourcePath: "Confirmed-Goal-validation-gaps.md"

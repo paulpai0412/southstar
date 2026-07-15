@@ -465,6 +465,59 @@ test("LibraryCandidateMessageBlock keeps uninstalled candidates selectable after
   });
 });
 
+test("Goal-linked Library proposal shows Requirement coverage and installs the complete candidate set", async () => {
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { LibraryCandidateMessageBlock } from "./web/components/library/LibraryCandidateMessageBlock";
+
+    const candidates = [{
+      objectKey: "artifact.validation-evidence",
+      kind: "artifact",
+      title: "Validation Evidence",
+      scope: "software",
+      selectedByDefault: false,
+    }, {
+      objectKey: "evaluator.validation-evidence",
+      kind: "evaluator",
+      title: "Validation Evidence Evaluator",
+      scope: "software",
+      selectedByDefault: false,
+    }];
+    const candidateCoverageTargets = candidates.map((candidate) => ({
+      candidateObjectKey: candidate.objectKey,
+      gapRef: "gap-validation",
+      requirementId: "R1",
+      criterionIds: ["AC1", "AC2"],
+    }));
+
+    createRoot(document.getElementById("root")).render(
+      <LibraryCandidateMessageBlock
+        draftId="library-import-goal-complete"
+        candidates={candidates}
+        candidateCoverageTargets={candidateCoverageTargets}
+        proposedEdges={[]}
+        status="draft"
+        onInstall={(selectedCandidateIds) => { window.__selectedCandidateIds = selectedCandidateIds; }}
+      />
+    );
+  `, async (page) => {
+    const block = page.locator('[data-testid="library-import-candidates"]');
+    await block.waitFor();
+    assert.equal(await block.getAttribute("data-draft-id"), "library-import-goal-complete");
+    await assertText(page, '[data-testid="library-proposal-completeness"]', "all candidates required");
+    await assertText(page, '[data-testid="library-candidate-coverage-artifact.validation-evidence"]', "Covers R1 · AC1, AC2");
+    assert.equal(await block.getByRole("checkbox", { name: /Validation Evidence artifact/ }).isChecked(), true);
+    assert.equal(await block.getByRole("checkbox", { name: /Validation Evidence artifact/ }).isDisabled(), true);
+    assert.equal(await block.getByRole("button", { name: "Unselect all candidates" }).isDisabled(), true);
+    await block.getByRole("button", { name: "Install selected candidates" }).click();
+    assert.deepEqual(await page.evaluate(() => (window as any).__selectedCandidateIds), [
+      "artifact.validation-evidence",
+      "evaluator.validation-evidence",
+    ]);
+  });
+});
+
 test("library file API helpers unwrap envelopes and call file read, save, and sync routes", async () => {
   const api = await import("../../web/lib/library/api.ts");
   assert.equal(typeof api.readLibraryFile, "function");

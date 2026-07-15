@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { contentHashForPayload } from "../../../src/v2/design-library/canonical-json.ts";
-import { syncLibraryFileToGraph } from "../../../src/v2/design-library/files/library-file-store.ts";
+import { reconcileLibraryFilesPg } from "../../../src/v2/design-library/files/library-reconcile-service.ts";
 import type { SouthstarWorkflowManifest } from "../../../src/v2/manifests/types.ts";
 import { goalContractHash, storedGoalContract } from "../../../src/v2/orchestration/goal-contract.ts";
 import { storedGoalRequirementCoverage } from "../../../src/v2/orchestration/goal-requirement-coverage.ts";
@@ -254,28 +254,9 @@ test("membership subscription lifecycle is persisted, access-controlled, refunda
 `);
 }
 
-async function syncCase31LibraryGraph(db: Parameters<typeof syncLibraryFileToGraph>[0]): Promise<void> {
+async function syncCase31LibraryGraph(db: Parameters<typeof reconcileLibraryFilesPg>[0]): Promise<void> {
   const root = join(import.meta.dirname, "../../../library");
-  for (const relativePath of [
-    "domains/software.domain.yaml",
-    "capabilities/repo-read.capability.yaml",
-    "capabilities/repo-write.capability.yaml",
-    "capabilities/test-execution.capability.yaml",
-    "artifacts/implementation-report.artifact.yaml",
-    "artifacts/verification-report.artifact.yaml",
-    "artifacts/completion-report.artifact.yaml",
-    "tools/workspace-read.tool.yaml",
-    "tools/workspace-write.tool.yaml",
-    "tools/test-runner.tool.yaml",
-    "mcp/filesystem-workspace.mcp.yaml",
-    "skills/software-delivery.skill.md",
-    "skills/southstar-goal-design.skill.md",
-    "skills/southstar-slice-to-dag-composer.skill.md",
-    "agents/software-delivery-engineer.agent.md",
-    "evaluators/software-quality.evaluator.yaml",
-  ]) {
-    await syncLibraryFileToGraph(db, { root, relativePath });
-  }
+  await reconcileLibraryFilesPg(db, { root, trigger: "startup" });
 }
 
 async function assertHandCompleted(

@@ -65,7 +65,10 @@ export function OperatorRecoveryPanel({
               <textarea
                 className="operator-action-reason"
                 value={reasonByCommand[command.id] || ""}
-                onChange={(event) => setReasonByCommand((current) => ({ ...current, [command.id]: event.currentTarget.value }))}
+                onChange={(event) => {
+                  const value = event.currentTarget.value;
+                  setReasonByCommand((current) => ({ ...current, [command.id]: value }));
+                }}
                 placeholder="Reason required before running"
                 aria-label={`Reason for ${command.label}`}
                 rows={2}

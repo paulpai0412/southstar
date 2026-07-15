@@ -4,6 +4,8 @@ title: "Vocabulary Corpus Contract"
 scope: "general"
 status: approved
 artifactType: "vocabulary-corpus"
+mediaTypes:
+  - "application/json"
 schemaRef: "schema.vocabulary-corpus.v1"
 requiredFields:
   - "entries"
@@ -16,6 +18,8 @@ evidenceKinds:
   - "artifact-ref"
   - "workspace-snapshot"
   - "file-diff"
+provenanceRequirements:
+  - "workspace-artifact"
 importDraftId: "library-import-draft-3a8cdbc9-9097-4d06-9bb3-09577a8c436d"
 importCandidateKey: "artifact.vocabulary-corpus-contract"
 importSourcePath: "Library-chat-prompt.md"

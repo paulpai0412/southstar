@@ -1,0 +1,59 @@
+schemaVersion: southstar.library.evaluator_profile_file.v1
+id: evaluator.vocabulary-learning-verification-evaluator
+title: "Vocabulary Learning Verification Evaluator"
+scope: "software"
+status: approved
+validatesArtifactRefs:
+  - "artifact.vocabulary-learning-verification-evidence"
+requiredInputs:
+  - "artifactRef"
+  - "localBaseUrl"
+  - "testCommand"
+  - "storageSnapshot"
+  - "quizSessionSnapshot"
+evidenceKinds:
+  - "artifact-ref"
+  - "command-output"
+  - "screenshot"
+  - "test-result"
+  - "url"
+verificationModes:
+  - "deterministic"
+  - "browser_interaction"
+  - "semantic_review"
+verificationProcedures:
+  - id: "deterministic-storage-and-metrics-check"
+    checkKind: "deterministic"
+    instruction: "Recompute entry persistence, quiz-history integrity, and session/cumulative accuracy from submitted artifact data and compare against reported outcomes."
+    allowedEvidenceKinds:
+      - "artifact-ref"
+      - "test-result"
+      - "command-output"
+  - id: "browser-create-list-quiz-visibility-check"
+    checkKind: "browser_interaction"
+    instruction: "Use provided local URL and screenshots to verify add/list, quiz submission, and accuracy views are reachable and rendered in the local browser flow."
+    allowedEvidenceKinds:
+      - "url"
+      - "screenshot"
+      - "artifact-ref"
+  - id: "cross-evidence-consistency-review"
+    checkKind: "semantic_review"
+    instruction: "Correlate artifact snapshots, command output, screenshots, test results, and URL reachability to confirm persisted vocabulary outcomes and quiz-answer persistence behavior."
+    allowedEvidenceKinds:
+      - "artifact-ref"
+      - "command-output"
+      - "screenshot"
+      - "test-result"
+      - "url"
+independencePolicy: "independent"
+resultSchemaRef: "southstar.requirement_evaluator_result.v2"
+failureClassifications:
+  - "missing-required-evidence"
+  - "artifact-schema-invalid"
+  - "persistence-verification-failed"
+  - "quiz-history-verification-failed"
+  - "accuracy-verification-failed"
+  - "ui-flow-verification-failed"
+importDraftId: "library-import-goal-908fab7db13a530ebf495d0169dd3a63"
+importCandidateKey: "evaluator.vocabulary-learning-verification-evaluator"
+importSourcePath: "Confirmed-Goal-validation-gaps.md"

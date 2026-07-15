@@ -1,0 +1,888 @@
+- button "Southstar":
+  - generic: Southstar
+- button "New":
+  - text: New
+- button "Refresh":
+- button ".../apps/southstar-vocab"
+- generic: Workflow Sessions
+- generic: Build a small local vocabulary flashcard system in this workspace. Users can add and list words with translations and examples, run flashcard quizzes, submit answers with persisted...
+- button "Rename":
+- button "Delete":
+- generic: 15m ago
+- generic: 2 messages
+- generic: (no messages)
+- button "Rename":
+- button "Delete":
+- generic: 18m ago
+- generic: 0 messages
+- generic: (no messages)
+- button "Rename":
+- button "Delete":
+- generic: 23m ago
+- generic: 0 messages
+- generic: "Use the approved Library Goal Design SOP to design outcome slices from the confirmed Goal Contract and frozen validation bindings. GoalDesignSkillRef: skill.southstar-goal-design G..."
+- button "Rename":
+- button "Delete":
+- generic: 30m ago
+- generic: 2 messages
+- generic: Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+- button "Rename":
+- button "Delete":
+- generic: 38m ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 47m ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to turn only the Requirement Draft's declared interactionContractRefs into reviewable UI interaction contracts. GoalDesignSkillRef: skill.southst..."
+- button "Rename":
+- button "Delete":
+- generic: 49m ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to turn only the Requirement Draft's declared interactionContractRefs into reviewable UI interaction contracts. GoalDesignSkillRef: skill.southst..."
+- button "Rename":
+- button "Delete":
+- generic: 49m ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 51m ago
+- generic: 2 messages
+- generic: Build a small local vocabulary flashcard system in this workspace. Users can add and list words with translations and examples, run flashcard quizzes, submit answers with persisted...
+- button "Rename":
+- button "Delete":
+- generic: 52m ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 1h ago
+- generic: 2 messages
+- generic: Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+- button "Rename":
+- button "Delete":
+- generic: 1h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to turn only the Requirement Draft's declared interactionContractRefs into reviewable UI interaction contracts. GoalDesignSkillRef: skill.southst..."
+- button "Rename":
+- button "Delete":
+- generic: 2h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to turn only the Requirement Draft's declared interactionContractRefs into reviewable UI interaction contracts. GoalDesignSkillRef: skill.southst..."
+- button "Rename":
+- button "Delete":
+- generic: 2h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 2h ago
+- generic: 2 messages
+- generic: (no messages)
+- button "Rename":
+- button "Delete":
+- generic: 4h ago
+- generic: 0 messages
+- generic: (no messages)
+- button "Rename":
+- button "Delete":
+- generic: 4h ago
+- generic: 0 messages
+- generic: (no messages)
+- button "Rename":
+- button "Delete":
+- generic: 4h ago
+- generic: 0 messages
+- generic: "Return exactly: vocab-ok"
+- button "Rename":
+- button "Delete":
+- generic: 4h ago
+- generic: 2 messages
+- generic: "Return exactly this text and nothing else: second-ok"
+- button "Rename":
+- button "Delete":
+- generic: 4h ago
+- generic: 2 messages
+- generic: "Return exactly this text and nothing else: first-ok"
+- button "Rename":
+- button "Delete":
+- generic: 4h ago
+- generic: 2 messages
+- generic: Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+- button "Rename":
+- button "Delete":
+- generic: 4h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 4h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 4h ago
+- generic: 2 messages
+- generic: Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+- button "Rename":
+- button "Delete":
+- generic: 4h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 4h ago
+- generic: 2 messages
+- generic: (no messages)
+- button "Rename":
+- button "Delete":
+- generic: 5h ago
+- generic: 0 messages
+- generic: (no messages)
+- button "Rename":
+- button "Delete":
+- generic: 5h ago
+- generic: 0 messages
+- generic: "Use the approved Library Goal Design SOP to design outcome slices from the confirmed Goal Contract and frozen validation bindings. GoalDesignSkillRef: skill.southstar-goal-design G..."
+- button "Rename":
+- button "Delete":
+- generic: 5h ago
+- generic: 2 messages
+- generic: Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+- button "Rename":
+- button "Delete":
+- generic: 5h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 5h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to turn only the Requirement Draft's declared interactionContractRefs into reviewable UI interaction contracts. GoalDesignSkillRef: skill.southst..."
+- button "Rename":
+- button "Delete":
+- generic: 5h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 5h ago
+- generic: 2 messages
+- generic: Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+- button "Rename":
+- button "Delete":
+- generic: 5h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to turn only the Requirement Draft's declared interactionContractRefs into reviewable UI interaction contracts. GoalDesignSkillRef: skill.southst..."
+- button "Rename":
+- button "Delete":
+- generic: 5h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to turn only the Requirement Draft's declared interactionContractRefs into reviewable UI interaction contracts. GoalDesignSkillRef: skill.southst..."
+- button "Rename":
+- button "Delete":
+- generic: 5h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 5h ago
+- generic: 2 messages
+- generic: Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+- button "Rename":
+- button "Delete":
+- generic: 6h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 6h ago
+- generic: 2 messages
+- generic: (no messages)
+- button "Rename":
+- button "Delete":
+- generic: 6h ago
+- generic: 0 messages
+- generic: "Use the approved Library Goal Design SOP to design outcome slices from the confirmed Goal Contract and frozen validation bindings. GoalDesignSkillRef: skill.southstar-goal-design G..."
+- button "Rename":
+- button "Delete":
+- generic: 6h ago
+- generic: 2 messages
+- generic: Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+- button "Rename":
+- button "Delete":
+- generic: 6h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to turn only the Requirement Draft's declared interactionContractRefs into reviewable UI interaction contracts. GoalDesignSkillRef: skill.southst..."
+- button "Rename":
+- button "Delete":
+- generic: 6h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 6h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 6h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 6h ago
+- generic: 2 messages
+- generic: Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+- button "Rename":
+- button "Delete":
+- generic: 6h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 6h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 6h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 6h ago
+- generic: 2 messages
+- button "Workflow Library":
+  - text: Workflow Library
+- button "Refresh workflow library":
+- button "all":
+  - generic: all
+- button "workflows":
+  - generic: workflows
+- button "Models":
+  - text: Models
+- button "Skills":
+  - text: Skills
+- button "MCP":
+  - text: MCP
+- button "Hide sidebar":
+- button "Switch to dark mode":
+- button "Export HTML":
+- button "Branches":
+- button "Chat":
+  - text: Chat
+- button "Library":
+  - text: Library
+- button "Workflow" [pressed]:
+  - text: Workflow
+- button "Operator":
+  - text: Operator
+- 'button "in: 0 | out: 0 | cache read: 0 | cache write: 0"'
+- paragraph: Build a small local vocabulary flashcard system in this workspace. Users can add and list words with translations and examples, run flashcard quizzes, submit answers with persisted history, and see session and cumulative accuracy. The product must produce a vocabulary-specific persisted-answer and accuracy evidence artifact contract; generic repository implementation or verification reports do not represent that product outcome. Include a browser-accessible local UI, automated tests, and verification evidence for every blocking requirement. Do not use external services or network integrations.
+- button "Copy":
+  - text: Copy
+- generic: 19:11
+- generic: workflow-generate
+- paragraph: "[request.normalized] request.normalized [goal_requirements] draft-goal-requirements-83aa602e7f63 83aa602e7f63 [requirements.persisted] requirements.persisted [draft.requirements_review] draft.requirements_review [draft] draft-goal-requirements-83aa602e7f63 requirements_review"
+- heading "Create a local, browser-accessible vocabulary flashcard product in this workspace where users can manage vocabulary entries, run quizzes, persist answer history, and view session plus cumulative accuracy, with automated tests and vocabulary-specific evidence artifacts proving persisted-answer and accuracy outcomes without external integrations." [level=3]
+- generic: draft draft-goal-requirements-83aa602e7f63 · requirements_review · rev 1
+- generic: 6 requirements
+- generic: 6 explicit
+- generic: 0 inferred
+- generic: 6 blocking
+- generic: clarification clear
+- button "Vocabulary entries can be added and listed with translation and example content explicit blocking The system must let a user add vocabulary words with their translation and example text, persist those entries locally, and list saved entries in the browser UI. 2 AC ready coverage unknown no visual contract":
+  - strong: Vocabulary entries can be added and listed with translation and example content
+  - generic: explicit
+  - generic: blocking
+  - generic: The system must let a user add vocabulary words with their translation and example text, persist those entries locally, and list saved entries in the browser UI.
+  - generic: 2 AC
+  - generic: ready
+  - generic: coverage unknown
+  - generic: no visual contract
+- button "Flashcard quizzes can run and submitted answers are persisted as history explicit blocking The system must let a user run vocabulary flashcard quizzes and submit answers, with each submission persisted as historical quiz-answer data. 2 AC ready coverage unknown no visual contract":
+  - strong: Flashcard quizzes can run and submitted answers are persisted as history
+  - generic: explicit
+  - generic: blocking
+  - generic: The system must let a user run vocabulary flashcard quizzes and submit answers, with each submission persisted as historical quiz-answer data.
+  - generic: 2 AC
+  - generic: ready
+  - generic: coverage unknown
+  - generic: no visual contract
+- button "Session and cumulative accuracy are calculated and visible explicit blocking The system must compute and display both current-session accuracy and cumulative accuracy across persisted answer history. 2 AC ready coverage unknown no visual contract":
+  - strong: Session and cumulative accuracy are calculated and visible
+  - generic: explicit
+  - generic: blocking
+  - generic: The system must compute and display both current-session accuracy and cumulative accuracy across persisted answer history.
+  - generic: 2 AC
+  - generic: ready
+  - generic: coverage unknown
+  - generic: no visual contract
+- button "Vocabulary-specific evidence artifact contract exists for persisted answers and accuracy explicit blocking The product must define and produce a vocabulary-domain evidence artifact contract that demonstrates persisted-answer history and resulting accuracy metrics; generic repository implementation or verification reports alone are insufficient. 2 AC ready coverage unknown no visual contract":
+  - strong: Vocabulary-specific evidence artifact contract exists for persisted answers and accuracy
+  - generic: explicit
+  - generic: blocking
+  - generic: The product must define and produce a vocabulary-domain evidence artifact contract that demonstrates persisted-answer history and resulting accuracy metrics; generic repository implementation or verification reports alone are insufficient.
+  - generic: 2 AC
+  - generic: ready
+  - generic: coverage unknown
+  - generic: no visual contract
+- button "System is browser-accessible locally and avoids external services or network integrations explicit blocking The product must run as a local browser-accessible application in this workspace and must not depend on external services or network integrations for core functionality. 2 AC ready coverage unknown no visual contract":
+  - strong: System is browser-accessible locally and avoids external services or network integrations
+  - generic: explicit
+  - generic: blocking
+  - generic: The product must run as a local browser-accessible application in this workspace and must not depend on external services or network integrations for core functionality.
+  - generic: 2 AC
+  - generic: ready
+  - generic: coverage unknown
+  - generic: no visual contract
+- button "Automated tests and requirement-mapped verification evidence cover all blocking outcomes explicit blocking The workspace must include automated tests and produced verification evidence that maps to every blocking requirement in this draft. 2 AC ready coverage unknown no visual contract":
+  - strong: Automated tests and requirement-mapped verification evidence cover all blocking outcomes
+  - generic: explicit
+  - generic: blocking
+  - generic: The workspace must include automated tests and produced verification evidence that maps to every blocking requirement in this draft.
+  - generic: 2 AC
+  - generic: ready
+  - generic: coverage unknown
+  - generic: no visual contract
+- paragraph:
+  - strong: "Non-goals:"
+  - text: Cloud deployment, remote hosting, or production-scale operations. · User authentication, multi-user tenancy, or account management. · External translation APIs, third-party quiz content providers, or network-based integrations. · Advanced spaced-repetition optimization beyond required quiz, history, and accuracy behavior.
+- generic: Host marked this requirement draft confirmable.
+- button "Confirm requirements"
+- button "Copy":
+  - text: Copy
+- generic: workflow-state
+- heading "Create a local, browser-accessible vocabulary flashcard product in this workspace where users can manage vocabulary entries, run quizzes, persist answer history, and view session plus cumulative accuracy, with automated tests and vocabulary-specific evidence artifacts proving persisted-answer and accuracy outcomes without external integrations." [level=3]
+- generic: draft draft-goal-requirements-83aa602e7f63 · requirements_review · rev 2
+- generic: 6 requirements
+- generic: 6 explicit
+- generic: 0 inferred
+- generic: 6 blocking
+- generic: clarification clear
+- button "Vocabulary entries can be added and listed with translation and example content explicit blocking The system must let a user add vocabulary words with their translation and example text, persist those entries locally, and list saved entries in the browser UI. 2 AC ready coverage unknown no visual contract":
+  - strong: Vocabulary entries can be added and listed with translation and example content
+  - generic: explicit
+  - generic: blocking
+  - generic: The system must let a user add vocabulary words with their translation and example text, persist those entries locally, and list saved entries in the browser UI.
+  - generic: 2 AC
+  - generic: ready
+  - generic: coverage unknown
+  - generic: no visual contract
+- button "Flashcard quizzes can run and submitted answers are persisted as history explicit blocking The system must let a user run vocabulary flashcard quizzes and submit answers, with each submission persisted as historical quiz-answer data. 2 AC ready coverage unknown no visual contract":
+  - strong: Flashcard quizzes can run and submitted answers are persisted as history
+  - generic: explicit
+  - generic: blocking
+  - generic: The system must let a user run vocabulary flashcard quizzes and submit answers, with each submission persisted as historical quiz-answer data.
+  - generic: 2 AC
+  - generic: ready
+  - generic: coverage unknown
+  - generic: no visual contract
+- button "Session and cumulative accuracy are calculated and visible explicit blocking The system must compute and display both current-session accuracy and cumulative accuracy across persisted answer history. 2 AC ready coverage unknown no visual contract":
+  - strong: Session and cumulative accuracy are calculated and visible
+  - generic: explicit
+  - generic: blocking
+  - generic: The system must compute and display both current-session accuracy and cumulative accuracy across persisted answer history.
+  - generic: 2 AC
+  - generic: ready
+  - generic: coverage unknown
+  - generic: no visual contract
+- button "Vocabulary-specific evidence artifact contract exists for persisted answers and accuracy explicit blocking The product must define and produce a vocabulary-domain evidence artifact contract that demonstrates persisted-answer history and resulting accuracy metrics; generic repository implementation or verification reports alone are insufficient. 2 AC ready coverage unknown no visual contract":
+  - strong: Vocabulary-specific evidence artifact contract exists for persisted answers and accuracy
+  - generic: explicit
+  - generic: blocking
+  - generic: The product must define and produce a vocabulary-domain evidence artifact contract that demonstrates persisted-answer history and resulting accuracy metrics; generic repository implementation or verification reports alone are insufficient.
+  - generic: 2 AC
+  - generic: ready
+  - generic: coverage unknown
+  - generic: no visual contract
+- button "System is browser-accessible locally and avoids external services or network integrations explicit blocking The product must run as a local browser-accessible application in this workspace and must not depend on external services or network integrations for core functionality. 2 AC ready coverage unknown visual review":
+  - strong: System is browser-accessible locally and avoids external services or network integrations
+  - generic: explicit
+  - generic: blocking
+  - generic: The product must run as a local browser-accessible application in this workspace and must not depend on external services or network integrations for core functionality.
+  - generic: 2 AC
+  - generic: ready
+  - generic: coverage unknown
+  - generic: visual review
+- button "Automated tests and requirement-mapped verification evidence cover all blocking outcomes explicit blocking The workspace must include automated tests and produced verification evidence that maps to every blocking requirement in this draft. 2 AC ready coverage unknown no visual contract":
+  - strong: Automated tests and requirement-mapped verification evidence cover all blocking outcomes
+  - generic: explicit
+  - generic: blocking
+  - generic: The workspace must include automated tests and produced verification evidence that maps to every blocking requirement in this draft.
+  - generic: 2 AC
+  - generic: ready
+  - generic: coverage unknown
+  - generic: no visual contract
+- paragraph:
+  - strong: "Non-goals:"
+  - text: Cloud deployment, remote hosting, or production-scale operations. · User authentication, multi-user tenancy, or account management. · External translation APIs, third-party quiz content providers, or network-based integrations. · Advanced spaced-repetition optimization beyond required quiz, history, and accuracy behavior.
+- generic: Waiting for host validation readiness.
+- button "Confirm requirements" [disabled]
+- generic: workflow-state
+- heading "Create a local, browser-accessible vocabulary flashcard product in this workspace where users can manage vocabulary entries, run quizzes, persist answer history, and view session plus cumulative accuracy, with automated tests and vocabulary-specific evidence artifacts proving persisted-answer and accuracy outcomes without external integrations." [level=3]
+- generic: draft draft-goal-requirements-83aa602e7f63 · requirements_review · rev 3
+- generic: 6 requirements
+- generic: 6 explicit
+- generic: 0 inferred
+- generic: 6 blocking
+- generic: clarification clear
+- button "Vocabulary entries can be added and listed with translation and example content explicit blocking The system must let a user add vocabulary words with their translation and example text, persist those entries locally, and list saved entries in the browser UI. 2 AC ready coverage unknown no visual contract":
+  - strong: Vocabulary entries can be added and listed with translation and example content
+  - generic: explicit
+  - generic: blocking
+  - generic: The system must let a user add vocabulary words with their translation and example text, persist those entries locally, and list saved entries in the browser UI.
+  - generic: 2 AC
+  - generic: ready
+  - generic: coverage unknown
+  - generic: no visual contract
+- button "Flashcard quizzes can run and submitted answers are persisted as history explicit blocking The system must let a user run vocabulary flashcard quizzes and submit answers, with each submission persisted as historical quiz-answer data. 2 AC ready coverage unknown no visual contract":
+  - strong: Flashcard quizzes can run and submitted answers are persisted as history
+  - generic: explicit
+  - generic: blocking
+  - generic: The system must let a user run vocabulary flashcard quizzes and submit answers, with each submission persisted as historical quiz-answer data.
+  - generic: 2 AC
+  - generic: ready
+  - generic: coverage unknown
+  - generic: no visual contract
+- button "Session and cumulative accuracy are calculated and visible explicit blocking The system must compute and display both current-session accuracy and cumulative accuracy across persisted answer history. 2 AC ready coverage unknown no visual contract":
+  - strong: Session and cumulative accuracy are calculated and visible
+  - generic: explicit
+  - generic: blocking
+  - generic: The system must compute and display both current-session accuracy and cumulative accuracy across persisted answer history.
+  - generic: 2 AC
+  - generic: ready
+  - generic: coverage unknown
+  - generic: no visual contract
+- button "Vocabulary-specific evidence artifact contract exists for persisted answers and accuracy explicit blocking The product must define and produce a vocabulary-domain evidence artifact contract that demonstrates persisted-answer history and resulting accuracy metrics; generic repository implementation or verification reports alone are insufficient. 2 AC ready coverage unknown no visual contract":
+  - strong: Vocabulary-specific evidence artifact contract exists for persisted answers and accuracy
+  - generic: explicit
+  - generic: blocking
+  - generic: The product must define and produce a vocabulary-domain evidence artifact contract that demonstrates persisted-answer history and resulting accuracy metrics; generic repository implementation or verification reports alone are insufficient.
+  - generic: 2 AC
+  - generic: ready
+  - generic: coverage unknown
+  - generic: no visual contract
+- button "System is browser-accessible locally and avoids external services or network integrations explicit blocking The product must run as a local browser-accessible application in this workspace and must not depend on external services or network integrations for core functionality. 2 AC ready coverage unknown visual review":
+  - strong: System is browser-accessible locally and avoids external services or network integrations
+  - generic: explicit
+  - generic: blocking
+  - generic: The product must run as a local browser-accessible application in this workspace and must not depend on external services or network integrations for core functionality.
+  - generic: 2 AC
+  - generic: ready
+  - generic: coverage unknown
+  - generic: visual review
+- button "Automated tests and requirement-mapped verification evidence cover all blocking outcomes explicit blocking The workspace must include automated tests and produced verification evidence that maps to every blocking requirement in this draft. 2 AC ready coverage unknown no visual contract":
+  - strong: Automated tests and requirement-mapped verification evidence cover all blocking outcomes
+  - generic: explicit
+  - generic: blocking
+  - generic: The workspace must include automated tests and produced verification evidence that maps to every blocking requirement in this draft.
+  - generic: 2 AC
+  - generic: ready
+  - generic: coverage unknown
+  - generic: no visual contract
+- paragraph:
+  - strong: "Non-goals:"
+  - text: Cloud deployment, remote hosting, or production-scale operations. · User authentication, multi-user tenancy, or account management. · External translation APIs, third-party quiz content providers, or network-based integrations. · Advanced spaced-repetition optimization beyond required quiz, history, and accuracy behavior.
+- generic: Waiting for host validation readiness.
+- button "Confirm requirements" [disabled]
+- generic: workflow-state
+- heading "Create a local, browser-accessible vocabulary flashcard product in this workspace where users can manage vocabulary entries, run quizzes, persist answer history, and view session plus cumulative accuracy, with automated tests and vocabulary-specific evidence artifacts proving persisted-answer and accuracy outcomes without external integrations." [level=3]
+- generic: draft draft-goal-requirements-83aa602e7f63 · requirements_review · rev 4
+- generic: 6 requirements
+- generic: 6 explicit
+- generic: 0 inferred
+- generic: 6 blocking
+- generic: clarification clear
+- button "Vocabulary entries can be added and listed with translation and example content explicit blocking The system must let a user add vocabulary words with their translation and example text, persist those entries locally, and list saved entries in the browser UI. 2 AC ready coverage unknown no visual contract":
+  - strong: Vocabulary entries can be added and listed with translation and example content
+  - generic: explicit
+  - generic: blocking
+  - generic: The system must let a user add vocabulary words with their translation and example text, persist those entries locally, and list saved entries in the browser UI.
+  - generic: 2 AC
+  - generic: ready
+  - generic: coverage unknown
+  - generic: no visual contract
+- button "Flashcard quizzes can run and submitted answers are persisted as history explicit blocking The system must let a user run vocabulary flashcard quizzes and submit answers, with each submission persisted as historical quiz-answer data. 2 AC ready coverage unknown no visual contract":
+  - strong: Flashcard quizzes can run and submitted answers are persisted as history
+  - generic: explicit
+  - generic: blocking
+  - generic: The system must let a user run vocabulary flashcard quizzes and submit answers, with each submission persisted as historical quiz-answer data.
+  - generic: 2 AC
+  - generic: ready
+  - generic: coverage unknown
+  - generic: no visual contract
+- button "Session and cumulative accuracy are calculated and visible explicit blocking The system must compute and display both current-session accuracy and cumulative accuracy across persisted answer history. 2 AC ready coverage unknown no visual contract":
+  - strong: Session and cumulative accuracy are calculated and visible
+  - generic: explicit
+  - generic: blocking
+  - generic: The system must compute and display both current-session accuracy and cumulative accuracy across persisted answer history.
+  - generic: 2 AC
+  - generic: ready
+  - generic: coverage unknown
+  - generic: no visual contract
+- button "Vocabulary-specific evidence artifact contract exists for persisted answers and accuracy explicit blocking The product must define and produce a vocabulary-domain evidence artifact contract that demonstrates persisted-answer history and resulting accuracy metrics; generic repository implementation or verification reports alone are insufficient. 2 AC ready coverage unknown no visual contract":
+  - strong: Vocabulary-specific evidence artifact contract exists for persisted answers and accuracy
+  - generic: explicit
+  - generic: blocking
+  - generic: The product must define and produce a vocabulary-domain evidence artifact contract that demonstrates persisted-answer history and resulting accuracy metrics; generic repository implementation or verification reports alone are insufficient.
+  - generic: 2 AC
+  - generic: ready
+  - generic: coverage unknown
+  - generic: no visual contract
+- button "System is browser-accessible locally and avoids external services or network integrations explicit blocking The product must run as a local browser-accessible application in this workspace and must not depend on external services or network integrations for core functionality. 2 AC ready coverage unknown no visual contract":
+  - strong: System is browser-accessible locally and avoids external services or network integrations
+  - generic: explicit
+  - generic: blocking
+  - generic: The product must run as a local browser-accessible application in this workspace and must not depend on external services or network integrations for core functionality.
+  - generic: 2 AC
+  - generic: ready
+  - generic: coverage unknown
+  - generic: no visual contract
+- button "Automated tests and requirement-mapped verification evidence cover all blocking outcomes explicit blocking The workspace must include automated tests and produced verification evidence that maps to every blocking requirement in this draft. 2 AC ready coverage unknown no visual contract":
+  - strong: Automated tests and requirement-mapped verification evidence cover all blocking outcomes
+  - generic: explicit
+  - generic: blocking
+  - generic: The workspace must include automated tests and produced verification evidence that maps to every blocking requirement in this draft.
+  - generic: 2 AC
+  - generic: ready
+  - generic: coverage unknown
+  - generic: no visual contract
+- paragraph:
+  - strong: "Non-goals:"
+  - text: Cloud deployment, remote hosting, or production-scale operations. · User authentication, multi-user tenancy, or account management. · External translation APIs, third-party quiz content providers, or network-based integrations. · Advanced spaced-repetition optimization beyond required quiz, history, and accuracy behavior.
+- generic: Host marked this requirement draft confirmable.
+- button "Confirm requirements"
+- generic: workflow-state
+- heading "Create a local, browser-accessible vocabulary flashcard product in this workspace where users can manage vocabulary entries, run quizzes, persist answer history, and view session plus cumulative accuracy, with automated tests and vocabulary-specific evidence artifacts proving persisted-answer and accuracy outcomes without external integrations." [level=3]
+- generic: draft draft-goal-requirements-83aa602e7f63 · library_review · rev 4
+- generic: 6 requirements
+- generic: 6 explicit
+- generic: 0 inferred
+- generic: 6 blocking
+- generic: clarification clear
+- button "Vocabulary entries can be added and listed with translation and example content explicit blocking The system must let a user add vocabulary words with their translation and example text, persist those entries locally, and list saved entries in the browser UI. 2 AC ready coverage unknown no visual contract":
+  - strong: Vocabulary entries can be added and listed with translation and example content
+  - generic: explicit
+  - generic: blocking
+  - generic: The system must let a user add vocabulary words with their translation and example text, persist those entries locally, and list saved entries in the browser UI.
+  - generic: 2 AC
+  - generic: ready
+  - generic: coverage unknown
+  - generic: no visual contract
+- button "Flashcard quizzes can run and submitted answers are persisted as history explicit blocking The system must let a user run vocabulary flashcard quizzes and submit answers, with each submission persisted as historical quiz-answer data. 2 AC ready coverage unknown no visual contract":
+  - strong: Flashcard quizzes can run and submitted answers are persisted as history
+  - generic: explicit
+  - generic: blocking
+  - generic: The system must let a user run vocabulary flashcard quizzes and submit answers, with each submission persisted as historical quiz-answer data.
+  - generic: 2 AC
+  - generic: ready
+  - generic: coverage unknown
+  - generic: no visual contract
+- button "Session and cumulative accuracy are calculated and visible explicit blocking The system must compute and display both current-session accuracy and cumulative accuracy across persisted answer history. 2 AC ready coverage unknown no visual contract":
+  - strong: Session and cumulative accuracy are calculated and visible
+  - generic: explicit
+  - generic: blocking
+  - generic: The system must compute and display both current-session accuracy and cumulative accuracy across persisted answer history.
+  - generic: 2 AC
+  - generic: ready
+  - generic: coverage unknown
+  - generic: no visual contract
+- button "Vocabulary-specific evidence artifact contract exists for persisted answers and accuracy explicit blocking The product must define and produce a vocabulary-domain evidence artifact contract that demonstrates persisted-answer history and resulting accuracy metrics; generic repository implementation or verification reports alone are insufficient. 2 AC ready coverage unknown no visual contract":
+  - strong: Vocabulary-specific evidence artifact contract exists for persisted answers and accuracy
+  - generic: explicit
+  - generic: blocking
+  - generic: The product must define and produce a vocabulary-domain evidence artifact contract that demonstrates persisted-answer history and resulting accuracy metrics; generic repository implementation or verification reports alone are insufficient.
+  - generic: 2 AC
+  - generic: ready
+  - generic: coverage unknown
+  - generic: no visual contract
+- button "System is browser-accessible locally and avoids external services or network integrations explicit blocking The product must run as a local browser-accessible application in this workspace and must not depend on external services or network integrations for core functionality. 2 AC ready coverage unknown no visual contract":
+  - strong: System is browser-accessible locally and avoids external services or network integrations
+  - generic: explicit
+  - generic: blocking
+  - generic: The product must run as a local browser-accessible application in this workspace and must not depend on external services or network integrations for core functionality.
+  - generic: 2 AC
+  - generic: ready
+  - generic: coverage unknown
+  - generic: no visual contract
+- button "Automated tests and requirement-mapped verification evidence cover all blocking outcomes explicit blocking The workspace must include automated tests and produced verification evidence that maps to every blocking requirement in this draft. 2 AC ready coverage unknown no visual contract":
+  - strong: Automated tests and requirement-mapped verification evidence cover all blocking outcomes
+  - generic: explicit
+  - generic: blocking
+  - generic: The workspace must include automated tests and produced verification evidence that maps to every blocking requirement in this draft.
+  - generic: 2 AC
+  - generic: ready
+  - generic: coverage unknown
+  - generic: no visual contract
+- paragraph:
+  - strong: "Non-goals:"
+  - text: Cloud deployment, remote hosting, or production-scale operations. · User authentication, multi-user tenancy, or account management. · External translation APIs, third-party quiz content providers, or network-based integrations. · Advanced spaced-repetition optimization beyond required quiz, history, and accuracy behavior.
+- generic: Waiting for host validation readiness.
+- button "Confirm requirements" [disabled]
+- generic: ›
+- generic: Import candidates
+- generic: library-import-goal-908fab7db13a530ebf495d0169dd3a63
+- button "Select all candidates" [disabled]:
+- button "Unselect all candidates" [disabled]:
+- button "Install selected candidates":
+- button "Hide candidates":
+- generic: 4/4 selected
+- generic: Complete blocking-gap proposal · all candidates required
+- checkbox "Vocabulary Learning Verification Evidence artifact.vocabulary-learning-verification-evidence" [checked] [disabled]
+- strong: Vocabulary Learning Verification Evidence
+- generic: artifact
+- generic: "0.93"
+- generic: artifact.vocabulary-learning-verification-evidence
+- generic: Confirmed-Goal-validation-gaps.md
+- generic: Covers req-66e893cde6dd · criterion-3a42eb3b8f12, criterion-514ff38c751f
+- generic: Covers req-afea93af476a · criterion-142e60f7e429, criterion-e81425a1f916
+- generic: Covers req-b595b9200b56 · criterion-bddd64c34274, criterion-f1ab7ebb02ec
+- checkbox "Vocabulary Learning Verification Evaluator evaluator.vocabulary-learning-verification-evaluator" [checked] [disabled]
+- strong: Vocabulary Learning Verification Evaluator
+- generic: evaluator
+- generic: "0.91"
+- generic: evaluator.vocabulary-learning-verification-evaluator
+- generic: Confirmed-Goal-validation-gaps.md
+- generic: Covers req-66e893cde6dd · criterion-3a42eb3b8f12, criterion-514ff38c751f
+- generic: Covers req-afea93af476a · criterion-142e60f7e429, criterion-e81425a1f916
+- generic: Covers req-b595b9200b56 · criterion-bddd64c34274, criterion-f1ab7ebb02ec
+- checkbox "Local Offline Runtime Verification Evidence artifact.local-offline-runtime-verification-evidence" [checked] [disabled]
+- strong: Local Offline Runtime Verification Evidence
+- generic: artifact
+- generic: "0.92"
+- generic: artifact.local-offline-runtime-verification-evidence
+- generic: Confirmed-Goal-validation-gaps.md
+- generic: Covers req-cb1d4d89bed0 · criterion-08ab787d1ca1, criterion-c5c0e7a5c0c2
+- generic: Covers req-cb1d4d89bed0 · criterion-08ab787d1ca1, criterion-c5c0e7a5c0c2
+- generic: Covers req-cb1d4d89bed0 · criterion-08ab787d1ca1, criterion-c5c0e7a5c0c2
+- checkbox "Local Offline Runtime Verification Evaluator evaluator.local-offline-runtime-verification-evaluator" [checked] [disabled]
+- strong: Local Offline Runtime Verification Evaluator
+- generic: evaluator
+- generic: "0.90"
+- generic: evaluator.local-offline-runtime-verification-evaluator
+- generic: Confirmed-Goal-validation-gaps.md
+- generic: Covers req-cb1d4d89bed0 · criterion-08ab787d1ca1, criterion-c5c0e7a5c0c2
+- generic: Covers req-cb1d4d89bed0 · criterion-08ab787d1ca1, criterion-c5c0e7a5c0c2
+- generic: Covers req-cb1d4d89bed0 · criterion-08ab787d1ca1, criterion-c5c0e7a5c0c2
+- generic: workflow-state
+- heading "Create a local, browser-accessible vocabulary flashcard product in this workspace where users can manage vocabulary entries, run quizzes, persist answer history, and view session plus cumulative accuracy, with automated tests and vocabulary-specific evidence artifacts proving persisted-answer and accuracy outcomes without external integrations." [level=3]
+- generic: draft draft-goal-requirements-83aa602e7f63 · ready_for_review · 1c281cd95e36
+- generic: rev 1
+- generic: "strategy: single-run"
+- generic: "template: auto"
+- paragraph: All slices share one local workspace, one cohesive persistence/runtime surface, and tightly coupled verification evidence production; a single run preserves continuity for persisted state, offline checks, and end-to-end evidence mapping without requiring independently persisted per-slice runs.
+- button "slice-711dff92c43d82bc 1 req · 1 artifact Browser UI flow to create and list locally persisted vocabulary entries (word, translation, example). no slice deps Vocabulary entry repository and entry-management UI surface.":
+  - strong: slice-711dff92c43d82bc
+  - generic: 1 req · 1 artifact
+  - generic: Browser UI flow to create and list locally persisted vocabulary entries (word, translation, example).
+  - generic: no slice deps
+  - generic: Vocabulary entry repository and entry-management UI surface.
+- button "slice-2514c641e9f39c5a 1 req · 1 artifact Local quiz-session execution with answer submission and persisted quiz-answer history records. after slice-711dff92c43d82bc Quiz session and answer-history persistence layer plus quiz interaction UI/API.":
+  - strong: slice-2514c641e9f39c5a
+  - generic: 1 req · 1 artifact
+  - generic: Local quiz-session execution with answer submission and persisted quiz-answer history records.
+  - generic: after slice-711dff92c43d82bc
+  - generic: Quiz session and answer-history persistence layer plus quiz interaction UI/API.
+- button "slice-bad16695fa1b18c4 1 req · 1 artifact Session and cumulative accuracy computation from persisted answer history and browser-visible accuracy presentation. after slice-2514c641e9f39c5a Accuracy calculation module and accuracy UI/read model.":
+  - strong: slice-bad16695fa1b18c4
+  - generic: 1 req · 1 artifact
+  - generic: Session and cumulative accuracy computation from persisted answer history and browser-visible accuracy presentation.
+  - generic: after slice-2514c641e9f39c5a
+  - generic: Accuracy calculation module and accuracy UI/read model.
+- button "slice-69646c73587b41eb 1 req · 2 artifact Vocabulary-domain evidence artifact contract plus generated contract-conforming evidence instance proving persisted answers and resulting accuracy metrics. after slice-2514c641e9f39c5a, slice-bad16695fa1b18c4 Outcome-evidence contract/spec files and evidence-generation pipeline.":
+  - strong: slice-69646c73587b41eb
+  - generic: 1 req · 2 artifact
+  - generic: Vocabulary-domain evidence artifact contract plus generated contract-conforming evidence instance proving persisted answers and resulting accuracy metrics.
+  - generic: after slice-2514c641e9f39c5a, slice-bad16695fa1b18c4
+  - generic: Outcome-evidence contract/spec files and evidence-generation pipeline.
+- button "slice-c643d29db9e11de3 1 req · 1 artifact Locally runnable browser-accessible application flow with offline core behavior and no external-service dependency for required functionality. after slice-711dff92c43d82bc, slice-2514c641e9f39c5a, slice-bad16695fa1b18c4 Local runtime/startup configuration and offline dependency policy evidence outputs.":
+  - strong: slice-c643d29db9e11de3
+  - generic: 1 req · 1 artifact
+  - generic: Locally runnable browser-accessible application flow with offline core behavior and no external-service dependency for required functionality.
+  - generic: after slice-711dff92c43d82bc, slice-2514c641e9f39c5a, slice-bad16695fa1b18c4
+  - generic: Local runtime/startup configuration and offline dependency policy evidence outputs.
+- button "slice-49018c48e1c32c9c 1 req · 2 artifact Automated test execution and requirement-to-evidence mapping artifact covering every blocking requirement. after slice-711dff92c43d82bc, slice-2514c641e9f39c5a, slice-bad16695fa1b18c4, slice-69646c73587b41eb, slice-c643d29db9e11de3 Test suite orchestration and cross-requirement evidence mapping bundle.":
+  - strong: slice-49018c48e1c32c9c
+  - generic: 1 req · 2 artifact
+  - generic: Automated test execution and requirement-to-evidence mapping artifact covering every blocking requirement.
+  - generic: after slice-711dff92c43d82bc, slice-2514c641e9f39c5a, slice-bad16695fa1b18c4, slice-69646c73587b41eb, slice-c643d29db9e11de3
+  - generic: Test suite orchestration and cross-requirement evidence mapping bundle.
+- button "Confirm & Compose DAG"
+- generic: workflow-generate
+- paragraph: "Goal design confirmation failed: Pi SDK planner timed out after 180000ms"
+- button "Copy":
+  - text: Copy
+- generic: workflow-generate
+- paragraph: "Goal design confirmation failed: goal design confirmation completed without a DAG"
+- button "Copy":
+  - text: Copy
+- generic: workflow-generate
+- paragraph: goal_design.ready_to_compose goal_design.composing request.normalized goal_contract.interpreted candidate.resolving candidate.resolved composer.started composer.completed validation.completed composer.started composer.completed validation.completed composition.compiling composition.compiled draft.persisted dag.validated coverage.validated library_snapshot.persisted approval.persisted run.awaiting_approval
+- button "DAG wf-composed-034b10484899 12 nodes":
+  - generic: DAG
+  - generic: wf-composed-034b10484899
+  - generic: 12 nodes
+- generic: Goal Contract
+- strong: Create a local, browser-accessible vocabulary flashcard product in this workspace where users can manage vocabulary entries, run quizzes, persist answer history, and view session plus cumulative accuracy, with automated tests and vocabulary-specific evidence artifacts proving persisted-answer and accuracy outcomes without external integrations.
+- generic: 6/6 covered
+- text: Workspace
+- paragraph: /home/timmypai/apps/southstar-vocab · software
+- text: Acceptance
+- paragraph: Creating an entry from the browser UI persists word, translation, and example fields and returns the entry in subsequent list results. · Automated tests verify entry creation and listing behavior against persisted storage. · A quiz session can be started locally and accepts user answer submissions for prompted vocabulary items.
+- text: Deliverables
+- paragraph: artifact.goal.req-66e893cde6dd.1 · artifact.goal.req-afea93af476a.1 · artifact.goal.req-b595b9200b56.1 · artifact.goal.req-7774d590d33f.1 · artifact.goal.req-7774d590d33f.2 · artifact.goal.req-cb1d4d89bed0.1 · artifact.goal.req-68b95255627e.1 · artifact.goal.req-68b95255627e.2
+- text: Assumptions
+- paragraph: The target usage is single-user local operation in this workspace. · Local persistence may be implemented with workspace-local files or an embedded local datastore. · A quiz session is a user-initiated bounded run of flashcard prompts. · Answer correctness is determined by documented deterministic local rules. · Evidence artifacts and verification outputs can be stored as files under a workspace-local artifacts directory.
+- text: Risk / effects
+- paragraph: data-integrity · history-consistency · metrics-correctness · evidence-traceability · environment-dependency · coverage-gaps · Create and modify application, test, and configuration files in the workspace. · Run local automated test commands. · Persist local vocabulary and quiz answer-history data for product behavior and evidence generation. · Generate and write contract and verification evidence artifacts in the workspace.
+- generic: Execution
+- text: running
+- generic: Outcome
+- text: in_progress
+- generic: Health
+- text: healthy
+- button "Revise goal"
+- button "View details"
+- paragraph: Approved
+- button "Review mode"
+- application:
+  - article:
+    - strong: Implement vocabulary entry create/list browser flow with local persistence
+    - generic: ready
+    - paragraph: "taskId: task-s1-implement-entry-flow"
+    - paragraph: "roleRef: engineering-software-architect"
+    - paragraph: "agentProfileRef: generated.agent_profile.task-s1-implement-entry-flow"
+    - paragraph: "artifactKind: implementation_report"
+    - generic: codex
+    - generic: gpt-5-codex
+  - article:
+    - strong: Verify entry create/list behavior and emit vocabulary-learning evidence
+    - generic: ready
+    - paragraph: "taskId: task-s1-verify-entry-flow"
+    - paragraph: "roleRef: testing-evidence-collector"
+    - paragraph: "agentProfileRef: generated.agent_profile.task-s1-verify-entry-flow"
+    - paragraph: "artifactKind: implementation_report"
+    - generic: codex
+    - generic: gpt-5-codex
+  - article:
+    - strong: Implement quiz session start, answer submission, and persisted answer history
+    - generic: ready
+    - paragraph: "taskId: task-s2-implement-quiz-history"
+    - paragraph: "roleRef: engineering-software-architect"
+    - paragraph: "agentProfileRef: generated.agent_profile.task-s2-implement-quiz-history"
+    - paragraph: "artifactKind: implementation_report"
+    - generic: codex
+    - generic: gpt-5-codex
+  - article:
+    - strong: Verify quiz execution and persisted answer history evidence
+    - generic: ready
+    - paragraph: "taskId: task-s2-verify-quiz-history"
+    - paragraph: "roleRef: testing-evidence-collector"
+    - paragraph: "agentProfileRef: generated.agent_profile.task-s2-verify-quiz-history"
+    - paragraph: "artifactKind: implementation_report"
+    - generic: codex
+    - generic: gpt-5-codex
+  - article:
+    - strong: Implement session and cumulative accuracy computation plus UI display
+    - generic: ready
+    - paragraph: "taskId: task-s3-implement-accuracy"
+    - paragraph: "roleRef: engineering-software-architect"
+    - paragraph: "agentProfileRef: generated.agent_profile.task-s3-implement-accuracy"
+    - paragraph: "artifactKind: implementation_report"
+    - generic: codex
+    - generic: gpt-5-codex
+  - article:
+    - strong: Verify accuracy metrics correctness and UI visibility evidence
+    - generic: ready
+    - paragraph: "taskId: task-s3-verify-accuracy"
+    - paragraph: "roleRef: testing-evidence-collector"
+    - paragraph: "agentProfileRef: generated.agent_profile.task-s3-verify-accuracy"
+    - paragraph: "artifactKind: implementation_report"
+    - generic: codex
+    - generic: gpt-5-codex
+  - article:
+    - strong: Implement vocabulary-domain outcome artifact contract and evidence generation pipeline
+    - generic: ready
+    - paragraph: "taskId: task-s4-implement-outcome-artifact"
+    - paragraph: "roleRef: engineering-software-architect"
+    - paragraph: "agentProfileRef: generated.agent_profile.task-s4-implement-outcome-artifact"
+    - paragraph: "artifactKind: implementation_report"
+    - generic: codex
+    - generic: gpt-5-codex
+  - article:
+    - strong: Verify vocabulary outcome evidence artifact conformance
+    - generic: ready
+    - paragraph: "taskId: task-s4-verify-outcome-artifact"
+    - paragraph: "roleRef: testing-evidence-collector"
+    - paragraph: "agentProfileRef: generated.agent_profile.task-s4-verify-outcome-artifact"
+    - paragraph: "artifactKind: implementation_report"
+    - generic: codex
+    - generic: gpt-5-codex
+  - article:
+    - strong: Implement local startup/runtime flow and offline dependency guardrails
+    - generic: ready
+    - paragraph: "taskId: task-s5-implement-local-offline-runtime"
+    - paragraph: "roleRef: engineering-software-architect"
+    - paragraph: "agentProfileRef: generated.agent_profile.task-s5-implement-local-offline-runtime"
+    - paragraph: "artifactKind: implementation_report"
+    - generic: codex
+    - generic: gpt-5-codex
+  - article:
+    - strong: Verify local browser runtime and offline operation evidence
+    - generic: ready
+    - paragraph: "taskId: task-s5-verify-local-offline-runtime"
+    - paragraph: "roleRef: testing-evidence-collector"
+    - paragraph: "agentProfileRef: generated.agent_profile.task-s5-verify-local-offline-runtime"
+    - paragraph: "artifactKind: implementation_report"
+    - generic: codex
+    - generic: gpt-5-codex
+  - article:
+    - strong: Implement full automated test run and requirement-to-evidence mapping artifact generation
+    - generic: ready
+    - paragraph: "taskId: task-s6-implement-test-evidence-mapping"
+    - paragraph: "roleRef: engineering-software-architect"
+    - paragraph: "agentProfileRef: generated.agent_profile.task-s6-implement-test-evidence-mapping"
+    - paragraph: "artifactKind: implementation_report"
+    - generic: codex
+    - generic: gpt-5-codex
+  - article:
+    - strong: Verify cross-evidence bundle and blocking requirement coverage
+    - generic: ready
+    - paragraph: "taskId: task-s6-verify-cross-evidence-coverage"
+    - paragraph: "roleRef: testing-test-results-analyzer"
+    - paragraph: "agentProfileRef: generated.agent_profile.task-s6-verify-cross-evidence-coverage"
+    - paragraph: "artifactKind: implementation_report"
+    - generic: codex
+    - generic: gpt-5-codex
+  - img "Mini Map"
+  - generic "Control Panel":
+    - button "Zoom In":
+    - button "Zoom Out" [disabled]:
+    - button "Fit View":
+    - button "Toggle Interactivity":
+  - link "React Flow attribution":
+    - /url: https://reactflow.dev/attribution
+    - text: React Flow
+- button "Copy":
+  - text: Copy
+- generic: 19:51
+- textbox "Message… Type / for commands"
+- button "Send" [disabled]:
+  - text: Send
+- button "Attach image":
+- button "GPT-5.3 Codex":
+  - generic: GPT-5.3 Codex
+- button "high":
+  - generic: high
+- button "default":
+  - generic: default
+- button "Compact":
+  - text: Compact
+- button "关闭完成提示音":
+- button "Show sidecar":
+- button "Open Next.js Dev Tools":
+- alert

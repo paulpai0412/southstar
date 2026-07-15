@@ -1,0 +1,37 @@
+schemaVersion: southstar.library.artifact_contract_file.v1
+id: artifact.vocabulary-learning-verification-evidence
+title: "Vocabulary Learning Verification Evidence"
+scope: "software"
+status: approved
+artifactType: "vocabulary_learning_outcome_evidence.v1"
+mediaTypes:
+  - "application/json"
+  - "image/png"
+  - "text/plain"
+evidenceKinds:
+  - "artifact-ref"
+  - "command-output"
+  - "screenshot"
+  - "test-result"
+  - "url"
+validationRules:
+  - "Must contain persisted vocabulary entry records with word, translation, and example fields."
+  - "Must contain persisted quiz answer history with prompt identity, submitted answer, correctness outcome, and session linkage."
+  - "Must contain session and cumulative accuracy summaries traceable to persisted answer history."
+  - "Must include local browser flow evidence for create/list, quiz submission, and accuracy display behavior."
+  - "Must include automated test-result evidence for storage-backed create/list and quiz-history behavior."
+schemaRef: "southstar.artifact.vocabulary_learning_outcome_evidence.v1"
+requiredFields:
+  - "vocabularyEntries"
+  - "quizAnswerHistory"
+  - "accuracySummary"
+  - "uiFlowEvidence"
+  - "testResults"
+  - "localEndpoint"
+provenanceRequirements:
+  - "Capture evidence from a local workspace run with timestamped command context."
+  - "Record origin of persisted snapshots and test outputs used in the artifact."
+  - "Tie UI screenshots to the same local endpoint and run window as persistence evidence."
+importDraftId: "library-import-goal-908fab7db13a530ebf495d0169dd3a63"
+importCandidateKey: "artifact.vocabulary-learning-verification-evidence"
+importSourcePath: "Confirmed-Goal-validation-gaps.md"

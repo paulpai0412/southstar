@@ -6,7 +6,11 @@ import {
   artifactRefIdentity,
   sha256Stable,
 } from "../../src/v2/artifacts/artifact-ref-store.ts";
-import { buildEvidencePacket } from "../../src/v2/artifacts/evidence.ts";
+import {
+  artifactEvidenceClaims,
+  buildEvidencePacket,
+  screenshotEvidenceRef,
+} from "../../src/v2/artifacts/evidence.ts";
 import type { SouthstarDb } from "../../src/v2/db/postgres.ts";
 import { ARTIFACT_REF_RESOURCE_TYPE, type ArtifactRefPayload } from "../../src/v2/artifacts/types.ts";
 import { createWorkflowRunPg, upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
@@ -35,6 +39,68 @@ test("buildEvidencePacket captures redacted browser URL and screenshot evidence"
   assert.match(packet.evidenceItems[0]!.summary, /https:\/\/example\.test\/subscriptions/);
   assert.doesNotMatch(JSON.stringify(packet), /view=summary|private/);
   assert.equal(packet.evidenceItems.every((item) => item.redactionApplied), true);
+});
+
+test("explicit nested evidence items satisfy evidence packets and criterion references", () => {
+  const artifact = {
+    evidenceBundle: {
+      items: [
+        { id: "url-1", evidenceKind: "url", url: "http://127.0.0.1:4173/review?token=redacted" },
+        { id: "shot-1", evidenceKind: "screenshot", path: "artifacts/evidence/ui.png" },
+        { id: "artifact-1", evidenceKind: "artifact-ref", path: "artifacts/evidence/result.json" },
+      ],
+    },
+  };
+  const packet = buildEvidencePacket({
+    runId: "run-nested-evidence",
+    taskId: "task-nested-evidence",
+    artifactRef: "artifact-ref-nested",
+    requiredEvidenceKinds: ["url", "screenshot", "artifact-ref"],
+    artifact,
+    now: "2026-07-14T00:00:00.000Z",
+  });
+
+  assert.deepEqual(packet.evidenceItems.map((item) => [item.kind, item.status, item.sourceRef]), [
+    ["url", "present", "url-1"],
+    ["screenshot", "present", "shot-1"],
+    ["artifact-ref", "present", "artifact-1"],
+  ]);
+  assert.doesNotMatch(JSON.stringify(packet), /token=redacted/);
+  assert.equal(screenshotEvidenceRef(artifact, "run-nested-evidence"), "artifacts/evidence/ui.png");
+
+  const claims = artifactEvidenceClaims(artifact, "run-nested-evidence");
+  for (const [kind, ref] of [
+    ["url", "url-1"],
+    ["screenshot", "shot-1"],
+    ["artifact-ref", "artifact-1"],
+  ] as const) {
+    assert.equal(claims.some((claim) => claim.kind === kind && claim.ref === ref), true, `${kind}:${ref}`);
+  }
+});
+
+test("explicit nested evidence stays fail-closed when its value or outcome is invalid", () => {
+  const artifact = {
+    evidenceBundle: {
+      url: { id: "bad-url", evidenceKind: "url", url: "file:///home/user/.ssh/id_rsa" },
+      screenshot: { id: "bad-shot", evidenceKind: "screenshot", path: "../../home/user/private.png" },
+      policy: { id: "unapproved", evidenceKind: "policy-decision", status: "pending" },
+    },
+  };
+  const packet = buildEvidencePacket({
+    runId: "run-invalid-nested-evidence",
+    taskId: "task-invalid-nested-evidence",
+    artifactRef: "artifact-ref-invalid-nested",
+    requiredEvidenceKinds: ["url", "screenshot", "policy-decision"],
+    artifact,
+  });
+
+  assert.deepEqual(packet.evidenceItems.map((item) => [item.kind, item.status]), [
+    ["url", "invalid"],
+    ["screenshot", "invalid"],
+    ["policy-decision", "invalid"],
+  ]);
+  assert.equal(artifactEvidenceClaims(artifact, "run-invalid-nested-evidence").length, 0);
+  assert.doesNotMatch(JSON.stringify(packet), /home\/user|id_rsa|private\.png/);
 });
 
 test("buildEvidencePacket marks malformed browser evidence invalid without exposing host paths", () => {

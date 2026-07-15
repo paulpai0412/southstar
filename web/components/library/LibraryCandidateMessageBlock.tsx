@@ -3,11 +3,12 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { CheckCheck, ChevronDown, ChevronUp, Download, Square } from "lucide-react";
-import type { LibraryImportCandidate, LibraryImportProposedEdge } from "@/lib/library/types";
+import type { LibraryImportCandidate, LibraryImportCandidateCoverageTarget, LibraryImportProposedEdge } from "@/lib/library/types";
 
 export function LibraryCandidateMessageBlock({
   draftId,
   candidates,
+  candidateCoverageTargets,
   proposedEdges,
   status,
   installedObjectKeys,
@@ -15,6 +16,7 @@ export function LibraryCandidateMessageBlock({
 }: {
   draftId: string;
   candidates: LibraryImportCandidate[];
+  candidateCoverageTargets?: LibraryImportCandidateCoverageTarget[];
   proposedEdges?: LibraryImportProposedEdge[];
   status: "draft" | "installing" | "installed";
   installedObjectKeys?: string[];
@@ -29,12 +31,14 @@ export function LibraryCandidateMessageBlock({
     () => selectableCandidates.map((candidate) => candidate.objectKey),
     [selectableCandidates],
   );
+  const proposalLocked = (candidateCoverageTargets?.length ?? 0) > 0;
   const defaultSelectedKeys = useMemo(() => {
+    if (proposalLocked) return selectableCandidateKeys;
     const selected = selectableCandidates
       .filter((candidate) => candidate.selectedByDefault !== false)
       .map((candidate) => candidate.objectKey);
     return selected.length > 0 ? selected : selectableCandidateKeys;
-  }, [selectableCandidates, selectableCandidateKeys]);
+  }, [proposalLocked, selectableCandidates, selectableCandidateKeys]);
   const selectionResetKey = `${selectableCandidateKeys.join("\u0000")}::${defaultSelectedKeys.join("\u0000")}`;
   const [selected, setSelected] = useState<Set<string>>(() => new Set(defaultSelectedKeys));
   const [expanded, setExpanded] = useState(true);
@@ -59,6 +63,7 @@ export function LibraryCandidateMessageBlock({
     <div
       data-testid="library-import-candidates"
       data-message-block="library-import-candidates"
+      data-draft-id={draftId}
       style={{
         display: "grid",
         gap: 10,
@@ -94,7 +99,7 @@ export function LibraryCandidateMessageBlock({
           <IconButton
             label="Unselect all candidates"
             title="Unselect all"
-            disabled={isInstalling || selectedIds.length === 0}
+            disabled={proposalLocked || isInstalling || selectedIds.length === 0}
             onClick={() => setSelected(new Set())}
           >
             <Square size={14} strokeWidth={2} />
@@ -117,6 +122,7 @@ export function LibraryCandidateMessageBlock({
           <span style={{ fontSize: 12, color: "var(--text-dim)" }}>
             {selectedIds.length}/{selectableCandidates.length} selected
           </span>
+          {proposalLocked ? <span data-testid="library-proposal-completeness" style={{ fontSize: 11, color: "var(--text-dim)" }}>Complete blocking-gap proposal · all candidates required</span> : null}
         </div>
       </div>
       {expanded ? (
@@ -125,8 +131,9 @@ export function LibraryCandidateMessageBlock({
             <CandidateRow
               key={candidate.objectKey}
               candidate={candidate}
+              coverageTargets={candidateCoverageTargets?.filter((target) => target.candidateObjectKey === candidate.objectKey)}
               checked={selected.has(candidate.objectKey) && !installedKeys.has(candidate.objectKey)}
-              disabled={isInstalling || installedKeys.has(candidate.objectKey)}
+              disabled={proposalLocked || isInstalling || installedKeys.has(candidate.objectKey)}
               installed={installedKeys.has(candidate.objectKey)}
               onCheckedChange={(checked) => {
                 setSelected((current) => {
@@ -200,12 +207,14 @@ function IconButton({
 
 function CandidateRow({
   candidate,
+  coverageTargets,
   checked,
   disabled,
   installed,
   onCheckedChange,
 }: {
   candidate: LibraryImportCandidate;
+  coverageTargets?: LibraryImportCandidateCoverageTarget[];
   checked: boolean;
   disabled: boolean;
   installed: boolean;
@@ -246,6 +255,15 @@ function CandidateRow({
               <span style={{ fontSize: 12, color: "var(--text-dim)", overflowWrap: "anywhere" }}>{candidate.objectKey}</span>
               {candidate.sourcePath ? (
                 <span style={{ fontSize: 11, color: "var(--text-dim)", overflowWrap: "anywhere" }}>{candidate.sourcePath}</span>
+              ) : null}
+              {coverageTargets && coverageTargets.length > 0 ? (
+                <span data-testid={`library-candidate-coverage-${candidate.objectKey}`} style={{ display: "grid", gap: 2, marginTop: 2 }}>
+                  {coverageTargets.map((target) => (
+                    <span key={`${target.gapRef}:${target.criterionIds.join(":")}`} style={{ fontSize: 11, color: "var(--text-dim)", overflowWrap: "anywhere" }}>
+                      Covers {target.requirementId} · {target.criterionIds.length > 0 ? target.criterionIds.join(", ") : target.gapRef}
+                    </span>
+                  ))}
+                </span>
               ) : null}
             </span>
           </label>

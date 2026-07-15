@@ -1,0 +1,55 @@
+schemaVersion: southstar.library.evaluator_profile_file.v1
+id: evaluator.software-validation-evidence-integrity
+title: "Software Validation Evidence Integrity Evaluator"
+scope: "software"
+status: approved
+validatesArtifactRefs:
+  - "artifact.offline-ui-persistence-verification-report"
+  - "artifact.reproducible-validation-evidence-map"
+requiredInputs:
+  - "artifactRefs"
+  - "blockingRequirements"
+  - "criteriaSet"
+  - "executionContext"
+evidenceKinds:
+  - "artifact-ref"
+  - "command-output"
+  - "file-diff"
+  - "screenshot"
+  - "test-result"
+  - "url"
+  - "workspace-snapshot"
+verificationModes:
+  - "deterministic"
+verificationProcedures:
+  - id: "offline-persistence-evidence-completeness"
+    checkKind: "deterministic"
+    instruction: "Verify the offline UI persistence artifact contains create/list flow evidence, matching pre/post restart snapshots, and linked screenshot, URL, test-result, command-output, artifact-ref, and workspace-snapshot evidence for the same scenario."
+    allowedEvidenceKinds:
+      - "artifact-ref"
+      - "command-output"
+      - "screenshot"
+      - "test-result"
+      - "url"
+      - "workspace-snapshot"
+  - id: "reproducible-test-and-mapping-consistency"
+    checkKind: "deterministic"
+    instruction: "Verify the reproducible validation artifact proves at least two reruns of the same command set, consistent exit codes, and complete requirement-to-evidence mapping supported by artifact-ref, command-output, file-diff, test-result, and workspace-snapshot evidence."
+    allowedEvidenceKinds:
+      - "artifact-ref"
+      - "command-output"
+      - "file-diff"
+      - "test-result"
+      - "workspace-snapshot"
+independencePolicy: "independent"
+resultSchemaRef: "southstar.requirement_evaluator_result.v2"
+failureClassifications:
+  - "artifact-schema-invalid"
+  - "missing-required-evidence-kind"
+  - "offline-persistence-not-proven"
+  - "rerun-consistency-failed"
+  - "requirement-evidence-mapping-incomplete"
+  - "provenance-insufficient"
+importDraftId: "library-import-goal-b8d22f7611d9d0f033a129126ec0b8f9"
+importCandidateKey: "evaluator.software-validation-evidence-integrity"
+importSourcePath: "Confirmed-Goal-validation-gaps.md"

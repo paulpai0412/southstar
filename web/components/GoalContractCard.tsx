@@ -21,6 +21,9 @@ export function GoalContractCard({
 }) {
   const contract = mission.goalContract;
   const acceptanceCriteria = contract.requirements.flatMap((requirement) => requirement.acceptanceCriteria).slice(0, 3);
+  const needsInput = contract.blockingInputs.length > 0
+    && mission.status.execution !== "completed"
+    && mission.approval?.status !== "approved";
   return (
     <section data-testid="goal-contract-card" className="goal-contract-card">
       <header className="goal-contract-card-header">
@@ -37,7 +40,7 @@ export function GoalContractCard({
         <GoalFact label="Assumptions" values={contract.assumptions} />
         <GoalFact label="Risk / effects" values={[...contract.riskTags, ...contract.requestedSideEffects]} />
       </div>
-      {contract.blockingInputs.length > 0 ? (
+      {needsInput ? (
         <div className="goal-contract-blocking" data-testid="goal-contract-clarifications">
           <strong>Needs input</strong>
           <div className="goal-contract-choice-list">

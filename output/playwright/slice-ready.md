@@ -1,0 +1,714 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - generic [ref=e3]:
+      - generic [ref=e89]:
+        - generic [ref=e90]:
+          - generic [ref=e91]:
+            - button "Southstar" [ref=e92]
+            - generic [ref=e99]:
+              - button "New" [ref=e100] [cursor=pointer]
+              - button "Refresh" [ref=e102] [cursor=pointer]
+          - button ".../apps/southstar-vocab" [ref=e107] [cursor=pointer]
+        - generic [ref=e108]:
+          - generic [ref=e109]: Workflow Sessions
+          - generic [ref=e110]:
+            - generic [ref=e111] [cursor=pointer]:
+              - generic [ref=e112]:
+                - generic [ref=e113]: 完成一個可離線運作的背單字系統：可以新增與列出單字、開始測驗並提交答案、查看本次與累積正確率，需要瀏覽器 UI、持久化資料、啟動與離線依賴檢查，以及可重現的測試與證據。請先產生 Goal Contract、requirements 與 slices，確認後再產生同一張 DAG 執行。
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e114]:
+                - generic [ref=e115]: 16m ago
+                - generic [ref=e116]: 2 messages
+            - generic [ref=e117] [cursor=pointer]:
+              - generic [ref=e118]:
+                - generic [ref=e119]: Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e120]:
+                - generic [ref=e121]: 19m ago
+                - generic [ref=e122]: 2 messages
+            - generic [ref=e123] [cursor=pointer]:
+              - generic [ref=e124]:
+                - generic [ref=e125]: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e126]:
+                - generic [ref=e127]: 21m ago
+                - generic [ref=e128]: 2 messages
+            - generic [ref=e129] [cursor=pointer]:
+              - generic [ref=e130]:
+                - generic [ref=e131]: "{\"schemaVersion\":\"southstar.workflow_composition_plan.v1\",\"title\":\"Runtime dynamic repair append for req-08 startup/depcheck validation callback mismatch\",\"rationale\":\"Append a bou..."
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e132]:
+                - generic [ref=e133]: 50m ago
+                - generic [ref=e134]: 1 messages
+            - generic [ref=e135] [cursor=pointer]:
+              - generic [ref=e136]:
+                - generic [ref=e137]: (no messages)
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e138]:
+                - generic [ref=e139]: 53m ago
+                - generic [ref=e140]: 0 messages
+            - generic [ref=e141] [cursor=pointer]:
+              - generic [ref=e142]:
+                - generic [ref=e143]: 完成一個可離線運作的背單字系統：可以新增與列出單字、開始測驗並提交答案、查看本次與累積正確率，需要瀏覽器 UI、持久化資料、啟動與離線依賴檢查，以及可重現的測試與證據。請先產生 Goal Contract、requirements 與 slices，確認後再產生同一張 DAG 執行。
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e144]:
+                - generic [ref=e145]: 2h ago
+                - generic [ref=e146]: 2 messages
+            - generic [ref=e147] [cursor=pointer]:
+              - generic [ref=e148]:
+                - generic [ref=e149]: (no messages)
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e150]:
+                - generic [ref=e151]: 2h ago
+                - generic [ref=e152]: 0 messages
+            - generic [ref=e153] [cursor=pointer]:
+              - generic [ref=e154]:
+                - generic [ref=e155]: (no messages)
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e156]:
+                - generic [ref=e157]: 2h ago
+                - generic [ref=e158]: 0 messages
+            - generic [ref=e159] [cursor=pointer]:
+              - generic [ref=e160]:
+                - generic [ref=e161]: "Use the approved Library Goal Design SOP to design outcome slices from the confirmed Goal Contract and frozen validation bindings. GoalDesignSkillRef: skill.southstar-goal-design G..."
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e162]:
+                - generic [ref=e163]: 2h ago
+                - generic [ref=e164]: 2 messages
+            - generic [ref=e165] [cursor=pointer]:
+              - generic [ref=e166]:
+                - generic [ref=e167]: Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e168]:
+                - generic [ref=e169]: 3h ago
+                - generic [ref=e170]: 2 messages
+            - generic [ref=e171] [cursor=pointer]:
+              - generic [ref=e172]:
+                - generic [ref=e173]: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e174]:
+                - generic [ref=e175]: 3h ago
+                - generic [ref=e176]: 2 messages
+            - generic [ref=e177] [cursor=pointer]:
+              - generic [ref=e178]:
+                - generic [ref=e179]: 完成一個可離線運作的背單字系統：可以新增與列出單字、開始測驗並提交答案、查看本次與累積正確率，需要瀏覽器 UI、持久化資料、啟動與離線依賴檢查，以及可重現的測試與證據。請先產生 Goal Contract、requirements 與 slices，確認後再產生同一張 DAG 執行。
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e180]:
+                - generic [ref=e181]: 3h ago
+                - generic [ref=e182]: 2 messages
+            - generic [ref=e183] [cursor=pointer]:
+              - generic [ref=e184]:
+                - generic [ref=e185]: Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e186]:
+                - generic [ref=e187]: 3h ago
+                - generic [ref=e188]: 2 messages
+            - generic [ref=e189] [cursor=pointer]:
+              - generic [ref=e190]:
+                - generic [ref=e191]: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e192]:
+                - generic [ref=e193]: 3h ago
+                - generic [ref=e194]: 2 messages
+            - generic [ref=e195] [cursor=pointer]:
+              - generic [ref=e196]:
+                - generic [ref=e197]: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e198]:
+                - generic [ref=e199]: 3h ago
+                - generic [ref=e200]: 2 messages
+            - generic [ref=e201] [cursor=pointer]:
+              - generic [ref=e202]:
+                - generic [ref=e203]: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e204]:
+                - generic [ref=e205]: 3h ago
+                - generic [ref=e206]: 2 messages
+            - generic [ref=e207] [cursor=pointer]:
+              - generic [ref=e208]:
+                - generic [ref=e209]: 完成目前工作目錄中的離線背單字系統：新增與列出單字、開始測驗並提交答案、顯示本次與累積正確率、瀏覽器 UI、持久化資料、啟動與離線依賴檢查，以及可重現測試與證據。請直接採用合理且明確的產品預設，不要提出或留下任何 blocking open question；產生可審核 Goal Contract、完整 requirements 與 slices，確認後再生...
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e210]:
+                - generic [ref=e211]: 3h ago
+                - generic [ref=e212]: 2 messages
+            - generic [ref=e213] [cursor=pointer]:
+              - generic [ref=e214]:
+                - generic [ref=e215]: 在目前工作目錄完成一個可離線運作的背單字系統：使用者可以新增與列出單字、開始測驗並提交答案、查看本次與累積正確率；需要有瀏覽器 UI、持久化資料、啟動與離線依賴檢查，並以可重現的測試與證據驗證所有功能。請先產生可審核的 Goal Contract、requirements 與 slices，確認後再產生同一張 DAG 執行。
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e216]:
+                - generic [ref=e217]: 3h ago
+                - generic [ref=e218]: 2 messages
+            - generic [ref=e219] [cursor=pointer]:
+              - generic [ref=e220]:
+                - generic [ref=e221]: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e222]:
+                - generic [ref=e223]: 3h ago
+                - generic [ref=e224]: 2 messages
+            - generic [ref=e225] [cursor=pointer]:
+              - generic [ref=e226]:
+                - generic [ref=e227]: (no messages)
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e228]:
+                - generic [ref=e229]: 4h ago
+                - generic [ref=e230]: 0 messages
+            - generic [ref=e231] [cursor=pointer]:
+              - generic [ref=e232]:
+                - generic [ref=e233]: (no messages)
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e234]:
+                - generic [ref=e235]: 5h ago
+                - generic [ref=e236]: 0 messages
+            - generic [ref=e237] [cursor=pointer]:
+              - generic [ref=e238]:
+                - generic [ref=e239]: (no messages)
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e240]:
+                - generic [ref=e241]: 5h ago
+                - generic [ref=e242]: 0 messages
+            - generic [ref=e243] [cursor=pointer]:
+              - generic [ref=e244]:
+                - generic [ref=e245]: (no messages)
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e246]:
+                - generic [ref=e247]: 5h ago
+                - generic [ref=e248]: 0 messages
+            - generic [ref=e249] [cursor=pointer]:
+              - generic [ref=e250]:
+                - generic [ref=e251]: (no messages)
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e252]:
+                - generic [ref=e253]: 5h ago
+                - generic [ref=e254]: 0 messages
+            - generic [ref=e255] [cursor=pointer]:
+              - generic [ref=e256]:
+                - generic [ref=e257]: (no messages)
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e258]:
+                - generic [ref=e259]: 6h ago
+                - generic [ref=e260]: 0 messages
+            - generic [ref=e261] [cursor=pointer]:
+              - generic [ref=e262]:
+                - generic [ref=e263]: (no messages)
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e264]:
+                - generic [ref=e265]: 6h ago
+                - generic [ref=e266]: 0 messages
+            - generic [ref=e267] [cursor=pointer]:
+              - generic [ref=e268]:
+                - generic [ref=e269]: (no messages)
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e270]:
+                - generic [ref=e271]: 6h ago
+                - generic [ref=e272]: 0 messages
+            - generic [ref=e273] [cursor=pointer]:
+              - generic [ref=e274]:
+                - generic [ref=e275]: Build a small local vocabulary flashcard system in this workspace. Users can add and list words with translations and examples, run flashcard quizzes, submit answers with persisted...
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e276]:
+                - generic [ref=e277]: 6h ago
+                - generic [ref=e278]: 2 messages
+            - generic [ref=e279] [cursor=pointer]:
+              - generic [ref=e280]:
+                - generic [ref=e281]: (no messages)
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e282]:
+                - generic [ref=e283]: 6h ago
+                - generic [ref=e284]: 0 messages
+            - generic [ref=e285] [cursor=pointer]:
+              - generic [ref=e286]:
+                - generic [ref=e287]: (no messages)
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e288]:
+                - generic [ref=e289]: 7h ago
+                - generic [ref=e290]: 0 messages
+            - generic [ref=e291] [cursor=pointer]:
+              - generic [ref=e292]:
+                - generic [ref=e293]: "Use the approved Library Goal Design SOP to design outcome slices from the confirmed Goal Contract and frozen validation bindings. GoalDesignSkillRef: skill.southstar-goal-design G..."
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e294]:
+                - generic [ref=e295]: 7h ago
+                - generic [ref=e296]: 2 messages
+            - generic [ref=e297] [cursor=pointer]:
+              - generic [ref=e298]:
+                - generic [ref=e299]: Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e300]:
+                - generic [ref=e301]: 7h ago
+                - generic [ref=e302]: 2 messages
+            - generic [ref=e303] [cursor=pointer]:
+              - generic [ref=e304]:
+                - generic [ref=e305]: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e306]:
+                - generic [ref=e307]: 7h ago
+                - generic [ref=e308]: 2 messages
+            - generic [ref=e309] [cursor=pointer]:
+              - generic [ref=e310]:
+                - generic [ref=e311]: "Use the approved Goal Design skill to turn only the Requirement Draft's declared interactionContractRefs into reviewable UI interaction contracts. GoalDesignSkillRef: skill.southst..."
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e312]:
+                - generic [ref=e313]: 7h ago
+                - generic [ref=e314]: 2 messages
+            - generic [ref=e315] [cursor=pointer]:
+              - generic [ref=e316]:
+                - generic [ref=e317]: "Use the approved Goal Design skill to turn only the Requirement Draft's declared interactionContractRefs into reviewable UI interaction contracts. GoalDesignSkillRef: skill.southst..."
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e318]:
+                - generic [ref=e319]: 7h ago
+                - generic [ref=e320]: 2 messages
+            - generic [ref=e321] [cursor=pointer]:
+              - generic [ref=e322]:
+                - generic [ref=e323]: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e324]:
+                - generic [ref=e325]: 7h ago
+                - generic [ref=e326]: 2 messages
+            - generic [ref=e327] [cursor=pointer]:
+              - generic [ref=e328]:
+                - generic [ref=e329]: Build a small local vocabulary flashcard system in this workspace. Users can add and list words with translations and examples, run flashcard quizzes, submit answers with persisted...
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e330]:
+                - generic [ref=e331]: 7h ago
+                - generic [ref=e332]: 2 messages
+            - generic [ref=e333] [cursor=pointer]:
+              - generic [ref=e334]:
+                - generic [ref=e335]: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e336]:
+                - generic [ref=e337]: 7h ago
+                - generic [ref=e338]: 2 messages
+            - generic [ref=e339] [cursor=pointer]:
+              - generic [ref=e340]:
+                - generic [ref=e341]: Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e342]:
+                - generic [ref=e343]: 8h ago
+                - generic [ref=e344]: 2 messages
+            - generic [ref=e345] [cursor=pointer]:
+              - generic [ref=e346]:
+                - generic [ref=e347]: "Use the approved Goal Design skill to turn only the Requirement Draft's declared interactionContractRefs into reviewable UI interaction contracts. GoalDesignSkillRef: skill.southst..."
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e348]:
+                - generic [ref=e349]: 8h ago
+                - generic [ref=e350]: 2 messages
+            - generic [ref=e351] [cursor=pointer]:
+              - generic [ref=e352]:
+                - generic [ref=e353]: "Use the approved Goal Design skill to turn only the Requirement Draft's declared interactionContractRefs into reviewable UI interaction contracts. GoalDesignSkillRef: skill.southst..."
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e354]:
+                - generic [ref=e355]: 8h ago
+                - generic [ref=e356]: 2 messages
+            - generic [ref=e357] [cursor=pointer]:
+              - generic [ref=e358]:
+                - generic [ref=e359]: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e360]:
+                - generic [ref=e361]: 8h ago
+                - generic [ref=e362]: 2 messages
+            - generic [ref=e363] [cursor=pointer]:
+              - generic [ref=e364]:
+                - generic [ref=e365]: (no messages)
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e366]:
+                - generic [ref=e367]: 10h ago
+                - generic [ref=e368]: 0 messages
+            - generic [ref=e369] [cursor=pointer]:
+              - generic [ref=e370]:
+                - generic [ref=e371]: (no messages)
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e372]:
+                - generic [ref=e373]: 10h ago
+                - generic [ref=e374]: 0 messages
+            - generic [ref=e375] [cursor=pointer]:
+              - generic [ref=e376]:
+                - generic [ref=e377]: (no messages)
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e378]:
+                - generic [ref=e379]: 11h ago
+                - generic [ref=e380]: 0 messages
+            - generic [ref=e381] [cursor=pointer]:
+              - generic [ref=e382]:
+                - generic [ref=e383]: "Return exactly: vocab-ok"
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e384]:
+                - generic [ref=e385]: 11h ago
+                - generic [ref=e386]: 2 messages
+            - generic [ref=e387] [cursor=pointer]:
+              - generic [ref=e388]:
+                - generic [ref=e389]: "Return exactly this text and nothing else: second-ok"
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e390]:
+                - generic [ref=e391]: 11h ago
+                - generic [ref=e392]: 2 messages
+            - generic [ref=e393] [cursor=pointer]:
+              - generic [ref=e394]:
+                - generic [ref=e395]: "Return exactly this text and nothing else: first-ok"
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e396]:
+                - generic [ref=e397]: 11h ago
+                - generic [ref=e398]: 2 messages
+            - generic [ref=e399] [cursor=pointer]:
+              - generic [ref=e400]:
+                - generic [ref=e401]: Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e402]:
+                - generic [ref=e403]: 11h ago
+                - generic [ref=e404]: 2 messages
+            - generic [ref=e405] [cursor=pointer]:
+              - generic [ref=e406]:
+                - generic [ref=e407]: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e408]:
+                - generic [ref=e409]: 11h ago
+                - generic [ref=e410]: 2 messages
+        - generic [ref=e411]:
+          - generic [ref=e412]:
+            - button "Workflow Library" [ref=e413] [cursor=pointer]
+            - button "Refresh workflow library" [ref=e416] [cursor=pointer]
+          - generic [ref=e421]:
+            - button "all" [ref=e422] [cursor=pointer]
+            - button "workflows" [ref=e429] [cursor=pointer]
+      - generic [ref=e27]:
+        - button "Models" [ref=e28] [cursor=pointer]
+        - button "Skills" [ref=e32] [cursor=pointer]
+        - button "MCP" [ref=e37] [cursor=pointer]
+    - generic [ref=e44]:
+      - generic [ref=e45]:
+        - button "Hide sidebar" [ref=e46] [cursor=pointer]
+        - button "Switch to dark mode" [ref=e49] [cursor=pointer]
+        - generic [ref=e436]:
+          - button "Export HTML" [ref=e437] [cursor=pointer]
+          - button "Branches" [ref=e443] [cursor=pointer]
+        - generic [ref=e52]:
+          - button [ref=e53] [cursor=pointer]
+          - button [ref=e57] [cursor=pointer]
+          - button [pressed] [ref=e61] [cursor=pointer]
+          - button [ref=e70] [cursor=pointer]
+        - 'button "in: 0 | out: 0 | cache read: 0 | cache write: 0" [ref=e448] [cursor=pointer]'
+      - generic [ref=e450]:
+        - generic [ref=e454]:
+          - generic [ref=e456]:
+            - paragraph [ref=e460]: 完成一個可離線運作的背單字系統：可以新增與列出單字、開始測驗並提交答案、查看本次與累積正確率，需要瀏覽器 UI、持久化資料、啟動與離線依賴檢查，以及可重現的測試與證據。請先產生 Goal Contract、requirements 與 slices，確認後再產生同一張 DAG 執行。
+            - generic [ref=e461]:
+              - generic:
+                - button "Copy"
+              - generic [ref=e462]: 02:16
+          - generic [ref=e464]:
+            - generic [ref=e465]: workflow-generate
+            - generic [ref=e467]:
+              - paragraph [ref=e469]: "[request.normalized] request.normalized [goal_requirements] draft-goal-requirements-12951e1876a5 12951e1876a5 [requirements.persisted] requirements.persisted [draft.requirements_review] draft.requirements_review [draft] draft-goal-requirements-12951e1876a5 requirements_review"
+              - generic [ref=e770]:
+                - generic [ref=e771]:
+                  - generic [ref=e772]:
+                    - heading "目標是交付一個可離線運作的背單字系統，涵蓋：瀏覽器 UI 的新增/列出單字、開始測驗與提交答案、顯示本次與累積正確率、資料持久化與重啟延續、啟動與離線依賴檢查，以及可重現的測試與證據追溯。" [level=3] [ref=e773]
+                    - generic [ref=e774]: draft draft-goal-requirements-12951e1876a5 · ready_for_review · b078e4ed95f9
+                  - generic [ref=e775]: rev 1
+                - generic [ref=e776]:
+                  - generic [ref=e777]: "strategy: single-run"
+                  - generic [ref=e778]: "template: auto"
+                - paragraph [ref=e779]: 所有 slice 共用同一 Goal Contract 工作區且後段 slice 需直接消費前段證據 artifact（尤其重啟連續性與最終證據映射）；single-run 可維持同一狀態脈絡與可重現性，降低跨 run 交接漂移。
+                - generic [ref=e780]:
+                  - button "slice-06ba3deba8c926de 1 req · 2 artifact 在離線瀏覽器 UI 完成單字新增與清單顯示，且重新載入後可重現相同資料。 no slice deps 單字 UI 互動層與本地單字持久化資料" [ref=e781] [cursor=pointer]:
+                    - generic [ref=e782]:
+                      - strong [ref=e783]: slice-06ba3deba8c926de
+                      - generic [ref=e784]: 1 req · 2 artifact
+                    - generic [ref=e785]: 在離線瀏覽器 UI 完成單字新增與清單顯示，且重新載入後可重現相同資料。
+                    - generic [ref=e786]:
+                      - generic [ref=e787]: no slice deps
+                      - generic [ref=e788]: 單字 UI 互動層與本地單字持久化資料
+                  - button "slice-a8e3a46959a38a61 1 req · 2 artifact 可由既有單字啟動一輪測驗、提交答案，並保存可讀取的該輪作答紀錄。 after slice-06ba3deba8c926de 測驗流程狀態與測驗作答歷史資料" [ref=e789] [cursor=pointer]:
+                    - generic [ref=e790]:
+                      - strong [ref=e791]: slice-a8e3a46959a38a61
+                      - generic [ref=e792]: 1 req · 2 artifact
+                    - generic [ref=e793]: 可由既有單字啟動一輪測驗、提交答案，並保存可讀取的該輪作答紀錄。
+                    - generic [ref=e794]:
+                      - generic [ref=e795]: after slice-06ba3deba8c926de
+                      - generic [ref=e796]: 測驗流程狀態與測驗作答歷史資料
+                  - button "slice-443f628a6e707eb4 1 req · 2 artifact 提交測驗後顯示本次正確率，並在多次測驗後顯示可重建的累積正確率。 after slice-a8e3a46959a38a61 正確率計算邏輯與跨測驗累積統計狀態" [ref=e797] [cursor=pointer]:
+                    - generic [ref=e798]:
+                      - strong [ref=e799]: slice-443f628a6e707eb4
+                      - generic [ref=e800]: 1 req · 2 artifact
+                    - generic [ref=e801]: 提交測驗後顯示本次正確率，並在多次測驗後顯示可重建的累積正確率。
+                    - generic [ref=e802]:
+                      - generic [ref=e803]: after slice-a8e3a46959a38a61
+                      - generic [ref=e804]: 正確率計算邏輯與跨測驗累積統計狀態
+                  - button "slice-efd4e96bd62cbcd7 1 req · 2 artifact 在無外網條件下完成核心流程，且重啟後單字、測驗歷史與累積統計可延續一致。 after slice-06ba3deba8c926de, slice-a8e3a46959a38a61, slice-443f628a6e707eb4 離線執行環境與重啟後持久化連續性證據" [ref=e805] [cursor=pointer]:
+                    - generic [ref=e806]:
+                      - strong [ref=e807]: slice-efd4e96bd62cbcd7
+                      - generic [ref=e808]: 1 req · 2 artifact
+                    - generic [ref=e809]: 在無外網條件下完成核心流程，且重啟後單字、測驗歷史與累積統計可延續一致。
+                    - generic [ref=e810]:
+                      - generic [ref=e811]: after slice-06ba3deba8c926de, slice-a8e3a46959a38a61, slice-443f628a6e707eb4
+                      - generic [ref=e812]: 離線執行環境與重啟後持久化連續性證據
+                  - button "slice-3f82c0c68b8e0f21 1 req · 2 artifact 提供可執行啟動命令與離線依賴檢查，且重跑結果一致可驗證。 no slice deps 本地啟動流程與離線依賴檢查輸出" [ref=e813] [cursor=pointer]:
+                    - generic [ref=e814]:
+                      - strong [ref=e815]: slice-3f82c0c68b8e0f21
+                      - generic [ref=e816]: 1 req · 2 artifact
+                    - generic [ref=e817]: 提供可執行啟動命令與離線依賴檢查，且重跑結果一致可驗證。
+                    - generic [ref=e818]:
+                      - generic [ref=e819]: no slice deps
+                      - generic [ref=e820]: 本地啟動流程與離線依賴檢查輸出
+                  - button "slice-67bb52121ea6da09 1 req · 2 artifact 提供可重跑且退出碼一致的完整驗證流程，並建立每個阻塞需求對應證據的映射檔。 after slice-06ba3deba8c926de, slice-a8e3a46959a38a61, slice-443f628a6e707eb4, slice-efd4e96bd62cbcd7, slice-3f82c0c68b8e0f21 驗證總控流程與需求對證據映射文件" [ref=e821] [cursor=pointer]:
+                    - generic [ref=e822]:
+                      - strong [ref=e823]: slice-67bb52121ea6da09
+                      - generic [ref=e824]: 1 req · 2 artifact
+                    - generic [ref=e825]: 提供可重跑且退出碼一致的完整驗證流程，並建立每個阻塞需求對應證據的映射檔。
+                    - generic [ref=e826]:
+                      - generic [ref=e827]: after slice-06ba3deba8c926de, slice-a8e3a46959a38a61, slice-443f628a6e707eb4, slice-efd4e96bd62cbcd7, slice-3f82c0c68b8e0f21
+                      - generic [ref=e828]: 驗證總控流程與需求對證據映射文件
+                - button "Confirm & Compose DAG" [ref=e829] [cursor=pointer]
+            - generic [ref=e553]:
+              - button "Copy"
+          - generic [ref=e555]:
+            - generic [ref=e556]: workflow-state
+            - generic [ref=e558]:
+              - generic [ref=e830]:
+                - generic [ref=e831]:
+                  - generic [ref=e832]:
+                    - heading "目標是交付一個可離線運作的背單字系統，涵蓋：瀏覽器 UI 的新增/列出單字、開始測驗與提交答案、顯示本次與累積正確率、資料持久化與重啟延續、啟動與離線依賴檢查，以及可重現的測試與證據追溯。" [level=3] [ref=e833]
+                    - generic [ref=e834]: draft draft-goal-requirements-12951e1876a5 · ready_for_review · b078e4ed95f9
+                  - generic [ref=e835]: rev 1
+                - generic [ref=e836]:
+                  - generic [ref=e837]: "strategy: single-run"
+                  - generic [ref=e838]: "template: auto"
+                - paragraph [ref=e839]: 所有 slice 共用同一 Goal Contract 工作區且後段 slice 需直接消費前段證據 artifact（尤其重啟連續性與最終證據映射）；single-run 可維持同一狀態脈絡與可重現性，降低跨 run 交接漂移。
+                - generic [ref=e840]:
+                  - button "slice-06ba3deba8c926de 1 req · 2 artifact 在離線瀏覽器 UI 完成單字新增與清單顯示，且重新載入後可重現相同資料。 no slice deps 單字 UI 互動層與本地單字持久化資料" [ref=e841] [cursor=pointer]:
+                    - generic [ref=e842]:
+                      - strong [ref=e843]: slice-06ba3deba8c926de
+                      - generic [ref=e844]: 1 req · 2 artifact
+                    - generic [ref=e845]: 在離線瀏覽器 UI 完成單字新增與清單顯示，且重新載入後可重現相同資料。
+                    - generic [ref=e846]:
+                      - generic [ref=e847]: no slice deps
+                      - generic [ref=e848]: 單字 UI 互動層與本地單字持久化資料
+                  - button "slice-a8e3a46959a38a61 1 req · 2 artifact 可由既有單字啟動一輪測驗、提交答案，並保存可讀取的該輪作答紀錄。 after slice-06ba3deba8c926de 測驗流程狀態與測驗作答歷史資料" [ref=e849] [cursor=pointer]:
+                    - generic [ref=e850]:
+                      - strong [ref=e851]: slice-a8e3a46959a38a61
+                      - generic [ref=e852]: 1 req · 2 artifact
+                    - generic [ref=e853]: 可由既有單字啟動一輪測驗、提交答案，並保存可讀取的該輪作答紀錄。
+                    - generic [ref=e854]:
+                      - generic [ref=e855]: after slice-06ba3deba8c926de
+                      - generic [ref=e856]: 測驗流程狀態與測驗作答歷史資料
+                  - button "slice-443f628a6e707eb4 1 req · 2 artifact 提交測驗後顯示本次正確率，並在多次測驗後顯示可重建的累積正確率。 after slice-a8e3a46959a38a61 正確率計算邏輯與跨測驗累積統計狀態" [ref=e857] [cursor=pointer]:
+                    - generic [ref=e858]:
+                      - strong [ref=e859]: slice-443f628a6e707eb4
+                      - generic [ref=e860]: 1 req · 2 artifact
+                    - generic [ref=e861]: 提交測驗後顯示本次正確率，並在多次測驗後顯示可重建的累積正確率。
+                    - generic [ref=e862]:
+                      - generic [ref=e863]: after slice-a8e3a46959a38a61
+                      - generic [ref=e864]: 正確率計算邏輯與跨測驗累積統計狀態
+                  - button "slice-efd4e96bd62cbcd7 1 req · 2 artifact 在無外網條件下完成核心流程，且重啟後單字、測驗歷史與累積統計可延續一致。 after slice-06ba3deba8c926de, slice-a8e3a46959a38a61, slice-443f628a6e707eb4 離線執行環境與重啟後持久化連續性證據" [ref=e865] [cursor=pointer]:
+                    - generic [ref=e866]:
+                      - strong [ref=e867]: slice-efd4e96bd62cbcd7
+                      - generic [ref=e868]: 1 req · 2 artifact
+                    - generic [ref=e869]: 在無外網條件下完成核心流程，且重啟後單字、測驗歷史與累積統計可延續一致。
+                    - generic [ref=e870]:
+                      - generic [ref=e871]: after slice-06ba3deba8c926de, slice-a8e3a46959a38a61, slice-443f628a6e707eb4
+                      - generic [ref=e872]: 離線執行環境與重啟後持久化連續性證據
+                  - button "slice-3f82c0c68b8e0f21 1 req · 2 artifact 提供可執行啟動命令與離線依賴檢查，且重跑結果一致可驗證。 no slice deps 本地啟動流程與離線依賴檢查輸出" [ref=e873] [cursor=pointer]:
+                    - generic [ref=e874]:
+                      - strong [ref=e875]: slice-3f82c0c68b8e0f21
+                      - generic [ref=e876]: 1 req · 2 artifact
+                    - generic [ref=e877]: 提供可執行啟動命令與離線依賴檢查，且重跑結果一致可驗證。
+                    - generic [ref=e878]:
+                      - generic [ref=e879]: no slice deps
+                      - generic [ref=e880]: 本地啟動流程與離線依賴檢查輸出
+                  - button "slice-67bb52121ea6da09 1 req · 2 artifact 提供可重跑且退出碼一致的完整驗證流程，並建立每個阻塞需求對應證據的映射檔。 after slice-06ba3deba8c926de, slice-a8e3a46959a38a61, slice-443f628a6e707eb4, slice-efd4e96bd62cbcd7, slice-3f82c0c68b8e0f21 驗證總控流程與需求對證據映射文件" [ref=e881] [cursor=pointer]:
+                    - generic [ref=e882]:
+                      - strong [ref=e883]: slice-67bb52121ea6da09
+                      - generic [ref=e884]: 1 req · 2 artifact
+                    - generic [ref=e885]: 提供可重跑且退出碼一致的完整驗證流程，並建立每個阻塞需求對應證據的映射檔。
+                    - generic [ref=e886]:
+                      - generic [ref=e887]: after slice-06ba3deba8c926de, slice-a8e3a46959a38a61, slice-443f628a6e707eb4, slice-efd4e96bd62cbcd7, slice-3f82c0c68b8e0f21
+                      - generic [ref=e888]: 驗證總控流程與需求對證據映射文件
+                - button "Confirm & Compose DAG" [ref=e889] [cursor=pointer]
+              - generic [ref=e642]:
+                - generic [ref=e643]:
+                  - generic [ref=e644]:
+                    - generic [ref=e645]: ›
+                    - generic [ref=e646]:
+                      - generic [ref=e647]: Import candidates
+                      - generic [ref=e648]: library-import-goal-b8d22f7611d9d0f033a129126ec0b8f9
+                  - generic [ref=e649]:
+                    - button "Select all candidates" [disabled] [ref=e650]
+                    - button "Unselect all candidates" [disabled] [ref=e654]
+                    - button "Install selected candidates" [disabled] [ref=e657]
+                    - button "Hide candidates" [ref=e661] [cursor=pointer]
+                    - generic [ref=e664]: 0/0 selected
+                    - generic [ref=e665]: Complete blocking-gap proposal · all candidates required
+                - generic [ref=e666]:
+                  - generic [ref=e667]:
+                    - checkbox "Offline UI Persistence Verification Report artifact.offline-ui-persistence-verification-report" [disabled] [ref=e668]
+                    - generic [ref=e669]:
+                      - generic [ref=e670]:
+                        - strong [ref=e671]: Offline UI Persistence Verification Report
+                        - generic [ref=e672]: artifact
+                        - generic [ref=e673]: "0.95"
+                        - generic [ref=e890]: Already installed
+                      - generic [ref=e674]: artifact.offline-ui-persistence-verification-report
+                      - generic [ref=e675]: Confirmed-Goal-validation-gaps.md
+                      - generic [ref=e676]: Covers req-2489f06b9e72 · criterion-23852379f2d8, criterion-5eb99bf1c46a
+                  - generic [ref=e678]:
+                    - checkbox "Reproducible Validation Evidence Map artifact.reproducible-validation-evidence-map" [disabled] [ref=e679]
+                    - generic [ref=e680]:
+                      - generic [ref=e681]:
+                        - strong [ref=e682]: Reproducible Validation Evidence Map
+                        - generic [ref=e683]: artifact
+                        - generic [ref=e684]: "0.96"
+                        - generic [ref=e891]: Already installed
+                      - generic [ref=e685]: artifact.reproducible-validation-evidence-map
+                      - generic [ref=e686]: Confirmed-Goal-validation-gaps.md
+                      - generic [ref=e687]:
+                        - generic [ref=e688]: Covers req-8dd37775dac0 · criterion-9c779a5a0688, criterion-f350da1c79c9
+                        - generic [ref=e689]: Covers req-8dd37775dac0 · criterion-9c779a5a0688, criterion-f350da1c79c9
+                  - generic [ref=e690]:
+                    - checkbox "Software Validation Evidence Integrity Evaluator evaluator.software-validation-evidence-integrity" [disabled] [ref=e691]
+                    - generic [ref=e692]:
+                      - generic [ref=e693]:
+                        - strong [ref=e694]: Software Validation Evidence Integrity Evaluator
+                        - generic [ref=e695]: evaluator
+                        - generic [ref=e696]: "0.94"
+                        - generic [ref=e892]: Already installed
+                      - generic [ref=e697]: evaluator.software-validation-evidence-integrity
+                      - generic [ref=e698]: Confirmed-Goal-validation-gaps.md
+                      - generic [ref=e699]:
+                        - generic [ref=e700]: Covers req-2489f06b9e72 · criterion-23852379f2d8, criterion-5eb99bf1c46a
+                        - generic [ref=e701]: Covers req-8dd37775dac0 · criterion-9c779a5a0688, criterion-f350da1c79c9
+                        - generic [ref=e702]: Covers req-8dd37775dac0 · criterion-9c779a5a0688, criterion-f350da1c79c9
+              - generic [ref=e757]:
+                - generic [ref=e758]:
+                  - generic [ref=e759]: library.import.install.requested
+                  - generic [ref=e760]: "{ \"draftId\": \"library-import-goal-b8d22f7611d9d0f033a129126ec0b8f9\", \"selectedCandidateCount\": 3 }"
+                - generic [ref=e761]:
+                  - generic [ref=e762]: library.progress.keepalive
+                  - generic [ref=e763]: "{ \"phase\": \"library_import_install\", \"draftId\": \"library-import-goal-b8d22f7611d9d0f033a129126ec0b8f9\", \"at\": \"2026-07-14T18:38:08.913Z\" }"
+                - generic [ref=e764]:
+                  - generic [ref=e765]: library.progress.keepalive
+                  - generic [ref=e766]: "{ \"phase\": \"library_import_install\", \"draftId\": \"library-import-goal-b8d22f7611d9d0f033a129126ec0b8f9\", \"at\": \"2026-07-14T18:38:23.913Z\" }"
+                - generic [ref=e767]:
+                  - generic [ref=e768]: library.progress.keepalive
+                  - generic [ref=e769]: "{ \"phase\": \"library_import_install\", \"draftId\": \"library-import-goal-b8d22f7611d9d0f033a129126ec0b8f9\", \"at\": \"2026-07-14T18:38:38.913Z\" }"
+                - generic [ref=e893]:
+                  - generic [ref=e894]: goal_validation_resumed
+                  - generic [ref=e895]: "{ \"ok\": true, \"recoverable\": false, \"draftId\": \"draft-goal-requirements-12951e1876a5\", \"status\": \"ready_for_review\", \"goalDesignPhase\": \"slice_review\", \"resolutionHash\": \"488da47d0b110cf88c1bb3b56fabdbef8951850e20c40d9d543adc47ce8ffb5e\", \"continued\": { \"draftId\": \"draft-goal-requirements-12951e1876a5\", \"status\": \"ready_for_review\", \"phase\": \"slice_review\", \"goalPrompt\": \"完成一個可離線運作的背單字系統：可以新增與列出單字、開始測驗並提交答案、查看本次與累積正確率，需要瀏覽器 UI、持久化資料、啟動與離線依賴檢查，以及可重現的測試與證據。請先產生 Goal Contract、requirements 與 slices，確認後再產生同一張 DAG 執行。\", \"goalRequirementDraftId\": \"draft-goal-requirements-12951e1876a5\", \"goalRequirementDraftHash\": \"12951e1876a58c40a9e140eee1d6fe15b9b2c4a7c2658d51cd17bffe8ec3cb8f\", \"goalContract\": { \"domain\": \"software\", \"intent\": \"完成可離線運作的背單字系統，提供單字管理、測驗作答、正確率檢視、持久化、啟動與離線依賴檢查，以及可重現驗證證據\", \"summary\": \"目標是交付一個可離線運作的背單字系統，涵蓋：瀏覽器 UI 的新增/列出單字、開始測驗與提交答案、顯示本次與累積正確率、資料持久化與重啟延續、啟動與離線依賴檢查，以及可重現的測試與證據追溯。\", \"nonGoals\": [ \"不包含帳號登入、權限管理或多使用者協作功能\", \"不包含雲端同步、遠端資料庫或線上服務部署需求\", \"不包含進階學習演算法（如間隔重複排程）與個人化推薦\" ], \"revision\": 1, \"riskTags\": [ \"offline-ui\", \"storage-consistency\", \"quiz-lifecycle\", \"history-integrity\", \"accuracy-calculation\", \"aggregate-state\", \"offline-runtime\", \"restart-continuity\", \"startup-reliability\", \"dependency-determinism\", \"test-reproducibility\", \"evidence-traceability\" ], \"workType\": \"software_feature\", \"workspace\": { \"cwd\": \"/home/timmypai/apps/southstar-vocab\" }, \"promptHash\": \"e7f3e58d864ebb6cc5a97ed962142c3a296d9ddeaa990776146d1e07d53378d2\", \"assumptions\": [ \"系統以單機單使用者情境為主要目標。\", \"離線運作定義為在依賴已安裝後，核心功能與驗證流程不需對外網路請求。\", \"單字最小資料模型至少包含題目與答案對應欄位。\", \"正確率以正確題數除以已提交總題數計算，並在 UI 顯示可讀格式。\" ], \"requirements\": [ { \"id\": \"req-2489f06b9e72\", \"source\": \"explicit\", \"blocking\": true, \"statement\": \"系統必須提供瀏覽器 UI，讓使用者在離線環境中可以新增單字並列出目前單字清單，且結果可被重新載入後重現。\", \"expectedArtifacts\": [ { \"mediaType\": \"application/json\", \"description\": \"新增與列出單字 UI 流程驗證結果\" }, { \"mediaType\": \"application/json\", \"description\": \"單字持久化快照\" } ], \"acceptanceCriteria\": [ \"在離線狀態下，使用者可完成新增單字並在同一頁清單看見新增結果。\", \"新增後由資料層或介面讀取清單可取得相同資料，且重啟後仍存在。\" ] }, { \"id\": \"req-f0daccf565a5\", \"source\": \"explicit\", \"blocking\": true, \"statement\": \"系統必須支援從既有單字開始一輪測驗，使用者可提交答案並取得該輪作答結果。\", \"expectedArtifacts\": [ { \"mediaType\": \"application/json\", \"description\": \"測驗開始與提交流程測試輸出\" }, { \"mediaType\": \"application/json\", \"description\": \"測驗作答歷史紀錄快照\" } ], \"acceptanceCriteria\": [ \"使用者可在離線環境下完成一輪開始測驗到提交答案的完整流程。\", \"提交後可讀取到該輪測驗作答紀錄，內容與提交資料一致。\" ] }, { \"id\": \"req-8e4ae4cfc92b\", \"source\": \"explicit\", \"blocking\": true, \"statement\": \"系統必須在提交測驗後顯示本次正確率，並提供跨多次測驗累積的正確率。\", \"expectedArtifacts\": [ { \"mediaType\": \"application/json\", \"description\": \"正確率計算與歷史一致性驗證報告\" }, { \"mediaType\": \"application/json\", \"description\": \"跨次測驗累積正確率快照\" } ], \"acceptanceCriteria\": [ \"完成至少兩次測驗後，系統顯示的本次與累積正確率與實際答對題數計算一致。\", \"重整頁面或重新啟動後，累積正確率仍可正確重建並顯示。\" ] }, { \"id\": \"req-12e47e72da03\", \"source\": \"explicit\", \"blocking\": true, \"statement\": \"系統在無外網條件下仍需可完成核心流程，且單字資料、測驗歷史與累積統計在重啟後必須延續。\", \"expectedArtifacts\": [ { \"mediaType\": \"text/plain\", \"description\": \"離線核心流程測試記錄\" }, { \"mediaType\": \"application/json\", \"description\": \"重啟前後持久化資料比對快照\" } ], \"acceptanceCriteria\": [ \"在離線或封網條件下，核心使用流程可完整通過。\", \"重啟後讀取到的單字、測驗歷史與累積統計與重啟前一致。\" ] }, { \"id\": \"req-e4d6e7c1cadd\", \"source\": \"explicit\", \"blocking\": true, \"statement\": \"專案必須提供可執行的啟動命令與離線依賴檢查機制，能在本地輸出可驗證結果。\", \"expectedArtifacts\": [ { \"mediaType\": \"text/plain\", \"description\": \"啟動命令與端點檢查輸出\" }, { \"mediaType\": \"application/json\", \"description\": \"離線依賴檢查重跑結果紀錄\" } ], \"acceptanceCriteria\": [ \"執行啟動命令後可成功存取健康檢查或首頁端點。\", \"離線依賴檢查命令至少連續執行兩次，結果一致且可追溯。\" ] }, { \"id\": \"req-8dd37775dac0\", \"source\": \"explicit\", \"blocking\": true, \"statement\": \"必須提供可重現的測試執行方式與證據映射，能將每個阻塞需求對應到可檢視證據。\", \"expectedArtifacts\": [ { \"mediaType\": \"application/json\", \"description\": \"測試重跑結果與退出碼摘要\" }, { \"mediaType\": \"application/json\", \"description\": \"需求對證據映射文件\" } ], \"acceptanceCriteria\": [ \"完整驗證指令可重跑，兩次執行均產生成功結果且退出碼一致。\", \"存在需求對證據的映射檔，且每個阻塞需求皆有對應證據條目。\" ] } ], \"schemaVersion\": \"southstar.goal_contract.v1\", \"blockingInputs\": [], \"originalPrompt\": \"完成一個可離線運作的背單字系統：可以新增與列出單字、開始測驗並提交答案、查看本次與累積正確率，需要瀏覽器 UI、持久化資料、啟動與離線依賴檢查，以及可重現的測試與證據。請先產生 Goal Contract、requirements 與 slices，確認後再產生同一張 DAG 執行。\", \"expectedArtifactRefs\": [ \"artifact.goal.req-2489f06b9e72.1\", \"artifact.goal.req-2489f06b9e72.2\", \"artifact.goal.req-f0daccf565a5.1\", \"artifact.goal.req-f0daccf565a5.2\", \"artifact.goal.req-8e4ae4cfc92b.1\", \"artifact.goal.req-8e4ae4cfc92b.2\", \"artifact.goal.req-12e47e72da03.1\", \"artifact.goal.req-12e47e72da03.2\", \"artifact.goal.req-e4d6e7c1cadd.1\", \"artifact.goal.req-e4d6e7c1cadd.2\", \"artifact.goal.req-8dd37775dac0.1\", \"artifact.goal.req-8dd37775dac0.2\" ], \"requestedSideEffects\": [ \"建立或修改本地應用程式與瀏覽器 UI 程式碼。\", \"在本地持久化儲存中寫入單字與測驗歷史資料。\", \"啟動本地服務程序以執行啟動與離線檢查。\", \"產出測試日誌、驗證證據與需求對應文件至 artifacts 目錄。\" ], \"requiredCapabilities\": [ \"capability.repo-read\", \"capability.repo-write\", \"capability.vocabulary-corpus-management\", \"capability.study-session-execution\", \"capability.learning-progress-tracking\", \"capability.learning-progress-assessment\", \"capability.local-learning-verification\", \"capability.test-execution\" ] }, \"goalContractHash\": \"e1ccf1098919ef0714f79f0b5e0fdb185d4fbbc35adb940b4ed6a7daff6b1a80\", \"goalDesignPackage\": { \"schemaVersion\": \"southstar.goal_design_package.v2\", \"revision\": 1, \"goalContract\": { \"domain\": \"software\", \"intent\": \"完成可離線運作的背單字系統，提供單字管理、測驗作答、正確率檢視、持久化、啟動與離線依賴檢查，以及可重現驗證證據\", \"summary\": \"目標是交付一個可離線運作的背單字系統，涵蓋：瀏覽器 UI 的新增/列出單字、開始測驗與提交答案、顯示本次與累積正確率、資料持久化與重啟延續、啟動與離線依賴檢查，以及可重現的測試與證據追溯。\", \"nonGoals\": [ \"不包含帳號登入、權限管理或多使用者協作功能\", \"不包含雲端同步、遠端資料庫或線上服務部署需求\", \"不包含進階學習演算法（如間隔重複排程）與個人化推薦\" ], \"revision\": 1, \"riskTags\": [ \"offline-ui\", \"storage-consistency\", \"quiz-lifecycle\", \"history-integrity\", \"accuracy-calculation\", \"aggregate-state\", \"offline-runtime\", \"restart-continuity\", \"startup-reliability\", \"dependency-determinism\", \"test-reproducibility\", \"evidence-traceability\" ], \"workType\": \"software_feature\", \"workspace\": { \"cwd\": \"/home/timmypai/apps/southstar-vocab\" }, \"promptHash\": \"e7f3e58d864ebb6cc5a97ed962142c3a296d9ddeaa990776146d1e07d53378d2\", \"assumptions\": [ \"系統以單機單使用者情境為主要目標。\", \"離線運作定義為在依賴已安裝後，核心功能與驗證流程不需對外網路請求。\", \"單字最小資料模型至少包含題目與答案對應欄位。\", \"正確率以正確題數除以已提交總題數計算，並在 UI 顯示可讀格式。\" ], \"requirements\": [ { \"id\": \"req-2489f06b9e72\", \"source\": \"explicit\", \"blocking\": true, \"statement\": \"系統必須提供瀏覽器 UI，讓使用者在離線環境中可以新增單字並列出目前單字清單，且結果可被重新載入後重現。\", \"expectedArtifacts\": [ { \"mediaType\": \"application/json\", \"description\": \"新增與列出單字 UI 流程驗證結果\" }, { \"mediaType\": \"application/json\", \"description\": \"單字持久化快照\" } ], \"acceptanceCriteria\": [ \"在離線狀態下，使用者可完成新增單字並在同一頁清單看見新增結果。\", \"新增後由資料層或介面讀取清單可取得相同資料，且重啟後仍存在。\" ] }, { \"id\": \"req-f0daccf565a5\", \"source\": \"explicit\", \"blocking\": true, \"statement\": \"系統必須支援從既有單字開始一輪測驗，使用者可提交答案並取得該輪作答結果。\", \"expectedArtifacts\": [ { \"mediaType\": \"application/json\", \"description\": \"測驗開始與提交流程測試輸出\" }, { \"mediaType\": \"application/json\", \"description\": \"測驗作答歷史紀錄快照\" } ], \"acceptanceCriteria\": [ \"使用者可在離線環境下完成一輪開始測驗到提交答案的完整流程。\", \"提交後可讀取到該輪測驗作答紀錄，內容與提交資料一致。\" ] }, { \"id\": \"req-8e4ae4cfc92b\", \"source\": \"explicit\", \"blocking\": true, \"statement\": \"系統必須在提交測驗後顯示本次正確率，並提供跨多次測驗累積的正確率。\", \"expectedArtifacts\": [ { \"mediaType\": \"application/json\", \"description\": \"正確率計算與歷史一致性驗證報告\" }, { \"mediaType\": \"application/json\", \"description\": \"跨次測驗累積正確率快照\" } ], \"acceptanceCriteria\": [ \"完成至少兩次測驗後，系統顯示的本次與累積正確率與實際答對題數計算一致。\", \"重整頁面或重新啟動後，累積正確率仍可正確重建並顯示。\" ] }, { \"id\": \"req-12e47e72da03\", \"source\": \"explicit\", \"blocking\": true, \"statement\": \"系統在無外網條件下仍需可完成核心流程，且單字資料、測驗歷史與累積統計在重啟後必須延續。\", \"expectedArtifacts\": [ { \"mediaType\": \"text/plain\", \"description\": \"離線核心流程測試記錄\" }, { \"mediaType\": \"application/json\", \"description\": \"重啟前後持久化資料比對快照\" } ], \"acceptanceCriteria\": [ \"在離線或封網條件下，核心使用流程可完整通過。\", \"重啟後讀取到的單字、測驗歷史與累積統計與重啟前一致。\" ] }, { \"id\": \"req-e4d6e7c1cadd\", \"source\": \"explicit\", \"blocking\": true, \"statement\": \"專案必須提供可執行的啟動命令與離線依賴檢查機制，能在本地輸出可驗證結果。\", \"expectedArtifacts\": [ { \"mediaType\": \"text/plain\", \"description\": \"啟動命令與端點檢查輸出\" }, { \"mediaType\": \"application/json\", \"description\": \"離線依賴檢查重跑結果紀錄\" } ], \"acceptanceCriteria\": [ \"執行啟動命令後可成功存取健康檢查或首頁端點。\", \"離線依賴檢查命令至少連續執行兩次，結果一致且可追溯。\" ] }, { \"id\": \"req-8dd37775dac0\", \"source\": \"explicit\", \"blocking\": true, \"statement\": \"必須提供可重現的測試執行方式與證據映射，能將每個阻塞需求對應到可檢視證據。\", \"expectedArtifacts\": [ { \"mediaType\": \"application/json\", \"description\": \"測試重跑結果與退出碼摘要\" }, { \"mediaType\": \"application/json\", \"description\": \"需求對證據映射文件\" } ], \"acceptanceCriteria\": [ \"完整驗證指令可重跑，兩次執行均產生成功結果且退出碼一致。\", \"存在需求對證據的映射檔，且每個阻塞需求皆有對應證據條目。\" ] } ], \"schemaVersion\": \"southstar.goal_contract.v1\", \"blockingInputs\": [], \"originalPrompt\": \"完成一個可離線運作的背單字系統：可以新增與列出單字、開始測驗並提交答案、查看本次與累積正確率，需要瀏覽器 UI、持久化資料、啟動與離線依賴檢查，以及可重現的測試與證據。請先產生 Goal Contract、requirements 與 slices，確認後再產生同一張 DAG 執行。\", \"expectedArtifactRefs\": [ \"artifact.goal.req-2489f06b9e72.1\", \"artifact.goal.req-2489f06b9e72.2\", \"artifact.goal.req-f0daccf565a5.1\", \"artifact.goal.req-f0daccf565a5.2\", \"artifact.goal.req-8e4ae4cfc92b.1\", \"artifact.goal.req-8e4ae4cfc92b.2\", \"artifact.goal.req-12e47e72da03.1\", \"artifact.goal.req-12e47e72da03.2\", \"artifact.goal.req-e4d6e7c1cadd.1\", \"artifact.goal.req-e4d6e7c1cadd.2\", \"artifact.goal.req-8dd37775dac0.1\", \"artifact.goal.req-8dd37775dac0.2\" ], \"requestedSideEffects\": [ \"建立或修改本地應用程式與瀏覽器 UI 程式碼。\", \"在本地持久化儲存中寫入單字與測驗歷史資料。\", \"啟動本地服務程序以執行啟動與離線檢查。\", \"產出測試日誌、驗證證據與需求對應文件至 artifacts 目錄。\" ], \"requiredCapabilities\": [ \"capability.repo-read\", \"capability.repo-write\", \"capability.vocabulary-corpus-management\", \"capability.study-session-execution\", \"capability.learning-progress-tracking\", \"capability.learning-progress-assessment\", \"capability.local-learning-verification\", \"capability.test-execution\" ] }, \"requirementDraftHash\": \"12951e1876a58c40a9e140eee1d6fe15b9b2c4a7c2658d51cd17bffe8ec3cb8f\", \"validationBindings\": [ { \"id\": \"binding-022c91bf204f0d6b\", \"criterionIds\": [ \"criterion-5eb99bf1c46a\", \"criterion-23852379f2d8\" ], \"independence\": \"independent\", \"requirementId\": \"req-2489f06b9e72\", \"schemaVersion\": \"southstar.requirement_validation_binding.v1\", \"criterionChecks\": [ { \"criterionId\": \"criterion-5eb99bf1c46a\", \"procedureRef\": \"offline-persistence-evidence-completeness\", \"expectedEvidenceKinds\": [ \"test-result\", \"screenshot\", \"url\" ] }, { \"criterionId\": \"criterion-23852379f2d8\", \"procedureRef\": \"offline-persistence-evidence-completeness\", \"expectedEvidenceKinds\": [ \"command-output\", \"artifact-ref\", \"workspace-snapshot\" ] } ], \"verificationMode\": \"deterministic\", \"acceptanceCriteria\": [ \"在離線狀態下，使用者可完成新增單字並在同一頁清單看見新增結果。\", \"新增後由資料層或介面讀取清單可取得相同資料，且重啟後仍存在。\" ], \"evaluatorProfileRef\": \"evaluator.software-validation-evidence-integrity\", \"artifactContractRefs\": [ \"artifact.offline-ui-persistence-verification-report\" ], \"requiredEvidenceKinds\": [ \"test-result\", \"screenshot\", \"url\", \"command-output\", \"artifact-ref\", \"workspace-snapshot\" ], \"failureClassifications\": [ \"artifact-schema-invalid\", \"missing-required-evidence-kind\", \"offline-persistence-not-proven\", \"rerun-consistency-failed\", \"requirement-evidence-mapping-incomplete\", \"provenance-insufficient\" ], \"evaluatorProfileVersionRef\": \"evaluator.software-validation-evidence-integrity@4e2dbb0e19c8\", \"artifactContractVersionRefs\": [ \"artifact.offline-ui-persistence-verification-report@6b562e9d224c\" ] }, { \"id\": \"binding-4b7bbcd4dcb2c62d\", \"criterionIds\": [ \"criterion-cb838767cc2f\", \"criterion-9dd8dd876630\" ], \"independence\": \"independent\", \"requirementId\": \"req-f0daccf565a5\", \"schemaVersion\": \"southstar.requirement_validation_binding.v1\", \"criterionChecks\": [ { \"criterionId\": \"criterion-cb838767cc2f\", \"procedureRef\": \"deterministic-completeness-and-consistency\", \"expectedEvidenceKinds\": [ \"test-result\", \"screenshot\", \"url\" ] }, { \"criterionId\": \"criterion-9dd8dd876630\", \"procedureRef\": \"deterministic-completeness-and-consistency\", \"expectedEvidenceKinds\": [ \"command-output\", \"artifact-ref\" ] } ], \"verificationMode\": \"deterministic\", \"acceptanceCriteria\": [ \"使用者可在離線環境下完成一輪開始測驗到提交答案的完整流程。\", \"提交後可讀取到該輪測驗作答紀錄，內容與提交資料一致。\" ], \"evaluatorProfileRef\": \"evaluator.vocabulary-offline-runtime-verification\", \"artifactContractRefs\": [ \"artifact.vocabulary-offline-runtime-evidence\" ], \"requiredEvidenceKinds\": [ \"test-result\", \"screenshot\", \"url\", \"command-output\", \"artifact-ref\" ], \"failureClassifications\": [ \"missing-required-evidence-kind\", \"artifact-schema-noncompliance\", \"assessment-flow-not-demonstrated\", \"per-item-correctness-not-verifiable\", \"accuracy-recomputation-mismatch\", \"persistence-restart-continuity-failure\", \"offline-operability-not-proven\", \"startup-or-dependency-check-failure\" ], \"evaluatorProfileVersionRef\": \"evaluator.vocabulary-offline-runtime-verification@1830872c6cf8\", \"artifactContractVersionRefs\": [ \"artifact.vocabulary-offline-runtime-evidence@04f1e2956491\" ] }, { \"id\": \"binding-bbb77c0a0718686b\", \"criterionIds\": [ \"criterion-f4b42614744b\", \"criterion-0dc570ef9b5f\" ], \"independence\": \"independent\", \"requirementId\": \"req-8e4ae4cfc92b\", \"schemaVersion\": \"southstar.requirement_validation_binding.v1\", \"criterionChecks\": [ { \"criterionId\": \"criterion-f4b42614744b\", \"procedureRef\": \"deterministic-completeness-and-consistency\", \"expectedEvidenceKinds\": [ \"test-result\", \"command-output\", \"artifact-ref\" ] }, { \"criterionId\": \"criterion-0dc570ef9b5f\", \"procedureRef\": \"deterministic-completeness-and-consistency\", \"expectedEvidenceKinds\": [ \"workspace-snapshot\", \"artifact-ref\" ] } ], \"verificationMode\": \"deterministic\", \"acceptanceCriteria\": [ \"完成至少兩次測驗後，系統顯示的本次與累積正確率與實際答對題數計算一致。\", \"重整頁面或重新啟動後，累積正確率仍可正確重建並顯示。\" ], \"evaluatorProfileRef\": \"evaluator.vocabulary-offline-runtime-verification\", \"artifactContractRefs\": [ \"artifact.vocabulary-offline-runtime-evidence\" ], \"requiredEvidenceKinds\": [ \"test-result\", \"command-output\", \"artifact-ref\", \"workspace-snapshot\" ], \"failureClassifications\": [ \"missing-required-evidence-kind\", \"artifact-schema-noncompliance\", \"assessment-flow-not-demonstrated\", \"per-item-correctness-not-verifiable\", \"accuracy-recomputation-mismatch\", \"persistence-restart-continuity-failure\", \"offline-operability-not-proven\", \"startup-or-dependency-check-failure\" ], \"evaluatorProfileVersionRef\": \"evaluator.vocabulary-offline-runtime-verification@1830872c6cf8\", \"artifactContractVersionRefs\": [ \"artifact.vocabulary-offline-runtime-evidence@04f1e2956491\" ] }, { \"id\": \"binding-4e7f5758c0b12311\", \"criterionIds\": [ \"criterion-bd50854cdeab\", \"criterion-f01bd84932d6\" ], \"independence\": \"independent\", \"requirementId\": \"req-12e47e72da03\", \"schemaVersion\": \"southstar.requirement_validation_binding.v1\", \"criterionChecks\": [ { \"criterionId\": \"criterion-bd50854cdeab\", \"procedureRef\": \"deterministic-completeness-and-consistency\", \"expectedEvidenceKinds\": [ \"test-result\", \"command-output\" ] }, { \"criterionId\": \"criterion-f01bd84932d6\", \"procedureRef\": \"deterministic-completeness-and-consistency\", \"expectedEvidenceKinds\": [ \"workspace-snapshot\", \"artifact-ref\", \"command-output\" ] } ], \"verificationMode\": \"deterministic\", \"acceptanceCriteria\": [ \"在離線或封網條件下，核心使用流程可完整通過。\", \"重啟後讀取到的單字、測驗歷史與累積統計與重啟前一致。\" ], \"evaluatorProfileRef\": \"evaluator.vocabulary-offline-runtime-verification\", \"artifactContractRefs\": [ \"artifact.vocabulary-offline-runtime-evidence\" ], \"requiredEvidenceKinds\": [ \"test-result\", \"command-output\", \"workspace-snapshot\", \"artifact-ref\" ], \"failureClassifications\": [ \"missing-required-evidence-kind\", \"artifact-schema-noncompliance\", \"assessment-flow-not-demonstrated\", \"per-item-correctness-not-verifiable\", \"accuracy-recomputation-mismatch\", \"persistence-restart-continuity-failure\", \"offline-operability-not-proven\", \"startup-or-dependency-check-failure\" ], \"evaluatorProfileVersionRef\": \"evaluator.vocabulary-offline-runtime-verification@1830872c6cf8\", \"artifactContractVersionRefs\": [ \"artifact.vocabulary-offline-runtime-evidence@04f1e2956491\" ] }, { \"id\": \"binding-8c9adac2a9d0df4a\", \"criterionIds\": [ \"criterion-d23e760fc785\", \"criterion-bfeb38fd837e\" ], \"independence\": \"independent\", \"requirementId\": \"req-e4d6e7c1cadd\", \"schemaVersion\": \"southstar.requirement_validation_binding.v1\", \"criterionChecks\": [ { \"criterionId\": \"criterion-d23e760fc785\", \"procedureRef\": \"procedure.cross-evidence-validation\", \"expectedEvidenceKinds\": [ \"command-output\", \"url\" ] }, { \"criterionId\": \"criterion-bfeb38fd837e\", \"procedureRef\": \"procedure.cross-evidence-validation\", \"expectedEvidenceKinds\": [ \"command-output\", \"artifact-ref\", \"test-result\" ] } ], \"verificationMode\": \"deterministic\", \"acceptanceCriteria\": [ \"執行啟動命令後可成功存取健康檢查或首頁端點。\", \"離線依賴檢查命令至少連續執行兩次，結果一致且可追溯。\" ], \"evaluatorProfileRef\": \"evaluator.software-quality\", \"artifactContractRefs\": [ \"artifact.software-validation-evidence-bundle\" ], \"requiredEvidenceKinds\": [ \"command-output\", \"url\", \"artifact-ref\", \"test-result\" ], \"failureClassifications\": [ \"missing-required-evidence\", \"incompatible-evidence-kind\", \"traceability-mismatch\", \"evidence-integrity-failure\", \"verification-check-failed\" ], \"evaluatorProfileVersionRef\": \"evaluator.software-quality@dfafe5b1306d\", \"artifactContractVersionRefs\": [ \"artifact.software-validation-evidence-bundle@fce302e4c94e\" ] }, { \"id\": \"binding-81d2b35826745f27\", \"criterionIds\": [ \"criterion-f350da1c79c9\", \"criterion-9c779a5a0688\" ], \"independence\": \"independent\", \"requirementId\": \"req-8dd37775dac0\", \"schemaVersion\": \"southstar.requirement_validation_binding.v1\", \"criterionChecks\": [ { \"criterionId\": \"criterion-f350da1c79c9\", \"procedureRef\": \"reproducible-test-and-mapping-consistency\", \"expectedEvidenceKinds\": [ \"test-result\", \"command-output\" ] }, { \"criterionId\": \"criterion-9c779a5a0688\", \"procedureRef\": \"reproducible-test-and-mapping-consistency\", \"expectedEvidenceKinds\": [ \"artifact-ref\", \"workspace-snapshot\", \"file-diff\" ] } ], \"verificationMode\": \"deterministic\", \"acceptanceCriteria\": [ \"完整驗證指令可重跑，兩次執行均產生成功結果且退出碼一致。\", \"存在需求對證據的映射檔，且每個阻塞需求皆有對應證據條目。\" ], \"evaluatorProfileRef\": \"evaluator.software-validation-evidence-integrity\", \"artifactContractRefs\": [ \"artifact.reproducible-validation-evidence-map\" ], \"requiredEvidenceKinds\": [ \"test-result\", \"command-output\", \"artifact-ref\", \"workspace-snapshot\", \"file-diff\" ], \"failureClassifications\": [ \"artifact-schema-invalid\", \"missing-required-evidence-kind\", \"offline-persistence-not-proven\", \"rerun-consistency-failed\", \"requirement-evidence-mapping-incomplete\", \"provenance-insufficient\" ], \"evaluatorProfileVersionRef\": \"evaluator.software-validation-evidence-integrity@4e2dbb0e19c8\", \"artifactContractVersionRefs\": [ \"artifact.reproducible-validation-evidence-map@08b90b46da79\" ] } ], \"slicePlan\": { \"schemaVersion\": \"southstar.goal_slice_plan.v1\", \"goalContractHash\": \"e1ccf1098919ef0714f79f0b5e0fdb185d4fbbc35adb940b4ed6a7daff6b1a80\", \"revision\": 1, \"slices\": [ { \"id\": \"slice-06ba3deba8c926de\", \"requirementIds\": [ \"req-2489f06b9e72\" ], \"outcome\": \"在離線瀏覽器 UI 完成單字新增與清單顯示，且重新載入後可重現相同資料。\", \"stateOrArtifactOwner\": \"單字 UI 互動層與本地單字持久化資料\", \"mutationBoundary\": \"單字新增、清單讀取、重載後資料一致性的同一資料生命周期\", \"expectedArtifactRefs\": [ \"artifact.goal.req-2489f06b9e72.1\", \"artifact.goal.req-2489f06b9e72.2\" ], \"evaluatorContractRefs\": [ \"binding-022c91bf204f0d6b\" ], \"dependsOnSliceIds\": [], \"dependencyArtifactRefs\": [] }, { \"id\": \"slice-a8e3a46959a38a61\", \"requirementIds\": [ \"req-f0daccf565a5\" ], \"outcome\": \"可由既有單字啟動一輪測驗、提交答案，並保存可讀取的該輪作答紀錄。\", \"stateOrArtifactOwner\": \"測驗流程狀態與測驗作答歷史資料\", \"mutationBoundary\": \"單輪測驗 start->submit->history 寫入與讀回的一次原子流程\", \"expectedArtifactRefs\": [ \"artifact.goal.req-f0daccf565a5.1\", \"artifact.goal.req-f0daccf565a5.2\" ], \"evaluatorContractRefs\": [ \"binding-4b7bbcd4dcb2c62d\" ], \"dependsOnSliceIds\": [ \"slice-06ba3deba8c926de\" ], \"dependencyArtifactRefs\": [ \"artifact.goal.req-2489f06b9e72.2\" ] }, { \"id\": \"slice-443f628a6e707eb4\", \"requirementIds\": [ \"req-8e4ae4cfc92b\" ], \"outcome\": \"提交測驗後顯示本次正確率，並在多次測驗後顯示可重建的累積正確率。\", \"stateOrArtifactOwner\": \"正確率計算邏輯與跨測驗累積統計狀態\", \"mutationBoundary\": \"以測驗歷史為唯一來源的本次與累積正確率計算與顯示\", \"expectedArtifactRefs\": [ \"artifact.goal.req-8e4ae4cfc92b.1\", \"artifact.goal.req-8e4ae4cfc92b.2\" ], \"evaluatorContractRefs\": [ \"binding-bbb77c0a0718686b\" ], \"dependsOnSliceIds\": [ \"slice-a8e3a46959a38a61\" ], \"dependencyArtifactRefs\": [ \"artifact.goal.req-f0daccf565a5.2\" ] }, { \"id\": \"slice-efd4e96bd62cbcd7\", \"requirementIds\": [ \"req-12e47e72da03\" ], \"outcome\": \"在無外網條件下完成核心流程，且重啟後單字、測驗歷史與累積統計可延續一致。\", \"stateOrArtifactOwner\": \"離線執行環境與重啟後持久化連續性證據\", \"mutationBoundary\": \"離線核心流程執行、程序重啟、重啟前後資料比對的一次完整連續性驗證\", \"expectedArtifactRefs\": [ \"artifact.goal.req-12e47e72da03.1\", \"artifact.goal.req-12e47e72da03.2\" ], \"evaluatorContractRefs\": [ \"binding-4e7f5758c0b12311\" ], \"dependsOnSliceIds\": [ \"slice-06ba3deba8c926de\", \"slice-a8e3a46959a38a61\", \"slice-443f628a6e707eb4\" ], \"dependencyArtifactRefs\": [ \"artifact.goal.req-2489f06b9e72.2\", \"artifact.goal.req-f0daccf565a5.2\", \"artifact.goal.req-8e4ae4cfc92b.2\" ] }, { \"id\": \"slice-3f82c0c68b8e0f21\", \"requirementIds\": [ \"req-e4d6e7c1cadd\" ], \"outcome\": \"提供可執行啟動命令與離線依賴檢查，且重跑結果一致可驗證。\", \"stateOrArtifactOwner\": \"本地啟動流程與離線依賴檢查輸出\", \"mutationBoundary\": \"啟動命令執行與連續兩次 depcheck 的可重現輸出邊界\", \"expectedArtifactRefs\": [ \"artifact.goal.req-e4d6e7c1cadd.1\", \"artifact.goal.req-e4d6e7c1cadd.2\" ], \"evaluatorContractRefs\": [ \"binding-8c9adac2a9d0df4a\" ], \"dependsOnSliceIds\": [], \"dependencyArtifactRefs\": [] }, { \"id\": \"slice-67bb52121ea6da09\", \"requirementIds\": [ \"req-8dd37775dac0\" ], \"outcome\": \"提供可重跑且退出碼一致的完整驗證流程，並建立每個阻塞需求對應證據的映射檔。\", \"stateOrArtifactOwner\": \"驗證總控流程與需求對證據映射文件\", \"mutationBoundary\": \"完整驗證指令雙次重跑與跨需求證據彙整映射的同一可追溯邊界\", \"expectedArtifactRefs\": [ \"artifact.goal.req-8dd37775dac0.1\", \"artifact.goal.req-8dd37775dac0.2\" ], \"evaluatorContractRefs\": [ \"binding-81d2b35826745f27\" ], \"dependsOnSliceIds\": [ \"slice-06ba3deba8c926de\", \"slice-a8e3a46959a38a61\", \"slice-443f628a6e707eb4\", \"slice-efd4e96bd62cbcd7\", \"slice-3f82c0c68b8e0f21\" ], \"dependencyArtifactRefs\": [ \"artifact.goal.req-2489f06b9e72.1\", \"artifact.goal.req-2489f06b9e72.2\", \"artifact.goal.req-f0daccf565a5.1\", \"artifact.goal.req-f0daccf565a5.2\", \"artifact.goal.req-8e4ae4cfc92b.1\", \"artifact.goal.req-8e4ae4cfc92b.2\", \"artifact.goal.req-12e47e72da03.1\", \"artifact.goal.req-12e47e72da03.2\", \"artifact.goal.req-e4d6e7c1cadd.1\", \"artifact.goal.req-e4d6e7c1cadd.2\" ] } ] }, \"compositionStrategy\": { \"mode\": \"single-run\", \"sliceIds\": [ \"slice-06ba3deba8c926de\", \"slice-a8e3a46959a38a61\", \"slice-443f628a6e707eb4\", \"slice-efd4e96bd62cbcd7\", \"slice-3f82c0c68b8e0f21\", \"slice-67bb52121ea6da09\" ], \"rationale\": \"所有 slice 共用同一 Goal Contract 工作區且後段 slice 需直接消費前段證據 artifact（尤其重啟連續性與最終證據映射）；single-run 可維持同一狀態脈絡與可重現性，降低跨 run 交接漂移。\" }, \"templatePolicy\": { \"mode\": \"auto\" }, \"goalDesignSkillRef\": \"skill.southstar-goal-design\", \"goalDesignSkillVersionRef\": \"skill.southstar-goal-design@132bb1449630\", \"workspaceDiscoveryHash\": \"c993aa716ef05271c3aa617e9303ffb1fe775c7065c5c941240b39cb54476341\", \"mode\": \"review_before_compose\", \"goalContractHash\": \"e1ccf1098919ef0714f79f0b5e0fdb185d4fbbc35adb940b4ed6a7daff6b1a80\", \"validationBindingsHash\": \"0dea575b2fea7b94a1c0161ec630018494b584162540c7e0e01e62d52a4ccc8f\", \"slicePlanHash\": \"a8acdd15a9fc37f0d4b1513d18f56c2f22e4358cefbb1f271802e1a5e6e0b1a6\", \"packageHash\": \"b078e4ed95f905323cc86992bb4c50ea25b7bbee8729369045a56e09ae5419c3\" }, \"goalDesignPackageHash\": \"b078e4ed95f905323cc86992bb4c50ea25b7bbee8729369045a56e09ae5419c3\", \"blockers\": [] } }"
+                - generic [ref=e896]:
+                  - generic [ref=e897]: library.command.completed
+                  - generic [ref=e898]: "{ \"draftId\": \"library-import-goal-b8d22f7611d9d0f033a129126ec0b8f9\", \"status\": \"installed\", \"resumed\": true }"
+            - generic [ref=e703]: 02:22
+        - generic [ref=e713]:
+          - generic [ref=e715]:
+            - textbox "Message… Type / for commands" [ref=e716]
+            - button "Send" [disabled] [ref=e717]
+          - generic [ref=e720]:
+            - generic [ref=e721]:
+              - button "Attach image" [ref=e722] [cursor=pointer]
+              - button "GPT-5.3 Codex" [ref=e728] [cursor=pointer]
+            - generic [ref=e733]:
+              - button "high" [ref=e735] [cursor=pointer]
+              - button "default" [ref=e740] [cursor=pointer]
+              - button "Compact" [ref=e745] [cursor=pointer]
+              - button "关闭完成提示音" [ref=e751] [cursor=pointer]
+    - button "Show sidecar" [ref=e77] [cursor=pointer]
+  - button "Open Next.js Dev Tools" [ref=e85] [cursor=pointer]
+  - alert [ref=e756]

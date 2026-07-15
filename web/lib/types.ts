@@ -125,6 +125,7 @@ export interface GoalRequirementsContent {
   confirmable: boolean;
   validationIssues?: Array<{ path: string; message: string; code?: string }>;
   blockers?: string[];
+  libraryImportDraftId?: string;
 }
 
 export type GoalRequirementSelection = {
@@ -189,6 +190,7 @@ export interface LibraryImportCandidatesContent {
   type: "libraryImportCandidates";
   draftId: string;
   candidates: import("@/lib/library/types").LibraryImportCandidate[];
+  candidateCoverageTargets?: import("@/lib/library/types").LibraryImportCandidateCoverageTarget[];
   proposedEdges?: import("@/lib/library/types").LibraryImportProposedEdge[];
 }
 

@@ -4,12 +4,12 @@ import { useState, useRef, useEffect, useMemo } from "react";
 import { MarkdownBody } from "./MarkdownBody";
 import { WorkflowDagBlock } from "./WorkflowDagBlock";
 import { GoalSlicePlanBlock } from "./GoalSlicePlanBlock";
-import { GoalRequirementListBlock, type GoalRequirementsConfirmation } from "./GoalRequirementListBlock";
+import { GoalRequirementListBlock, type GoalRequirementsConfirmation, type GoalRequirementsConfirmationResult } from "./GoalRequirementListBlock";
 import { LibraryCandidateMessageBlock } from "./library/LibraryCandidateMessageBlock";
 import { LibraryGraphBlock } from "./library/LibraryGraphBlock";
 import type { LibraryGraphChartNode } from "./library/LibraryGraphChart";
 import { runLibraryCandidateInstallCommand } from "@/lib/library/chat-stream";
-import type { LibraryImportCandidate, LibraryImportProposedEdge, LibrarySseFrame } from "@/lib/library/types";
+import type { LibraryImportCandidate, LibraryImportCandidateCoverageTarget, LibraryImportProposedEdge, LibrarySseFrame } from "@/lib/library/types";
 import type {
   AgentMessage,
   UserMessage,
@@ -52,8 +52,11 @@ interface Props {
   onGoalSliceSelect?: (selection: GoalSliceSelection) => void;
   onConfirmGoalDesign?: (selection: GoalSliceSelection) => void;
   onGoalRequirementSelect?: (selection: GoalRequirementSelection) => void;
-  onConfirmRequirements?: (confirmation: GoalRequirementsConfirmation) => void | Promise<GoalRequirementsContent | void>;
+  onConfirmRequirements?: (confirmation: GoalRequirementsConfirmation) => void | Promise<GoalRequirementsConfirmationResult | void>;
   goalRequirementContentOverride?: GoalRequirementsContent | null;
+  goalDesignContentOverride?: GoalDesignContent | null;
+  goalLibraryImportCandidatesOverride?: LibraryImportCandidatesContent | null;
+  onGoalValidationResume?: (value: unknown) => void;
   onGoalContractSelect?: (dag: WorkflowDag) => void;
   onWorkflowGoalRevise?: (dag: WorkflowDag, choice?: string) => void;
   onLibraryGraphNodeSelect?: (node: LibraryGraphChartNode) => void;
@@ -92,12 +95,12 @@ function copyText(text: string): Promise<void> {
   }
 }
 
-export function MessageView({ message, isStreaming, toolResults, modelNames, entryId, onFork, forking, onNavigate, prevAssistantEntryId, onEditContent, showTimestamp, prevTimestamp, workflowCwd, onWorkflowDagNodeSelect, onGoalSliceSelect, onConfirmGoalDesign, onGoalRequirementSelect, onConfirmRequirements, goalRequirementContentOverride, onGoalContractSelect, onWorkflowGoalRevise, onLibraryGraphNodeSelect, onWorkspaceSurfaceChange }: Props) {
+export function MessageView({ message, isStreaming, toolResults, modelNames, entryId, onFork, forking, onNavigate, prevAssistantEntryId, onEditContent, showTimestamp, prevTimestamp, workflowCwd, onWorkflowDagNodeSelect, onGoalSliceSelect, onConfirmGoalDesign, onGoalRequirementSelect, onConfirmRequirements, goalRequirementContentOverride, goalDesignContentOverride, goalLibraryImportCandidatesOverride, onGoalValidationResume, onGoalContractSelect, onWorkflowGoalRevise, onLibraryGraphNodeSelect, onWorkspaceSurfaceChange }: Props) {
   if (message.role === "user") {
     return <UserMessageView message={message as UserMessage} entryId={entryId} onFork={onFork} forking={forking} onNavigate={onNavigate} prevAssistantEntryId={prevAssistantEntryId} onEditContent={onEditContent} />;
   }
   if (message.role === "assistant") {
-    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} workflowCwd={workflowCwd} onWorkflowDagNodeSelect={onWorkflowDagNodeSelect} onGoalSliceSelect={onGoalSliceSelect} onConfirmGoalDesign={onConfirmGoalDesign} onGoalRequirementSelect={onGoalRequirementSelect} onConfirmRequirements={onConfirmRequirements} goalRequirementContentOverride={goalRequirementContentOverride} onGoalContractSelect={onGoalContractSelect} onWorkflowGoalRevise={onWorkflowGoalRevise} onLibraryGraphNodeSelect={onLibraryGraphNodeSelect} onWorkspaceSurfaceChange={onWorkspaceSurfaceChange} />;
+    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} workflowCwd={workflowCwd} onWorkflowDagNodeSelect={onWorkflowDagNodeSelect} onGoalSliceSelect={onGoalSliceSelect} onConfirmGoalDesign={onConfirmGoalDesign} onGoalRequirementSelect={onGoalRequirementSelect} onConfirmRequirements={onConfirmRequirements} goalRequirementContentOverride={goalRequirementContentOverride} goalDesignContentOverride={goalDesignContentOverride} goalLibraryImportCandidatesOverride={goalLibraryImportCandidatesOverride} onGoalValidationResume={onGoalValidationResume} onGoalContractSelect={onGoalContractSelect} onWorkflowGoalRevise={onWorkflowGoalRevise} onLibraryGraphNodeSelect={onLibraryGraphNodeSelect} onWorkspaceSurfaceChange={onWorkspaceSurfaceChange} />;
   }
   if (message.role === "toolResult") {
     // Rendered inline under its toolCall — skip standalone rendering if paired
@@ -321,6 +324,9 @@ function AssistantMessageView({
   onGoalRequirementSelect,
   onConfirmRequirements,
   goalRequirementContentOverride,
+  goalDesignContentOverride,
+  goalLibraryImportCandidatesOverride,
+  onGoalValidationResume,
   onGoalContractSelect,
   onWorkflowGoalRevise,
   onLibraryGraphNodeSelect,
@@ -337,8 +343,11 @@ function AssistantMessageView({
   onGoalSliceSelect?: (selection: GoalSliceSelection) => void;
   onConfirmGoalDesign?: (selection: GoalSliceSelection) => void;
   onGoalRequirementSelect?: (selection: GoalRequirementSelection) => void;
-  onConfirmRequirements?: (confirmation: GoalRequirementsConfirmation) => void | Promise<GoalRequirementsContent | void>;
+  onConfirmRequirements?: (confirmation: GoalRequirementsConfirmation) => void | Promise<GoalRequirementsConfirmationResult | void>;
   goalRequirementContentOverride?: GoalRequirementsContent | null;
+  goalDesignContentOverride?: GoalDesignContent | null;
+  goalLibraryImportCandidatesOverride?: LibraryImportCandidatesContent | null;
+  onGoalValidationResume?: (value: unknown) => void;
   onGoalContractSelect?: (dag: WorkflowDag) => void;
   onWorkflowGoalRevise?: (dag: WorkflowDag, choice?: string) => void;
   onLibraryGraphNodeSelect?: (node: LibraryGraphChartNode) => void;
@@ -502,7 +511,7 @@ function AssistantMessageView({
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {blocks.map((block, i) => (
-          <BlockView key={i} block={block} toolResults={toolResults} isStreaming={isStreaming} streamingDuration={streamingDurations.get(i) ?? (block.type === "thinking" ? thinkingDurationFromFile : undefined)} toolCallDurations={toolCallDurations} workflowCwd={workflowCwd} onWorkflowDagNodeSelect={onWorkflowDagNodeSelect} onGoalSliceSelect={onGoalSliceSelect} onConfirmGoalDesign={onConfirmGoalDesign} onGoalRequirementSelect={onGoalRequirementSelect} onConfirmRequirements={onConfirmRequirements} goalRequirementContentOverride={goalRequirementContentOverride} onGoalContractSelect={onGoalContractSelect} onWorkflowGoalRevise={onWorkflowGoalRevise} onLibraryGraphNodeSelect={onLibraryGraphNodeSelect} onWorkspaceSurfaceChange={onWorkspaceSurfaceChange} />
+          <BlockView key={i} block={block} toolResults={toolResults} isStreaming={isStreaming} streamingDuration={streamingDurations.get(i) ?? (block.type === "thinking" ? thinkingDurationFromFile : undefined)} toolCallDurations={toolCallDurations} workflowCwd={workflowCwd} onWorkflowDagNodeSelect={onWorkflowDagNodeSelect} onGoalSliceSelect={onGoalSliceSelect} onConfirmGoalDesign={onConfirmGoalDesign} onGoalRequirementSelect={onGoalRequirementSelect} onConfirmRequirements={onConfirmRequirements} goalRequirementContentOverride={goalRequirementContentOverride} goalDesignContentOverride={goalDesignContentOverride} goalLibraryImportCandidatesOverride={goalLibraryImportCandidatesOverride} onGoalValidationResume={onGoalValidationResume} onGoalContractSelect={onGoalContractSelect} onWorkflowGoalRevise={onWorkflowGoalRevise} onLibraryGraphNodeSelect={onLibraryGraphNodeSelect} onWorkspaceSurfaceChange={onWorkspaceSurfaceChange} />
         ))}
       </div>
 
@@ -555,7 +564,7 @@ function AssistantMessageView({
   );
 }
 
-function BlockView({ block, toolResults, isStreaming, streamingDuration, toolCallDurations, workflowCwd, onWorkflowDagNodeSelect, onGoalSliceSelect, onConfirmGoalDesign, onGoalRequirementSelect, onConfirmRequirements, goalRequirementContentOverride, onGoalContractSelect, onWorkflowGoalRevise, onLibraryGraphNodeSelect, onWorkspaceSurfaceChange }: { block: AssistantContentBlock; toolResults?: Map<string, ToolResultMessage>; isStreaming?: boolean; streamingDuration?: number; toolCallDurations?: Map<string, number>; workflowCwd?: string | null; onWorkflowDagNodeSelect?: (node: WorkflowDagNode) => void; onGoalSliceSelect?: (selection: GoalSliceSelection) => void; onConfirmGoalDesign?: (selection: GoalSliceSelection) => void; onGoalRequirementSelect?: (selection: GoalRequirementSelection) => void; onConfirmRequirements?: (confirmation: GoalRequirementsConfirmation) => void | Promise<GoalRequirementsContent | void>; goalRequirementContentOverride?: GoalRequirementsContent | null; onGoalContractSelect?: (dag: WorkflowDag) => void; onWorkflowGoalRevise?: (dag: WorkflowDag, choice?: string) => void; onLibraryGraphNodeSelect?: (node: LibraryGraphChartNode) => void; onWorkspaceSurfaceChange?: (surface: WorkspaceSurface) => void }) {
+function BlockView({ block, toolResults, isStreaming, streamingDuration, toolCallDurations, workflowCwd, onWorkflowDagNodeSelect, onGoalSliceSelect, onConfirmGoalDesign, onGoalRequirementSelect, onConfirmRequirements, goalRequirementContentOverride, goalDesignContentOverride, goalLibraryImportCandidatesOverride, onGoalValidationResume, onGoalContractSelect, onWorkflowGoalRevise, onLibraryGraphNodeSelect, onWorkspaceSurfaceChange }: { block: AssistantContentBlock; toolResults?: Map<string, ToolResultMessage>; isStreaming?: boolean; streamingDuration?: number; toolCallDurations?: Map<string, number>; workflowCwd?: string | null; onWorkflowDagNodeSelect?: (node: WorkflowDagNode) => void; onGoalSliceSelect?: (selection: GoalSliceSelection) => void; onConfirmGoalDesign?: (selection: GoalSliceSelection) => void; onGoalRequirementSelect?: (selection: GoalRequirementSelection) => void; onConfirmRequirements?: (confirmation: GoalRequirementsConfirmation) => void | Promise<GoalRequirementsConfirmationResult | void>; goalRequirementContentOverride?: GoalRequirementsContent | null; goalDesignContentOverride?: GoalDesignContent | null; goalLibraryImportCandidatesOverride?: LibraryImportCandidatesContent | null; onGoalValidationResume?: (value: unknown) => void; onGoalContractSelect?: (dag: WorkflowDag) => void; onWorkflowGoalRevise?: (dag: WorkflowDag, choice?: string) => void; onLibraryGraphNodeSelect?: (node: LibraryGraphChartNode) => void; onWorkspaceSurfaceChange?: (surface: WorkspaceSurface) => void }) {
   if (block.type === "text") {
     return <TextBlock block={block as TextContent} isStreaming={isStreaming} />;
   }
@@ -567,8 +576,30 @@ function BlockView({ block, toolResults, isStreaming, streamingDuration, toolCal
   }
   if (block.type === "goalRequirements") {
     const requirementsBlock = block as GoalRequirementsContent;
+    if (goalDesignContentOverride?.draftId === requirementsBlock.draftId) {
+      return <GoalSlicePlanBlock block={goalDesignContentOverride} onSliceSelect={onGoalSliceSelect} onConfirmGoalDesign={onConfirmGoalDesign} />;
+    }
     const override = goalRequirementContentOverride?.draftId === requirementsBlock.draftId ? goalRequirementContentOverride : requirementsBlock;
-    return <GoalRequirementListBlock block={override} onRequirementSelect={onGoalRequirementSelect} onConfirmRequirements={onConfirmRequirements} />;
+    return (
+      <>
+        <GoalRequirementListBlock block={override} onRequirementSelect={onGoalRequirementSelect} onConfirmRequirements={onConfirmRequirements} />
+        {override.libraryImportDraftId && goalLibraryImportCandidatesOverride?.draftId === override.libraryImportDraftId ? (
+          <div style={{ marginTop: 8 }}>
+            <ChatLibraryCandidateBlock
+              key={goalLibraryImportCandidatesOverride.draftId}
+              data={{
+                draftId: goalLibraryImportCandidatesOverride.draftId,
+                candidates: goalLibraryImportCandidatesOverride.candidates,
+                candidateCoverageTargets: goalLibraryImportCandidatesOverride.candidateCoverageTargets,
+                proposedEdges: goalLibraryImportCandidatesOverride.proposedEdges,
+              }}
+              onSelectNode={onLibraryGraphNodeSelect}
+              onGoalValidationResume={onGoalValidationResume}
+            />
+          </div>
+        ) : null}
+      </>
+    );
   }
   if (block.type === "libraryGraph") {
     const libraryGraph = block as LibraryGraphContent;
@@ -576,7 +607,7 @@ function BlockView({ block, toolResults, isStreaming, streamingDuration, toolCal
   }
   if (block.type === "libraryImportCandidates") {
     const candidates = block as LibraryImportCandidatesContent;
-    return <ChatLibraryCandidateBlock data={{ draftId: candidates.draftId, candidates: candidates.candidates, proposedEdges: candidates.proposedEdges }} onSelectNode={onLibraryGraphNodeSelect} />;
+    return <ChatLibraryCandidateBlock key={candidates.draftId} data={{ draftId: candidates.draftId, candidates: candidates.candidates, candidateCoverageTargets: candidates.candidateCoverageTargets, proposedEdges: candidates.proposedEdges }} onSelectNode={onLibraryGraphNodeSelect} onGoalValidationResume={onGoalValidationResume} />;
   }
   if (block.type === "thinking") {
     return <ThinkingBlock block={block as ThinkingContent} duration={streamingDuration} />;
@@ -825,7 +856,7 @@ function SouthstarToolResultBlock({
   return null;
 }
 
-function ChatLibraryCandidateBlock({ data, onSelectNode }: { data: LibraryImportCandidatePayload; onSelectNode?: (node: LibraryGraphChartNode) => void }) {
+function ChatLibraryCandidateBlock({ data, onSelectNode, onGoalValidationResume }: { data: LibraryImportCandidatePayload; onSelectNode?: (node: LibraryGraphChartNode) => void; onGoalValidationResume?: (value: unknown) => void }) {
   const [status, setStatus] = useState<"draft" | "installing" | "installed">("draft");
   const [installedObjectKeys, setInstalledObjectKeys] = useState<string[]>([]);
   const [installFrames, setInstallFrames] = useState<LibrarySseFrame[]>([]);
@@ -844,6 +875,7 @@ function ChatLibraryCandidateBlock({ data, onSelectNode }: { data: LibraryImport
         reason: "Installed from Southstar chat tool result.",
         onFrame(frame) {
           if (frame.event === "library.error") sawStreamError = true;
+          if (frame.event === "goal_validation_resumed") onGoalValidationResume?.(frame.data);
           setInstallFrames((current) => [...current, frame]);
           if ((frame.event === "library.graph.snapshot" || frame.event === "library.ontology.graph") && isLibraryGraphPayload(frame.data)) {
             setInstalledGraph(frame.data);
@@ -872,6 +904,7 @@ function ChatLibraryCandidateBlock({ data, onSelectNode }: { data: LibraryImport
       <LibraryCandidateMessageBlock
         draftId={data.draftId}
         candidates={data.candidates}
+        candidateCoverageTargets={data.candidateCoverageTargets}
         proposedEdges={data.proposedEdges}
         status={status}
         installedObjectKeys={installedObjectKeys}
@@ -968,6 +1001,7 @@ type LibraryGraphPayload = Record<string, unknown> & {
 type LibraryImportCandidatePayload = {
   draftId: string;
   candidates: LibraryImportCandidate[];
+  candidateCoverageTargets?: LibraryImportCandidateCoverageTarget[];
   proposedEdges?: LibraryImportProposedEdge[];
 };
 
@@ -1022,7 +1056,9 @@ function isLibraryImportCandidatePayload(value: Record<string, unknown> | null):
   const candidates = value.candidates.map(toLibraryImportCandidate);
   if (candidates.some((candidate) => candidate === null)) return false;
   value.candidates = candidates;
-  return value.proposedEdges === undefined || (Array.isArray(value.proposedEdges) && value.proposedEdges.every(isLibraryImportProposedEdge));
+  const validCoverage = value.candidateCoverageTargets === undefined
+    || (Array.isArray(value.candidateCoverageTargets) && value.candidateCoverageTargets.every(isLibraryImportCandidateCoverageTarget));
+  return validCoverage && (value.proposedEdges === undefined || (Array.isArray(value.proposedEdges) && value.proposedEdges.every(isLibraryImportProposedEdge)));
 }
 
 function toLibraryImportCandidate(value: unknown): LibraryImportCandidate | null {
@@ -1030,7 +1066,7 @@ function toLibraryImportCandidate(value: unknown): LibraryImportCandidate | null
   if (
     !record
     || typeof record.objectKey !== "string"
-    || (record.kind !== "agent" && record.kind !== "skill" && record.kind !== "mcp" && record.kind !== "tool")
+    || !["agent", "skill", "mcp", "tool", "domain", "capability", "artifact", "evaluator"].includes(String(record.kind))
     || typeof record.title !== "string"
     || typeof record.scope !== "string"
   ) {
@@ -1038,7 +1074,7 @@ function toLibraryImportCandidate(value: unknown): LibraryImportCandidate | null
   }
   return {
     objectKey: record.objectKey,
-    kind: record.kind,
+    kind: record.kind as LibraryImportCandidate["kind"],
     title: record.title,
     scope: record.scope,
     ...(typeof record.domain === "string" ? { domain: record.domain } : {}),
@@ -1048,6 +1084,18 @@ function toLibraryImportCandidate(value: unknown): LibraryImportCandidate | null
     selectedByDefault: typeof record.selectedByDefault === "boolean" ? record.selectedByDefault : true,
     ...(typeof record.confidence === "number" ? { confidence: record.confidence } : {}),
   };
+}
+
+function isLibraryImportCandidateCoverageTarget(value: unknown): value is LibraryImportCandidateCoverageTarget {
+  const record = asRecord(value);
+  return Boolean(
+    record
+    && typeof record.candidateObjectKey === "string"
+    && typeof record.gapRef === "string"
+    && typeof record.requirementId === "string"
+    && Array.isArray(record.criterionIds)
+    && record.criterionIds.every((criterionId) => typeof criterionId === "string")
+  );
 }
 
 function isLibraryImportProposedEdge(value: unknown): value is LibraryImportProposedEdge {

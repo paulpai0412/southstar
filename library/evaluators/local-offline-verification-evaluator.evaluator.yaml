@@ -1,0 +1,53 @@
+schemaVersion: southstar.library.evaluator_profile_file.v1
+id: evaluator.local-offline-verification-evaluator
+title: "Local Offline Verification Evaluator"
+scope: "software"
+status: approved
+validatesArtifactRefs:
+  - "artifact.local-offline-verification-evidence"
+requiredInputs:
+  - "artifact.local-offline-verification-evidence instance"
+  - "command-output evidence"
+  - "file-diff evidence"
+  - "test-result evidence"
+  - "policy-decision evidence"
+  - "workspace-snapshot evidence"
+evidenceKinds:
+  - "command-output"
+  - "file-diff"
+  - "test-result"
+  - "policy-decision"
+  - "workspace-snapshot"
+verificationModes:
+  - "deterministic"
+  - "semantic_review"
+verificationProcedures:
+  - id: "local-verification-completeness"
+    checkKind: "deterministic"
+    instruction: "Verify automated tests and local verification outputs cover blocking behaviors and pass in local execution."
+    allowedEvidenceKinds:
+      - "command-output"
+      - "file-diff"
+      - "test-result"
+      - "policy-decision"
+      - "workspace-snapshot"
+  - id: "offline-only-conformance"
+    checkKind: "semantic_review"
+    instruction: "Verify policy and workspace evidence demonstrate core product outcomes run without external services or network integrations."
+    allowedEvidenceKinds:
+      - "policy-decision"
+      - "workspace-snapshot"
+      - "file-diff"
+      - "command-output"
+      - "test-result"
+independencePolicy: "independent"
+resultSchemaRef: "southstar.requirement_evaluator_result.v2"
+failureClassifications:
+  - "artifact-schema-nonconformance"
+  - "missing-required-evidence"
+  - "test-traceability-incomplete"
+  - "local-verification-failed"
+  - "offline-conformance-not-demonstrated"
+importDraftId: "library-import-goal-72ff3dbbd140eea225fa74f6569ce9af"
+importCandidateKey: "evaluator.local-offline-verification-evaluator"
+importSourcePath: "Confirmed-Goal-validation-gaps.md"

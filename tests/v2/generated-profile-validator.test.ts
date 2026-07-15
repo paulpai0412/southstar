@@ -166,7 +166,7 @@ test("generated profile validator rejects missing required instruction refs", as
   }
 });
 
-test("generated profile validator rejects skills not supported by the selected agent", async () => {
+test("generated profile validator allows independently approved agents and skills to be composed", async () => {
   const db = await createTestPostgresDb();
   try {
     await seedPrimitive(db, "agent.frontend-developer", "agent_definition");
@@ -182,8 +182,8 @@ test("generated profile validator rejects skills not supported by the selected a
       instructionRefs: [],
     });
 
-    assert.equal(result.ok, false);
-    assert.equal(result.issues[0]?.code, "agent_does_not_use_skill");
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.issues, []);
   } finally {
     await db.close();
   }
@@ -214,7 +214,7 @@ test("generated profile validator rejects wrong-kind and unapproved instruction 
   }
 });
 
-test("generated profile validator rejects approved refs outside profile scope", async () => {
+test("generated profile validator treats scope as taxonomy instead of a permission boundary", async () => {
   const db = await createTestPostgresDb();
   try {
     await seedPrimitive(db, "agent.frontend-developer", "agent_definition");
@@ -230,14 +230,14 @@ test("generated profile validator rejects approved refs outside profile scope", 
       instructionRefs: [],
     });
 
-    assert.equal(result.ok, false);
-    assert.equal(result.issues[0]?.code, "out_of_scope_ref");
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.issues, []);
   } finally {
     await db.close();
   }
 });
 
-test("graph profile candidate resolver returns approved scoped primitives", async () => {
+test("graph profile candidate resolver returns approved runtime-backed primitives across taxonomy scopes", async () => {
   const db = await createTestPostgresDb();
   try {
     await seedPrimitive(db, "agent.frontend-developer", "agent_definition");
@@ -258,7 +258,7 @@ test("graph profile candidate resolver returns approved scoped primitives", asyn
       agents: ["agent.frontend-developer"],
       skills: ["skill.react-ui"],
       tools: ["tool.workspace-write"],
-      mcpGrants: ["mcp.filesystem-workspace"],
+      mcpGrants: [],
     });
   } finally {
     await db.close();
@@ -269,7 +269,7 @@ async function seedPrimitive(db: any, objectKey: string, objectKind: any, scope 
   const runtimeState = objectKind === "skill_spec"
     ? { body: "# Instructions\n\nBuild React UI." }
     : objectKind === "tool_definition"
-      ? { toolName: "workspace-write", proxyToolName: "workspace-write-proxy" }
+      ? { runtimeToolNames: ["edit", "write"] }
       : objectKind === "mcp_tool_grant"
         ? { serverId: "filesystem-workspace", allowedTools: ["read_file", "write_file"] }
         : objectKind === "instruction_template"

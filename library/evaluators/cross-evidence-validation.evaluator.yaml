@@ -1,0 +1,61 @@
+schemaVersion: southstar.library.evaluator_profile_file.v1
+id: evaluator.cross-evidence-validation
+title: "Cross-Evidence Requirement Evaluator"
+scope: "software"
+status: approved
+validatesArtifactRefs:
+  - "artifact.evidence-bundle-cross-validation"
+requiredInputs:
+  - "requirementContract"
+  - "criteriaSet"
+  - "artifact.evidence-bundle-cross-validation"
+evidenceKinds:
+  - "artifact-ref"
+  - "file-diff"
+  - "human-approval"
+  - "test-result"
+  - "command-output"
+  - "policy-decision"
+verificationModes:
+  - "deterministic"
+  - "semantic_review"
+  - "human_approval"
+verificationProcedures:
+  - id: "structure-and-coverage-check"
+    checkKind: "deterministic"
+    instruction: "Verify required fields, provenance metadata presence, and that each targeted criterion is linked to compatible evidence kinds in the artifact bundle."
+    allowedEvidenceKinds:
+      - "artifact-ref"
+      - "file-diff"
+      - "human-approval"
+      - "test-result"
+      - "command-output"
+      - "policy-decision"
+  - id: "cross-evidence-validation"
+    checkKind: "semantic_review"
+    instruction: "Assess consistency across evidence types by confirming that diffs, execution outputs, approvals, and policy decisions do not conflict and collectively substantiate requirement criteria outcomes."
+    allowedEvidenceKinds:
+      - "artifact-ref"
+      - "file-diff"
+      - "human-approval"
+      - "test-result"
+      - "command-output"
+      - "policy-decision"
+  - id: "independent-decision-attestation"
+    checkKind: "human_approval"
+    instruction: "Require an independent reviewer attestation when human-approval or policy-decision evidence is part of the validation basis."
+    allowedEvidenceKinds:
+      - "human-approval"
+      - "policy-decision"
+      - "artifact-ref"
+independencePolicy: "independent"
+resultSchemaRef: "southstar.requirement_evaluator_result.v2"
+failureClassifications:
+  - "missing-required-evidence-kind"
+  - "unsupported-evidence-kind"
+  - "insufficient-provenance"
+  - "cross-evidence-conflict"
+  - "independence-attestation-missing"
+importDraftId: "library-import-goal-55c8d0263d45e35ba0deaf192c9ab755"
+importCandidateKey: "evaluator.cross-evidence-validation"
+importSourcePath: "Confirmed-Goal-validation-gaps.md"

@@ -4,6 +4,18 @@ title: Implementation Report
 scope: software
 status: approved
 artifactType: implementation_report
+mediaTypes:
+  - application/json
+schemaRef: schema.implementation-report.v1
+requiredFields:
+  - status
+  - changes
+  - evidenceRefs
+validationRules:
+  - rule.implementation-changes-non-empty
+  - rule.implementation-evidence-resolvable
 evidenceKinds:
   - artifact-ref
   - file-diff
+provenanceRequirements:
+  - workspace-change-set

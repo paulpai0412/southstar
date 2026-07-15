@@ -1,6 +1,8 @@
 import {
   type LibraryImportCandidate,
+  type LibraryImportCandidateCoverageTarget,
   type LibraryImportCandidateKind,
+  type LibraryImportCoverageConstraint,
   type LibraryImportEdgeType,
   type LibraryImportProposedEdge,
 } from "./library-candidate-extractor.ts";
@@ -18,6 +20,7 @@ import {
   normalizeLibraryImportCandidateKindFields,
   REQUIREMENT_EVALUATOR_RESULT_SCHEMA_REF,
 } from "./library-import-candidate-schema.ts";
+import { PI_RUNTIME_TOOL_NAMES } from "../../harness/pi-runtime-tools.ts";
 export { LIBRARY_VALIDATION_EVIDENCE_KINDS, LIBRARY_VERIFICATION_MODES } from "./library-import-candidate-schema.ts";
 
 const ALLOWED_ONTOLOGY_EDGE_TYPES: LibraryImportEdgeType[] = [
@@ -56,9 +59,15 @@ export type LibraryImportLlmProvider = (input: {
 
 export type LibraryImportLlmAnalysisResult = {
   candidates: LibraryImportCandidate[];
+  candidateCoverageTargets: LibraryImportCandidateCoverageTarget[];
   proposedEdges: LibraryImportProposedEdge[];
   piSessionId?: string;
 };
+
+export type LibraryImportProposalValidator = (proposal: {
+  candidates: LibraryImportCandidate[];
+  candidateCoverageTargets: LibraryImportCandidateCoverageTarget[];
+}) => void | Promise<void>;
 
 export type LibraryImportOntologyAnalysisResult = {
   proposedEdges: LibraryImportProposedEdge[];
@@ -94,9 +103,18 @@ export async function analyzeLibraryImportWithLlm(input: {
   llmProvider?: LibraryImportLlmProvider;
   requestPrompt?: string;
   sourceRepoPath?: string;
+  coverageConstraints?: LibraryImportCoverageConstraint[];
+  maxRepairAttempts?: number;
+  proposalValidator?: LibraryImportProposalValidator;
+  progress?: (progress: { event: string; data: Record<string, unknown> }) => void;
 }): Promise<LibraryImportLlmAnalysisResult> {
   const result = await analyzeLibraryImportCandidateResultWithLlm(input);
-  return { candidates: result.candidates, proposedEdges: [], ...(result.piSessionId ? { piSessionId: result.piSessionId } : {}) };
+  return {
+    candidates: result.candidates,
+    candidateCoverageTargets: result.candidateCoverageTargets,
+    proposedEdges: [],
+    ...(result.piSessionId ? { piSessionId: result.piSessionId } : {}),
+  };
 }
 
 export async function analyzeLibraryImportCandidatesWithLlm(input: {
@@ -105,6 +123,10 @@ export async function analyzeLibraryImportCandidatesWithLlm(input: {
   llmProvider?: LibraryImportLlmProvider;
   requestPrompt?: string;
   sourceRepoPath?: string;
+  coverageConstraints?: LibraryImportCoverageConstraint[];
+  maxRepairAttempts?: number;
+  proposalValidator?: LibraryImportProposalValidator;
+  progress?: (progress: { event: string; data: Record<string, unknown> }) => void;
 }): Promise<LibraryImportCandidate[]> {
   return (await analyzeLibraryImportCandidateResultWithLlm(input)).candidates;
 }
@@ -115,30 +137,72 @@ export async function analyzeLibraryImportCandidateResultWithLlm(input: {
   llmProvider?: LibraryImportLlmProvider;
   requestPrompt?: string;
   sourceRepoPath?: string;
-}): Promise<{ candidates: LibraryImportCandidate[]; piSessionId?: string }> {
+  coverageConstraints?: LibraryImportCoverageConstraint[];
+  maxRepairAttempts?: number;
+  proposalValidator?: LibraryImportProposalValidator;
+  progress?: (progress: { event: string; data: Record<string, unknown> }) => void;
+}): Promise<{ candidates: LibraryImportCandidate[]; candidateCoverageTargets: LibraryImportCandidateCoverageTarget[]; piSessionId?: string }> {
   if (!input.llmProvider) {
     throw new Error("library import analysis requires an LLM provider");
   }
 
-  const raw = await input.llmProvider({
-    scope: input.scope,
-    documents: input.documents,
+  const basePrompt = buildLibraryImportCandidatePrompt(input.documents, input.scope, {
     requestPrompt: input.requestPrompt,
     sourceRepoPath: input.sourceRepoPath,
-    prompt: buildLibraryImportCandidatePrompt(input.documents, input.scope, {
+    coverageConstraints: input.coverageConstraints,
+  });
+  const maxRepairAttempts = normalizedRepairAttempts(input.maxRepairAttempts);
+  let prompt = basePrompt;
+  let previousOutput: unknown;
+  let previousIssue = "";
+  for (let attempt = 0; attempt <= maxRepairAttempts; attempt += 1) {
+    input.progress?.({
+      event: attempt === 0 ? "library.import.candidates.llm.started" : "library.import.candidates.repair.started",
+      data: { attempt: attempt + 1, maxAttempts: maxRepairAttempts + 1, ...(previousIssue ? { previousIssue } : {}) },
+    });
+    const raw = await input.llmProvider({
+      scope: input.scope,
+      documents: input.documents,
       requestPrompt: input.requestPrompt,
       sourceRepoPath: input.sourceRepoPath,
-    }),
-  });
-  const unwrapped = unwrapLibraryImportLlmOutput(raw);
-  const analysis = normalizeLlmImportAnalysis(unwrapped.output, {
-    scope: input.scope,
-    sourcePaths: new Set(input.documents.map((document) => document.path)),
-  });
-  return {
-    candidates: analysis.candidates,
-    ...(unwrapped.piSessionId ? { piSessionId: unwrapped.piSessionId } : {}),
-  };
+      prompt,
+    });
+    const unwrapped = unwrapLibraryImportLlmOutput(raw);
+    previousOutput = unwrapped.output;
+    try {
+      const analysis = normalizeLlmImportAnalysis(unwrapped.output, {
+        scope: input.scope,
+        sourcePaths: new Set(input.documents.map((document) => document.path)),
+        coverageConstraints: input.coverageConstraints,
+      });
+      await input.proposalValidator?.({
+        candidates: analysis.candidates,
+        candidateCoverageTargets: analysis.candidateCoverageTargets,
+      });
+      input.progress?.({
+        event: "library.import.candidates.validated",
+        data: {
+          attempt: attempt + 1,
+          candidateCount: analysis.candidates.length,
+          coverageTargetCount: analysis.candidateCoverageTargets.length,
+        },
+      });
+      return {
+        candidates: analysis.candidates,
+        candidateCoverageTargets: analysis.candidateCoverageTargets,
+        ...(unwrapped.piSessionId ? { piSessionId: unwrapped.piSessionId } : {}),
+      };
+    } catch (error) {
+      previousIssue = error instanceof Error ? error.message : String(error);
+      input.progress?.({
+        event: "library.import.candidates.validation_failed",
+        data: { attempt: attempt + 1, issue: previousIssue, repairable: attempt < maxRepairAttempts },
+      });
+      if (attempt >= maxRepairAttempts) throw error;
+      prompt = buildLibraryImportRepairPrompt(basePrompt, previousOutput, previousIssue);
+    }
+  }
+  throw new Error("library import candidate analysis exhausted without a validated proposal");
 }
 
 export async function analyzeLibraryImportOntologyWithLlm(input: {
@@ -196,7 +260,7 @@ export async function analyzeLibraryImportOntologyResultWithLlm(input: {
 export function buildLibraryImportAnalysisPrompt(
   documents: LibraryImportSourceDocument[],
   scope: string,
-  options: { requestPrompt?: string; sourceRepoPath?: string } = {},
+  options: { requestPrompt?: string; sourceRepoPath?: string; coverageConstraints?: LibraryImportCoverageConstraint[] } = {},
 ): string {
   return buildLibraryImportCandidatePrompt(documents, scope, options);
 }
@@ -204,7 +268,7 @@ export function buildLibraryImportAnalysisPrompt(
 export function buildLibraryImportCandidatePrompt(
   documents: LibraryImportSourceDocument[],
   scope: string,
-  options: { requestPrompt?: string; sourceRepoPath?: string } = {},
+  options: { requestPrompt?: string; sourceRepoPath?: string; coverageConstraints?: LibraryImportCoverageConstraint[] } = {},
 ): string {
   const manifest = documents.map((document) => `- ${document.path}: ${document.label}`).join("\n");
   const excerpts = renderDocumentExcerpts(documents);
@@ -218,14 +282,29 @@ export function buildLibraryImportCandidatePrompt(
       "Use this local repository path as the primary source of truth. Inspect the repository contents yourself before selecting candidates. Do not rely on path names alone.",
     ].join("\n")
     : "";
+  const coverageConstraints = options.coverageConstraints ?? [];
+  const coverageSection = coverageConstraints.length > 0
+    ? [
+      "GoalValidationCoverageConstraints:",
+      JSON.stringify(coverageConstraints),
+      "This is one complete proposal for the current validation resolution. Return candidateCoverageTargets with one or more entries for every constraint where blocking=true.",
+      "Treat requirementStatement, criterionStatements, expectedOutcomeArtifacts, and verificationIntent in each constraint as authoritative semantic requirements. They are included here so no Requirement meaning depends on a truncated source excerpt.",
+      "Each target must use an exact candidateObjectKey from candidates, exact gapRef and requirementId from GoalValidationCoverageConstraints, and criterionIds drawn only from that constraint. Across the targets for a blocking gap, cover every criterionId in that constraint.",
+      "For every blocking Requirement, the targeted candidates must contain a complete compatible artifact/evaluator pair. Both contracts and at least one evaluator procedure must cover all requiredEvidenceKinds for that Requirement, and the evaluator validatesArtifactRefs must include the targeted artifact objectKey.",
+      "Coverage is validated by running the same Goal Validation resolver used after installation. A target is not proof by itself: artifactType, schemaRef, requiredFields, validationRules, evaluator inputs, and procedure instructions must be semantically capable of verifying the supplied Requirement and criteria.",
+      "Do not use a generic evidence bundle as a catch-all when the confirmed Requirement explicitly requires a domain outcome or a domain-specific persisted artifact. Reuse an existing compatible contract when possible; otherwise propose the narrowest reusable domain contract that actually exposes the required outcome.",
+      "Every proposed candidate must have at least one target. One reusable candidate may target multiple constraints. Do not copy these Goal-specific ids into candidate contract fields.",
+    ].join("\n")
+    : "Do not return candidateCoverageTargets for a general Library import that has no GoalValidationCoverageConstraints.";
   return [
     "Classify the requested repository/library source into Southstar library candidates.",
     "Return exactly one JSON object. No markdown, comments, or prose outside JSON.",
-    "Use this shape: {\"candidates\":[{\"objectKey\":\"agent.example\",\"kind\":\"agent\",\"title\":\"Example\",\"scope\":\"engineering\",\"sourcePath\":\"relative/path.md\",\"selectedByDefault\":true,\"confidence\":0.9,\"classificationReason\":\"...\"}]}",
+    "Use this shape: {\"candidates\":[{\"objectKey\":\"agent.example\",\"kind\":\"agent\",\"title\":\"Example\",\"scope\":\"engineering\",\"sourcePath\":\"relative/path.md\",\"selectedByDefault\":true,\"confidence\":0.9,\"classificationReason\":\"...\"}],\"candidateCoverageTargets\":[{\"candidateObjectKey\":\"artifact.example\",\"gapRef\":\"gap-...\",\"requirementId\":\"R1\",\"criterionIds\":[\"AC1\"]}]}",
     "Allowed candidate kinds: agent, skill, mcp, tool, domain, capability, artifact, evaluator.",
     "objectKey prefixes must match kind: agent.<slug>, skill.<slug>, mcp.<slug>, tool.<slug>, domain.<slug>, capability.<slug>, artifact.<slug>, evaluator.<slug>.",
     "For agent, skill, mcp, and tool candidates, domain must be one canonical domain key from CanonicalDomainTaxonomy. Do not invent domains and do not use software unless it appears in the taxonomy.",
     "Vocabulary candidate schemas are strict; omit fields that are not listed for that kind.",
+    `tool requires operations:string[] and runtimeToolNames:string[]. runtimeToolNames values must be executable Pi tool names selected only from: ${PI_RUNTIME_TOOL_NAMES.join(", ")}. If the source does not establish a real mapping to one of those runtime tools, do not propose a tool candidate.`,
     "domain may include aliases:string[]. capability requires description:string and requiredOperations:string[].",
     "artifact requires artifactType:string, mediaTypes:string[], evidenceKinds:string[], validationRules:string[], schemaRef:string, requiredFields:string[], and provenanceRequirements:string[].",
     `evaluator requires validatesArtifactRefs:string[], requiredInputs:string[], evidenceKinds:string[], verificationModes:string[], verificationProcedures:{id:string,checkKind:string,instruction:string,allowedEvidenceKinds:string[]}[], independencePolicy:'independent', resultSchemaRef:'${REQUIREMENT_EVALUATOR_RESULT_SCHEMA_REF}', and failureClassifications:string[].`,
@@ -241,6 +320,7 @@ export function buildLibraryImportCandidatePrompt(
     "If the source is a skill repository, return one skill candidate per real skills/<slug>/SKILL.md definition using objectKey skill.<slug> and that SKILL.md as sourcePath. Do not collapse many skills into a summary candidate.",
     "For large repositories, first inspect repository catalog/index/list documents when present, then inspect representative linked definitions as needed before returning JSON.",
     "Treat LocalRepositoryPath as read-only for this analysis. Do not create, edit, delete, or install files while analyzing candidates.",
+    coverageSection,
     `Scope: ${scope}`,
     requestSection,
     repoPathSection,
@@ -337,15 +417,118 @@ function normalizeExcerpt(content: string): string {
 
 function normalizeLlmImportAnalysis(
   raw: unknown,
-  options: { scope: string; sourcePaths: Set<string> },
-): { candidates: LibraryImportCandidate[]; proposedEdges: LibraryImportProposedEdge[] } {
+  options: { scope: string; sourcePaths: Set<string>; coverageConstraints?: LibraryImportCoverageConstraint[] },
+): { candidates: LibraryImportCandidate[]; candidateCoverageTargets: LibraryImportCandidateCoverageTarget[]; proposedEdges: LibraryImportProposedEdge[] } {
   const value = typeof raw === "string" ? safeJsonParse(raw) : raw;
   if (!isRecord(value)) throw new Error("library import analysis must be a JSON object");
   const record = value;
   const candidates = normalizeLibraryImportCandidates(record.candidates, options);
   const candidateKeys = new Set(candidates.map((candidate) => candidate.objectKey));
+  const candidateCoverageTargets = normalizeLibraryImportCoverageTargets(
+    record.candidateCoverageTargets,
+    candidates,
+    options.coverageConstraints ?? [],
+  );
   const proposedEdges = normalizeEdges(edgeArrayFromRecord(record), candidateKeys);
-  return { candidates, proposedEdges };
+  return { candidates, candidateCoverageTargets, proposedEdges };
+}
+
+export function normalizeLibraryImportCoverageTargets(
+  value: unknown,
+  candidates: LibraryImportCandidate[],
+  constraints: LibraryImportCoverageConstraint[],
+): LibraryImportCandidateCoverageTarget[] {
+  if (constraints.length === 0) {
+    if (value !== undefined && (!Array.isArray(value) || value.length > 0)) {
+      throw new Error("general Library imports must not contain Goal-specific candidateCoverageTargets");
+    }
+    return [];
+  }
+  if (!Array.isArray(value)) throw new Error("Goal-linked Library import must contain candidateCoverageTargets");
+  const candidateKeys = new Set(candidates.map((candidate) => candidate.objectKey));
+  const constraintsByRef = new Map(constraints.map((constraint) => [constraint.gapRef, constraint]));
+  const targets: LibraryImportCandidateCoverageTarget[] = [];
+  const seen = new Set<string>();
+  for (const [index, item] of value.entries()) {
+    if (!isRecord(item)) throw new Error(`candidateCoverageTargets.${index} must be an object`);
+    const keys = Object.keys(item);
+    const unsupported = keys.filter((key) => !["candidateObjectKey", "gapRef", "requirementId", "criterionIds"].includes(key));
+    if (unsupported.length > 0) throw new Error(`candidateCoverageTargets.${index} contains unsupported fields: ${unsupported.join(", ")}`);
+    const candidateObjectKey = requiredString(item.candidateObjectKey, `candidateCoverageTargets.${index}.candidateObjectKey`);
+    const gapRef = requiredString(item.gapRef, `candidateCoverageTargets.${index}.gapRef`);
+    const requirementId = requiredString(item.requirementId, `candidateCoverageTargets.${index}.requirementId`);
+    const criterionIds = strictStringArray(item.criterionIds, `candidateCoverageTargets.${index}.criterionIds`);
+    if (!candidateKeys.has(candidateObjectKey)) throw new Error(`candidateCoverageTargets.${index} references unknown candidate ${candidateObjectKey}`);
+    const constraint = constraintsByRef.get(gapRef);
+    if (!constraint) throw new Error(`candidateCoverageTargets.${index} references unknown gap ${gapRef}`);
+    if (requirementId !== constraint.requirementId) throw new Error(`candidateCoverageTargets.${index} requirementId does not match ${gapRef}`);
+    const allowedCriteria = new Set(constraint.criterionIds);
+    const unsupportedCriteria = criterionIds.filter((criterionId) => !allowedCriteria.has(criterionId));
+    if (unsupportedCriteria.length > 0) throw new Error(`candidateCoverageTargets.${index} references unsupported criteria: ${unsupportedCriteria.join(", ")}`);
+    const key = `${candidateObjectKey}\u0000${gapRef}\u0000${criterionIds.slice().sort().join("\u0000")}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    targets.push({ candidateObjectKey, gapRef, requirementId, criterionIds: [...new Set(criterionIds)].sort() });
+  }
+  const targetedCandidates = new Set(targets.map((target) => target.candidateObjectKey));
+  const untargetedCandidates = candidates.filter((candidate) => !targetedCandidates.has(candidate.objectKey));
+  if (untargetedCandidates.length > 0) {
+    throw new Error(`Goal-linked Library import contains candidates without coverage targets: ${untargetedCandidates.map((candidate) => candidate.objectKey).join(", ")}`);
+  }
+  const targetedGaps = new Set(targets.map((target) => target.gapRef));
+  const uncoveredBlocking = constraints.filter((constraint) => constraint.blocking && !targetedGaps.has(constraint.gapRef));
+  if (uncoveredBlocking.length > 0) {
+    throw new Error(`Goal-linked Library import does not cover blocking gaps: ${uncoveredBlocking.map((constraint) => constraint.gapRef).join(", ")}`);
+  }
+  for (const constraint of constraints.filter((item) => item.blocking)) {
+    const coveredCriteria = new Set(targets.filter((target) => target.gapRef === constraint.gapRef).flatMap((target) => target.criterionIds));
+    const uncoveredCriteria = constraint.criterionIds.filter((criterionId) => !coveredCriteria.has(criterionId));
+    if (uncoveredCriteria.length > 0) {
+      throw new Error(`Goal-linked Library import does not cover all criteria for ${constraint.gapRef}: ${uncoveredCriteria.join(", ")}`);
+    }
+  }
+  assertBlockingRequirementCandidateCompatibility(candidates, targets, constraints);
+  return targets;
+}
+
+function assertBlockingRequirementCandidateCompatibility(
+  candidates: LibraryImportCandidate[],
+  targets: LibraryImportCandidateCoverageTarget[],
+  constraints: LibraryImportCoverageConstraint[],
+): void {
+  const candidateByKey = new Map(candidates.map((candidate) => [candidate.objectKey, candidate]));
+  const blockingRequirementIds = [...new Set(constraints.filter((constraint) => constraint.blocking).map((constraint) => constraint.requirementId))];
+  for (const requirementId of blockingRequirementIds) {
+    const requirementGapRefs = new Set(constraints.filter((constraint) => constraint.blocking && constraint.requirementId === requirementId).map((constraint) => constraint.gapRef));
+    const requirementCandidates = [...new Set(targets
+      .filter((target) => target.requirementId === requirementId && requirementGapRefs.has(target.gapRef))
+      .map((target) => candidateByKey.get(target.candidateObjectKey))
+      .filter((candidate): candidate is LibraryImportCandidate => Boolean(candidate)))];
+    const artifacts = requirementCandidates.filter((candidate) => candidate.kind === "artifact");
+    const evaluators = requirementCandidates.filter((candidate) => candidate.kind === "evaluator");
+    if (artifacts.length === 0 || evaluators.length === 0) {
+      throw new Error(`Blocking Requirement ${requirementId} must be covered by a complete artifact/evaluator candidate pair`);
+    }
+    const requiredEvidenceKinds = [...new Set(constraints
+      .filter((constraint) => constraint.blocking && constraint.requirementId === requirementId)
+      .flatMap((constraint) => constraint.requiredEvidenceKinds))].sort();
+    const compatibleArtifacts = artifacts.filter((artifact) => containsAll(artifact.evidenceKinds ?? [], requiredEvidenceKinds));
+    const compatiblePairs = evaluators.flatMap((evaluator) => compatibleArtifacts.flatMap((artifact) => {
+      const validatesArtifact = evaluator.validatesArtifactRefs?.includes(artifact.objectKey) === true;
+      const evaluatorAcceptsEvidence = containsAll(evaluator.evidenceKinds ?? [], requiredEvidenceKinds);
+      const hasCompatibleProcedure = evaluator.verificationProcedures?.some((procedure) => containsAll(procedure.allowedEvidenceKinds, requiredEvidenceKinds)) === true;
+      return validatesArtifact && evaluatorAcceptsEvidence && hasCompatibleProcedure ? [{ artifact, evaluator }] : [];
+    }));
+    if (compatiblePairs.length === 0) {
+      const evidence = requiredEvidenceKinds.length > 0 ? requiredEvidenceKinds.join(", ") : "the confirmed Requirement evidence contract";
+      throw new Error(`Blocking Requirement ${requirementId} has no targeted artifact/evaluator pair compatible with ${evidence}`);
+    }
+  }
+}
+
+function containsAll(values: string[], required: string[]): boolean {
+  const set = new Set(values);
+  return required.every((value) => set.has(value));
 }
 
 function unwrapLibraryImportLlmOutput(raw: unknown): { output: unknown; piSessionId?: string } {
@@ -454,6 +637,27 @@ function safeJsonParse(value: string): unknown {
   }
 }
 
+function normalizedRepairAttempts(value: number | undefined): number {
+  const configured = value ?? Number(process.env.SOUTHSTAR_LIBRARY_IMPORT_REPAIR_ATTEMPTS ?? 2);
+  if (!Number.isInteger(configured) || configured < 0) {
+    throw new Error("SOUTHSTAR_LIBRARY_IMPORT_REPAIR_ATTEMPTS must be a non-negative integer");
+  }
+  return configured;
+}
+
+function buildLibraryImportRepairPrompt(basePrompt: string, previousOutput: unknown, issue: string): string {
+  const serialized = typeof previousOutput === "string" ? previousOutput : JSON.stringify(previousOutput);
+  return [
+    basePrompt,
+    "HostValidationFailed:",
+    issue,
+    "PreviousInvalidOutput:",
+    serialized.slice(0, MAX_PROMPT_DOCUMENT_CHARS),
+    "Return a complete corrected JSON object. Preserve valid reusable candidates, repair the stated host validation issue, and cover the full blocking constraint set in one proposal.",
+    "Treat the host issue as the authoritative dry-run result. Revise contract semantics, schemas, procedures, or pair relationships as needed; do not merely add candidateCoverageTargets that repeat an unsupported claim.",
+  ].join("\n");
+}
+
 function normalizeKind(value: unknown): LibraryImportCandidateKind | null {
   return value === "agent" || value === "skill" || value === "mcp" || value === "tool"
     || value === "domain" || value === "capability" || value === "artifact" || value === "evaluator"
@@ -520,6 +724,18 @@ function titleFromObjectKey(objectKey: string): string {
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function requiredString(value: unknown, label: string): string {
+  const normalized = optionalString(value);
+  if (!normalized) throw new Error(`${label} must be a non-empty string`);
+  return normalized;
+}
+
+function strictStringArray(value: unknown, label: string): string[] {
+  if (!Array.isArray(value)) throw new Error(`${label} must be a string array`);
+  const normalized = value.map((item, index) => requiredString(item, `${label}.${index}`));
+  return [...new Set(normalized)];
 }
 
 function stringArray(value: unknown): string[] {

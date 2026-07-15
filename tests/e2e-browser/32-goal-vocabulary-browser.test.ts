@@ -22,7 +22,6 @@ const WORKSPACE = process.env.SOUTHSTAR_E2E_PROJECT_CWD
   ?? process.env.SOUTHSTAR_CASE32_PROJECT_CWD
   ?? join(process.env.HOME ?? "/home/timmypai", "apps", "southstar-vocab");
 const GOAL = "Build a small local vocabulary flashcard system in this workspace. Users can add and list words with translations and examples, run flashcard quizzes, submit answers with persisted history, and see session and cumulative accuracy. The product must produce a vocabulary-specific persisted-answer and accuracy evidence artifact contract; generic repository implementation or verification reports do not represent that product outcome. Include a browser-accessible local UI, automated tests, and verification evidence for every blocking requirement. Do not use external services or network integrations.";
-const IMPORT_PROMPT = "Import library vocabulary candidates for this vocabulary-learning goal. Produce only the domain, capabilities, artifact contracts, and evaluator profiles needed to implement and verify the local flashcard vocabulary system. Do not invent external integrations.";
 
 test("32 browser checklist: Library gap to completed vocabulary Goal", { timeout: 60 * 60 * 1000 }, async () => {
   const env = await createInitializedRealPostgresE2E();
@@ -58,13 +57,17 @@ test("32 browser checklist: Library gap to completed vocabulary Goal", { timeout
     assert.match(String(goalSkillObject?.state.sourcePath), /^library\/skills\//);
     web = await startWebApp(runtime.url);
     browser = await chromium.launch({ headless: true });
+    browser.on("disconnected", () => console.info("[case32-browser] browser disconnected"));
     const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
+    page.on("close", () => console.info("[case32-browser] page closed"));
+    page.on("crash", () => console.info("[case32-browser] page crashed"));
     const workflowGenerateBodies: unknown[] = [];
     page.on("request", (request) => {
       if (!request.url().endsWith("/api/workflow/generate") || request.method() !== "POST") return;
       workflowGenerateBodies.push(request.postDataJSON());
     });
     const snapshotRoot = join(ROOT, "artifacts", "case32-browser");
+    await rm(snapshotRoot, { recursive: true, force: true });
     await mkdir(snapshotRoot, { recursive: true });
 
     await page.goto(web.url, { waitUntil: "domcontentloaded" });
@@ -80,48 +83,112 @@ test("32 browser checklist: Library gap to completed vocabulary Goal", { timeout
     await workflowInput.waitFor({ state: "visible", timeout: 30_000 });
     await workflowInput.fill(GOAL);
     assert.equal(await workflowInput.inputValue(), GOAL);
+    const goalSubmissionResponse = page.waitForResponse((response) => (
+      response.url().endsWith("/api/workflow/generate") && response.request().method() === "POST"
+    ));
     await page.getByTestId("workflow-mode-panel").getByRole("button", { name: "Send" }).click();
-    await waitText(page, /\[draft\].*needs_library_input|\[library gap\]/, 20 * 60 * 1000);
+    const goalResponse = await goalSubmissionResponse;
+    assert.equal(goalResponse.status(), 200);
+    const goalResponseText = await goalResponse.text();
+    console.info(`[case32-browser] goal SSE events=${goalResponseText.split("\n").filter((line) => line.startsWith("event:")).join(",")}`);
+    console.info(`[case32-browser] post-goal body=${(await page.locator("body").innerText()).slice(-2_000)}`);
+    const requirements = page.getByTestId("goal-requirements-block");
+    await requirements.waitFor({ state: "visible", timeout: 20 * 60 * 1000 });
     await captureSnapshot(page, snapshotRoot, "02-goal-submitted");
-    const gapText = await page.locator("[data-testid='workflow-mode-panel']").innerText();
-    assert.match(gapText, /needs_library_input|library gap/);
-    assert.equal(await page.getByTestId("workflow-dag-block").count(), 0, "Goal gap must not create a DAG");
-    await captureSnapshot(page, snapshotRoot, "03-needs-library-input");
+    assert.match(await requirements.innerText(), /requirements|Confirm requirements/i);
+    assert.ok(await requirements.locator('[data-testid^="goal-requirement-item-"]').count() > 0, "Goal interpreter must produce reviewable requirements");
+    assert.equal(await page.getByTestId("workflow-dag-block").count(), 0, "Unconfirmed requirements must not create a DAG");
+    await captureSnapshot(page, snapshotRoot, "03-requirements-review");
 
-    await page.getByTestId("mode-library").click();
-    await page.getByTestId("library-mode-panel").waitFor({ state: "visible" });
-    await chooseCwd(page, "library-sidebar-content");
-    await captureSnapshot(page, snapshotRoot, "04-library-mode");
-    const libraryInput = visibleLibraryInput(page);
-    await libraryInput.fill(IMPORT_PROMPT);
-    await libraryInput.press("Enter");
-    const candidateBlock = page.getByTestId("library-import-candidates");
-    await candidateBlock.waitFor({ state: "visible", timeout: 20 * 60 * 1000 });
-    const candidatesText = await candidateBlock.innerText();
-    assert.match(candidatesText, /domain|capability|artifact|evaluator/i);
-    assert.ok(await candidateBlock.locator("input[type=checkbox]").count() > 0, "Library import must produce selectable candidates");
-    await captureSnapshot(page, snapshotRoot, "05-library-import-candidates");
+    const requirementItems = requirements.locator('[data-testid^="goal-requirement-item-"]');
+    await requirementItems.first().click();
+    await page.getByTestId("goal-requirement-editor").waitFor({ state: "visible", timeout: 30_000 });
+    await captureSnapshot(page, snapshotRoot, "04-requirement-editor");
 
-    await candidateBlock.getByRole("button", { name: "Install selected candidates" }).click();
-    const installFrames = page.getByTestId("library-install-sse-frames");
-    await installFrames.waitFor({ state: "visible", timeout: 20 * 60 * 1000 });
-    await page.getByTestId("library-install-graph").waitFor({ state: "visible", timeout: 20 * 60 * 1000 });
-    assert.doesNotMatch(await installFrames.innerText(), /library\.error/i);
-    const installedGraphText = await page.getByTestId("library-install-graph").innerText();
-    assert.match(installedGraphText, /domain_taxonomy|capability_spec|artifact_contract|evaluator_profile/);
-    await captureSnapshot(page, snapshotRoot, "06-library-install-progress");
-    await captureSnapshot(page, snapshotRoot, "07-library-approved-graph");
+    let confirmedVisualContracts = 0;
+    for (let requirementIndex = 0; requirementIndex < await requirementItems.count(); requirementIndex += 1) {
+      await requirementItems.nth(requirementIndex).click();
+      const editor = page.getByTestId("goal-requirement-editor");
+      await editor.waitFor({ state: "visible", timeout: 30_000 });
+      const contractButtons = editor.getByTestId("goal-requirement-open-ui-contract");
+      const contractCount = await contractButtons.count();
+      for (let contractIndex = 0; contractIndex < contractCount; contractIndex += 1) {
+        await requirementItems.nth(requirementIndex).click();
+        await editor.waitFor({ state: "visible", timeout: 30_000 });
+        await editor.getByTestId("goal-requirement-open-ui-contract").nth(contractIndex).click();
+        const viewer = page.getByTestId("ui-interaction-contract-viewer");
+        await viewer.waitFor({ state: "visible", timeout: 30_000 });
+        const confirmVisualContract = viewer.getByTestId("ui-contract-confirm");
+        if (await confirmVisualContract.count() === 0) continue;
+        if (confirmedVisualContracts === 0) await captureSnapshot(page, snapshotRoot, "04-ui-contract-review");
+        const confirmationResponse = page.waitForResponse((response) => (
+          response.url().includes("/ui-contracts/")
+          && response.request().method() === "PATCH"
+        ), { timeout: 2 * 60 * 1000 });
+        await confirmVisualContract.click();
+        assert.equal((await confirmationResponse).status(), 200);
+        await confirmVisualContract.waitFor({ state: "detached", timeout: 30_000 });
+        confirmedVisualContracts += 1;
+      }
+    }
+    if (confirmedVisualContracts > 0) await captureSnapshot(page, snapshotRoot, "04-ui-contracts-confirmed");
+    await page.getByTestId("sidecar-shell").getByRole("button", { name: "Hide sidecar" }).click();
+    const confirmRequirements = requirements.getByTestId("goal-requirements-confirm");
+    await confirmRequirements.waitFor({ state: "visible", timeout: 30_000 });
+    await page.waitForFunction(() => {
+      const button = document.querySelector('[data-testid="goal-requirements-confirm"]');
+      return button instanceof HTMLButtonElement && !button.disabled;
+    }, undefined, { timeout: 30_000 });
 
-    await page.getByTestId("mode-workflow").click();
-    const retryInput = visibleWorkflowInput(page);
-    await retryInput.waitFor({ state: "visible", timeout: 30_000 });
-    await retryInput.fill("Continue the existing goal now that the approved Library vocabulary is available.");
-    await page.getByTestId("workflow-mode-panel").getByRole("button", { name: "Send" }).click();
-    await page.getByTestId("goal-slice-plan-block").waitFor({ state: "visible", timeout: 20 * 60 * 1000 });
+    const requirementConfirmation = page.waitForResponse((response) => (
+      response.url().includes("/confirm-requirements") && response.request().method() === "POST"
+    ), { timeout: 20 * 60 * 1000 });
+    await confirmRequirements.click();
+    const requirementResponse = await requirementConfirmation;
+    assert.equal(requirementResponse.status(), 200);
+    const validationProgress = requirements.getByTestId("goal-validation-progress");
+    await page.waitForFunction(() => Boolean(document.querySelector('[data-testid="goal-validation-progress"]')?.getAttribute("data-event")), undefined, { timeout: 2 * 60 * 1000 });
+    assert.ok(((await validationProgress.getAttribute("data-event"))?.length ?? 0) > 0);
+    await captureSnapshot(page, snapshotRoot, "05-requirement-validation-progress");
+    const requirementResponseText = await requirementResponse.text();
+    assert.match(requirementResponseText, /event: goal\.validation\.(?:requirement\.started|resolution\.completed)/);
+    assert.match(requirementResponseText, /event: (?:library\.import\.candidates\.validated|goal\.validation\.slice_design\.started)/);
+    await captureSnapshot(page, snapshotRoot, "05-requirements-confirmed");
+
     const plan = page.getByTestId("goal-slice-plan-block");
+    const candidateBlock = page.getByTestId("library-import-candidates");
+    await page.waitForFunction(() => (
+      document.querySelector('[data-testid="goal-slice-plan-block"]')
+      || document.querySelector('[data-testid="library-import-candidates"]')
+    ), undefined, { timeout: 20 * 60 * 1000 });
+
+    if (await candidateBlock.count() > 0) {
+      const candidatesText = await candidateBlock.innerText();
+      assert.match(candidatesText, /domain|capability|artifact|evaluator/i);
+      assert.ok(await candidateBlock.locator("input[type=checkbox]").count() > 0, "Goal validation must produce reviewable Library candidates");
+      await candidateBlock.getByTestId("library-proposal-completeness").waitFor({ state: "visible" });
+      assert.match(candidatesText, /Complete blocking-gap proposal|Covers R\d+/i);
+      const proposalDraftId = await candidateBlock.getAttribute("data-draft-id");
+      assert.match(proposalDraftId ?? "", /^library-import-/);
+      await captureSnapshot(page, snapshotRoot, "06-library-import-candidates");
+
+      await candidateBlock.getByRole("button", { name: "Install selected candidates" }).click();
+      const installFrames = page.getByTestId("library-install-sse-frames");
+      await installFrames.waitFor({ state: "visible", timeout: 20 * 60 * 1000 });
+      await page.getByTestId("library-install-graph").waitFor({ state: "visible", timeout: 20 * 60 * 1000 });
+      assert.doesNotMatch(await installFrames.innerText(), /library\.error/i);
+      await captureSnapshot(page, snapshotRoot, "07-library-install-progress");
+      await plan.waitFor({ state: "visible", timeout: 20 * 60 * 1000 });
+      assert.equal(await page.getByTestId("library-import-candidates").count(), 0, "A validated complete proposal must not create a second Library review round");
+      await captureSnapshot(page, snapshotRoot, "08-library-auto-resumed");
+    } else {
+      await plan.waitFor({ state: "visible", timeout: 30_000 });
+      await captureSnapshot(page, snapshotRoot, "06-validation-ready");
+    }
+
+    assert.equal(workflowGenerateBodies.length, 1, "Requirement and Library review must continue the same Goal without another prompt");
     await plan.locator('[data-testid^="goal-slice-plan-item-"]').first().waitFor({ state: "visible" });
     assert.match(await plan.innerText(), /ready_for_review|strategy|artifact|evaluator/i);
-    await captureSnapshot(page, snapshotRoot, "08-goal-retry");
     await captureSnapshot(page, snapshotRoot, "09-slice-plan-ready");
 
     const firstSlice = plan.locator('[data-testid^="goal-slice-plan-item-"]').first();
@@ -137,6 +204,11 @@ test("32 browser checklist: Library gap to completed vocabulary Goal", { timeout
     const confirmResponse = await confirmResponsePromise;
     assert.equal(confirmResponse.status(), 200, await confirmResponse.text());
     const confirmationText = await confirmResponse.text();
+    await writeFile(join(snapshotRoot, "11-composer-confirmation.sse.txt"), confirmationText, "utf8");
+    const confirmationError = eventFrame(confirmationText, "error");
+    if (confirmationError) {
+      throw new Error(`Goal Design confirmation failed: ${String(confirmationError.error ?? JSON.stringify(confirmationError))}`);
+    }
     const confirmationResult = doneFrame(confirmationText) as { draftId?: string; runId?: string; draftStatus?: string };
     assert.equal(confirmationResult.draftStatus, "validated");
     assert.ok(confirmationResult.runId, "Goal confirmation must persist a run");
@@ -215,10 +287,6 @@ function visibleWorkflowInput(page: Page) {
   return page.getByTestId("workflow-mode-panel").locator("textarea").last();
 }
 
-function visibleLibraryInput(page: Page) {
-  return page.getByTestId("library-mode-panel").locator("textarea").last();
-}
-
 async function waitText(page: Page, pattern: RegExp, timeout: number): Promise<void> {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
@@ -246,6 +314,13 @@ function doneFrame(text: string): Record<string, unknown> {
   return JSON.parse(raw) as Record<string, unknown>;
 }
 
+function eventFrame(text: string, eventName: string): Record<string, unknown> | undefined {
+  const frame = text.split("\n\n").find((part) => part.split("\n").some((line) => line === `event: ${eventName}`));
+  if (!frame) return undefined;
+  const raw = frame.split("\n").find((line) => line.startsWith("data:"))?.slice("data:".length).trim();
+  return raw ? JSON.parse(raw) as Record<string, unknown> : {};
+}
+
 async function listWorkspaceFiles(root: string, prefix = ""): Promise<string[]> {
   const entries = await readdir(join(root, prefix), { withFileTypes: true });
   const files: string[] = [];
@@ -271,8 +346,11 @@ async function startWebApp(apiUrl: string): Promise<RunningWebApp> {
       SOUTHSTAR_SERVER_URL: apiUrl,
       SOUTHSTAR_V2_API_BASE_URL: apiUrl,
     },
-    stdio: ["ignore", "ignore", "ignore"],
+    stdio: ["ignore", "pipe", "pipe"],
   });
+  child.stdout?.on("data", (chunk) => console.info(`[case32-web:stdout] ${String(chunk).trimEnd()}`));
+  child.stderr?.on("data", (chunk) => console.info(`[case32-web:stderr] ${String(chunk).trimEnd()}`));
+  child.on("exit", (code, signal) => console.info(`[case32-web] exited code=${code ?? "null"} signal=${signal ?? "null"}`));
   await waitForHttp(url, child);
   return { url, stop: () => stopChild(child) };
 }

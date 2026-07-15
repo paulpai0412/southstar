@@ -174,6 +174,13 @@ export type LibraryImportCandidate = {
   validatesArtifactRefs?: string[];
 };
 
+export type LibraryImportCandidateCoverageTarget = {
+  candidateObjectKey: string;
+  gapRef: string;
+  requirementId: string;
+  criterionIds: string[];
+};
+
 export type LibraryImportProposedEdge = {
   fromObjectKey: string;
   edgeType: LibraryImportEdgeType;

@@ -40,6 +40,7 @@ test("staged run-goal route persists requirement review and confirms with a hash
     await seedGoalDesignSkill(db);
     const context = {
       ...runtimeContext(db, "Create a vocabulary app"),
+      libraryImportLlmProvider: goalValidationImportProposalProvider,
       goalRequirementInterpreter: {
         async interpret() {
           return finalizeGoalRequirementDraft({
@@ -54,7 +55,7 @@ test("staged run-goal route persists requirement review and confirms with a hash
               blocking: true,
               userVisibleBehaviors: ["The item and answer are shown."],
               businessRules: [],
-              acceptanceCriteria: [{ statement: "A vocabulary item can be reviewed offline.", evidenceIntent: ["browser evidence"] }],
+              acceptanceCriteria: [{ statement: "A vocabulary item can be reviewed offline.", evidenceIntent: ["screenshot"] }],
               expectedOutcomeArtifacts: [{ description: "Vocabulary review UI", mediaType: "text/html" }],
               verificationIntent: ["Open the app and complete one review."],
               assumptions: [],
@@ -116,7 +117,7 @@ test("staged run-goal route persists requirement review and confirms with a hash
         body: JSON.stringify({ expectedDraftHash: envelope.result.goalRequirementDraftHash, actor: "tester" }),
       },
     ));
-    assert.equal(confirmed.status, 200);
+    assert.equal(confirmed.status, 200, await confirmed.clone().text());
     const confirmedEnvelope = await confirmed.json() as { ok: true; result: { status: string; phase: string; goalContractHash: string } };
     assert.equal(confirmedEnvelope.result.status, "library_review");
     assert.equal(confirmedEnvelope.result.phase, "library_review");
@@ -181,7 +182,7 @@ test("SSE replay re-emits the persisted Goal Requirements block", async () => {
               blocking: true,
               userVisibleBehaviors: ["The item and answer are shown."],
               businessRules: [],
-              acceptanceCriteria: [{ statement: "A vocabulary item can be reviewed.", evidenceIntent: ["browser evidence"] }],
+              acceptanceCriteria: [{ statement: "A vocabulary item can be reviewed.", evidenceIntent: ["screenshot"] }],
               expectedOutcomeArtifacts: [{ description: "Vocabulary review UI", mediaType: "text/html" }],
               verificationIntent: ["Open the app and complete one review."],
               assumptions: [],
@@ -392,8 +393,8 @@ test("selected authority triggers approval even when the Goal Contract omits a r
       state: {
         scope: "software",
         title: "Production deploy",
-        toolName: "production-deploy",
-        proxyToolName: "southstar.production-deploy",
+        runtimeToolNames: ["bash"],
+        proxyToolNames: ["southstar.production-deploy"],
         sideEffects: ["deployment", "production-change"],
       },
     });
@@ -1372,7 +1373,7 @@ test("confirmed single-DAG run result preserves source requirement lineage", asy
         blocking: true,
         userVisibleBehaviors: ["Parser behavior is verified."],
         businessRules: [],
-        acceptanceCriteria: [{ statement: "Parser tests pass.", evidenceIntent: ["test output"] }],
+        acceptanceCriteria: [{ statement: "Parser tests pass.", evidenceIntent: ["test-result"] }],
         expectedOutcomeArtifacts: [{ description: "Verification report", mediaType: "text/markdown" }],
         verificationIntent: ["Run the parser test suite."],
         assumptions: [],
@@ -2088,6 +2089,73 @@ function runtimeContext(db: Awaited<ReturnType<typeof createTestPostgresDb>>, go
   return runtimeContextWithInterpreter(db, fixedGoalInterpreter(goalContract(goalPrompt)));
 }
 
+const goalValidationImportProposalProvider = async ({ prompt }: { prompt: string }) => {
+  if (prompt.startsWith("Rank only the supplied approved artifact contracts")) return { recommendations: [] };
+  if (prompt.startsWith("Generate ontology edges")) return { proposedEdges: [] };
+  const match = prompt.match(/GoalValidationCoverageConstraints:\n(\[[\s\S]*?\])\nThis is one complete proposal/);
+  const constraints = match ? JSON.parse(match[1]!) as Array<{
+    gapRef: string;
+    requirementId: string;
+    criterionIds: string[];
+    blocking?: boolean;
+  }> : [];
+  const artifactObjectKey = "artifact.test-goal-review-evidence";
+  const evaluatorObjectKey = "evaluator.test-goal-review";
+  const targets = constraints
+    .filter((constraint) => constraint.blocking)
+    .flatMap((constraint) => [artifactObjectKey, evaluatorObjectKey].map((candidateObjectKey) => ({
+      candidateObjectKey,
+      gapRef: constraint.gapRef,
+      requirementId: constraint.requirementId,
+      criterionIds: constraint.criterionIds,
+    })));
+  return {
+    candidates: [
+      {
+        objectKey: artifactObjectKey,
+        kind: "artifact",
+        title: "Reusable review evidence",
+        scope: "software",
+        description: "Reusable browser review evidence contract.",
+        selectedByDefault: true,
+        confidence: 1,
+        classificationReason: "Test-only reusable artifact contract.",
+        artifactType: "review_evidence.v1",
+        mediaTypes: ["application/json"],
+        evidenceKinds: ["screenshot"],
+        validationRules: ["Must contain browser review evidence."],
+        schemaRef: "southstar.artifact.review_evidence.v1",
+        requiredFields: ["browserEvidence"],
+        provenanceRequirements: ["Capture evidence from a local browser run."],
+      },
+      {
+        objectKey: evaluatorObjectKey,
+        kind: "evaluator",
+        title: "Reusable review evidence evaluator",
+        scope: "software",
+        description: "Reusable evaluator for browser review evidence.",
+        selectedByDefault: true,
+        confidence: 1,
+        classificationReason: "Test-only reusable evaluator profile.",
+        validatesArtifactRefs: [artifactObjectKey],
+        requiredInputs: ["artifactPayload"],
+        evidenceKinds: ["screenshot"],
+        verificationModes: ["browser_interaction"],
+        verificationProcedures: [{
+          id: "review-browser-flow",
+          checkKind: "browser_interaction",
+          instruction: "Verify the browser review flow from the submitted screenshot evidence.",
+          allowedEvidenceKinds: ["screenshot"],
+        }],
+        independencePolicy: "independent",
+        resultSchemaRef: "southstar.requirement_evaluator_result.v2",
+        failureClassifications: ["missing-required-evidence"],
+      },
+    ],
+    candidateCoverageTargets: targets,
+  };
+};
+
 function runtimeContextWithInterpreter(
   db: Awaited<ReturnType<typeof createTestPostgresDb>>,
   goalInterpreter: GoalContractInterpreter,
@@ -2100,7 +2168,7 @@ function runtimeContextWithInterpreter(
     workflowComposer,
     libraryImportLlmProvider: async ({ prompt }: { prompt: string }) => prompt.startsWith("Rank only the supplied approved artifact contracts")
       ? { recommendations: [] }
-      : { candidates: [] },
+      : { candidates: [], candidateCoverageTargets: [] },
     plannerClient: { generate: async () => { throw new Error("planner not used"); } },
     executorProvider: { executorType: "tork" as const, submit: async () => { throw new Error("executor not used"); } },
   };

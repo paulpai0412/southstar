@@ -1077,7 +1077,13 @@ function parseCoverage(
       if (!pipeline.validationBindingIds?.includes(validationBindingId)) {
         fail(`manifest evaluator pipeline is missing validation binding ${validationBindingId}`);
       }
+      const pipelineBindingIds = pipeline.validationBindingIds ?? [];
       const pipelineCriterionIds = pipeline.evaluators
+        .filter((step) => {
+          const stepBindingId = nonEmptyString(asRecord(step.config).validationBindingId);
+          if (stepBindingId) return stepBindingId === validationBindingId;
+          return pipelineBindingIds.length === 1;
+        })
         .map((step) => nonEmptyString(asRecord(step.config).criterionId))
         .filter((value): value is string => Boolean(value));
       if (

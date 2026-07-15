@@ -1,0 +1,38 @@
+schemaVersion: southstar.library.artifact_contract_file.v1
+id: artifact.vocabulary-outcome-evidence
+title: "Vocabulary Outcome Evidence Artifact"
+scope: "software"
+status: approved
+artifactType: "vocabulary-outcome-evidence"
+mediaTypes:
+  - "application/json"
+evidenceKinds:
+  - "file-diff"
+  - "test-result"
+  - "command-output"
+  - "artifact-ref"
+  - "workspace-snapshot"
+  - "url"
+  - "screenshot"
+validationRules:
+  - "Must capture persisted vocabulary entries including word, translation, and example fields."
+  - "Must capture add/list persistence behavior across process restart against the same local data store."
+  - "Must capture persisted quiz answer history linked to vocabulary prompts."
+  - "Must capture both session and cumulative accuracy outputs derived from persisted answers."
+  - "Must include browser workflow evidence for local URL reachability and key UI states."
+  - "Must include evidence references that distinguish domain outcome artifact evidence from generic implementation/test reporting."
+schemaRef: "southstar.artifact.vocabulary_outcome_evidence.v2"
+requiredFields:
+  - "vocabularyEntries"
+  - "persistenceVerification"
+  - "quizAnswerHistory"
+  - "accuracySummary"
+  - "uiWorkflowEvidence"
+  - "evidenceRefs"
+provenanceRequirements:
+  - "Record repository revision and local execution timestamp."
+  - "Record local runtime context for persistence/verification runs."
+  - "Reference immutable evidence handles for each declared evidence kind."
+importDraftId: "library-import-goal-72ff3dbbd140eea225fa74f6569ce9af"
+importCandidateKey: "artifact.vocabulary-outcome-evidence"
+importSourcePath: "Confirmed-Goal-validation-gaps.md"

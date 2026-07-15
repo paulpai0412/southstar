@@ -229,6 +229,34 @@ test("applyNext skips managed recovery decisions left after reprovision-hand", a
   }
 });
 
+test("none-observe-only applies as no-op acknowledgement", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const fixture = await createReprovisionDecisionFixture(db, { runId: "run-apply-none-observe-only" });
+    await patchDecisionPayload(db, fixture.decision.resourceKey, { path: "none-observe-only" });
+    const now = "2026-06-21T14:07:00.000Z";
+
+    const result = await createRecoveryDecisionApplier({ db }).applyDecision({
+      decisionResourceKey: fixture.decision.resourceKey,
+      now,
+    });
+
+    assert.equal(result.status, "applied");
+    assert.equal((await getResourceByKeyPg(db, "recovery_decision", fixture.decision.resourceKey))?.status, "applied");
+    assert.equal((await getResourceByKeyPg(db, "runtime_exception", fixture.exception.resourceKey))?.status, "resolved");
+    await assertReprovisionHandAndTaskUnchanged(db, fixture);
+
+    const execution = await getResourceByKeyPg(db, "recovery_execution", result.executionResourceKey ?? "");
+    assert.equal(execution?.status, "succeeded");
+    assert.deepEqual((execution?.payload as { providerActions?: unknown[] }).providerActions, []);
+    assert.deepEqual((execution?.payload as { stateChanges?: Array<{ resourceType: string; toStatus?: string }> }).stateChanges?.map(
+      (change) => [change.resourceType, change.toStatus],
+    ), [["recovery_decision", "applied"], ["runtime_exception", "resolved"]]);
+  } finally {
+    await db.close();
+  }
+});
+
 test("reprovision-hand records old binding destroy intent without calling provider destroy", async () => {
   const db = await createTestPostgresDb();
   try {

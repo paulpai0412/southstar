@@ -431,6 +431,8 @@ export function renderComposerPrompt(
   composerSop?: ResolvedWorkflowComposerSopV1,
 ): string {
   const boundedPacket = boundCandidatePacket(candidatePacket);
+  const allowedRefsByField = composerAllowedRefsByField(boundedPacket);
+  const evaluatorArtifactCompatibility = composerEvaluatorArtifactCompatibility(boundedPacket);
   const forbiddenGoalDesignRefs = goalDesignPackage ? goalDesignForbiddenRefs(goalDesignPackage) : [];
   const frozenValidationConstraints = goalDesignPackage?.schemaVersion === "southstar.goal_design_package.v2"
     ? [
@@ -464,8 +466,15 @@ export function renderComposerPrompt(
     "Do not output runtime manifests, secrets, credentials, tool grant definitions, MCP grant definitions, or vault lease values. Vault may appear only as vaultLeasePolicyRefs selected from graph nodes.",
     "Use GraphMetadataCandidates as the direct source of selectable refs for DAG tasks and generated profiles.",
     "When GraphMetadataCandidates is present, selected agentDefinitionRef, skillRef, toolGrantRef, mcpGrantRef, instructionRef, artifact ref, and evaluator ref must come from GraphMetadataCandidates.nodes.",
+    "AllowedRefsByField is authoritative and partitions selectable refs by Library object kind. Every ref field must use an exact value from its own list; never substitute a ref from another field list.",
+    "agentDefinitionRef accepts only AllowedRefsByField.agentDefinitionRef. evaluatorProfileRef, toolGrantRefs, and artifact refs are different kinds and can never be used as agentDefinitionRef.",
+    "generatedComponentProposals may generate agent_profile only. A generated agent profile id may be used as agentProfileRef only; it does not create an agentDefinitionRef, skillRef, toolGrantRef, MCP grant, instruction, artifact, or evaluator.",
+    "Never invent generated.* refs for primitive fields. If a required AllowedRefsByField list is empty, do not substitute another kind or claim that a generated profile fills it.",
+    "EvaluatorArtifactCompatibility is authoritative. A task evaluatorProfileRef must be paired with outputArtifactRefs that appear in that evaluator's compatibility list.",
     "Do not select stored agent_profile refs from the library. For every DAG task, create a generated agent profile id and include it in generatedComponentProposals as kind agent_profile with validationStatus validated.",
-    "Use GraphMetadataCandidates.edges to justify profile closure: agent uses skill, skill requires tools, skill allows MCP grants, and skill uses instructions.",
+    "Choose agents and skills by semantic fit to the Goal Contract, Slice Plan, node responsibility, titles, descriptions, and body previews. An agent-to-skill uses edge is a preference signal, not a prerequisite: independently approved agents and skills may be combined dynamically.",
+    "Graph edges that express intrinsic requirements remain mandatory: when a selected skill requires a tool, MCP grant, or instruction, include that dependency. Never invent a dependency or substitute a different ref kind.",
+    "Tool nodes describe logical Library grants. Select toolGrantRefs by required operations and capability edges; the host binds those refs to real harness tools and rejects missing runtime bindings.",
     "You may propose a generated agent profile only by combining refs from profilePrimitiveCandidates and GraphMetadataCandidates.",
     "When selecting a generated profile, include it in generatedComponentProposals with kind agent_profile, validationStatus validated, and agentProfile.",
     "Each agentProfile must define the workerKind, provider, model, thinkingLevel/effort, harnessRef host adapter, instruction, promptTemplateRef, contextPolicyRef, sessionPolicyRef, toolPolicy, budgetPolicy, memoryScopes, agentsMdRefs, vaultLeasePolicyRefs, and execution.",
@@ -547,6 +556,12 @@ export function renderComposerPrompt(
       instructions: [],
     }),
     "",
+    "AllowedRefsByField:",
+    JSON.stringify(allowedRefsByField),
+    "",
+    "EvaluatorArtifactCompatibility:",
+    JSON.stringify(evaluatorArtifactCompatibility),
+    "",
     "GraphMetadataCandidates:",
     JSON.stringify(boundedPacket.graphMetadataCandidates ?? {
       schemaVersion: "southstar.graph_metadata_candidates.v1",
@@ -564,6 +579,40 @@ export function renderComposerPrompt(
     "CandidatePacketSummary:",
     JSON.stringify(candidatePacketPromptSummary(boundedPacket)),
   ].join("\n");
+}
+
+function composerAllowedRefsByField(packet: CandidatePacket): Record<string, string[]> {
+  const nodes = packet.graphMetadataCandidates?.nodes ?? [];
+  const refsForKinds = (...kinds: LibraryDefinitionKind[]) => [...new Set(nodes
+    .filter((node) => kinds.includes(node.kind))
+    .map((node) => node.ref))].sort();
+  return {
+    agentDefinitionRef: refsForKinds("agent_definition"),
+    skillRefs: refsForKinds("skill_spec", "skill_definition"),
+    toolGrantRefs: refsForKinds("tool_definition"),
+    mcpGrantRefs: refsForKinds("mcp_tool_grant"),
+    instructionRefs: refsForKinds("instruction_template"),
+    evaluatorProfileRef: refsForKinds("evaluator_profile"),
+    inputArtifactRefs: refsForKinds("artifact_contract"),
+    outputArtifactRefs: refsForKinds("artifact_contract"),
+    vaultLeasePolicyRefs: refsForKinds("vault_lease_policy"),
+  };
+}
+
+function composerEvaluatorArtifactCompatibility(packet: CandidatePacket): Record<string, string[]> {
+  const nodes = packet.graphMetadataCandidates?.nodes ?? [];
+  const evaluatorRefs = new Set(nodes.filter((node) => node.kind === "evaluator_profile").map((node) => node.ref));
+  const artifactRefs = new Set(nodes.filter((node) => node.kind === "artifact_contract").map((node) => node.ref));
+  const compatible = new Map<string, Set<string>>();
+  for (const evaluatorRef of evaluatorRefs) compatible.set(evaluatorRef, new Set());
+  for (const edge of packet.graphMetadataCandidates?.edges ?? []) {
+    if (!evaluatorRefs.has(edge.from) || !artifactRefs.has(edge.to)) continue;
+    if (edge.type !== "validates_artifact" && edge.type !== "validates") continue;
+    compatible.get(edge.from)?.add(edge.to);
+  }
+  return Object.fromEntries([...compatible.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([evaluatorRef, refs]) => [evaluatorRef, [...refs].sort()]));
 }
 
 function goalDesignForbiddenRefs(goalDesignPackage: GoalDesignPackage): string[] {
@@ -587,7 +636,8 @@ function goalDesignForbiddenRefs(goalDesignPackage: GoalDesignPackage): string[]
 function renderDagAndAgentProfileSop(): string {
   return [
     "1. Interpret the user goal as the source of requirements, acceptance criteria, risk, and required deliverables.",
-    "2. Use GraphMetadataCandidates.nodes and GraphMetadataCandidates.edges as the only library candidate source. Build a task-specific candidate subgraph by semantic fit to the goal and by edge closure.",
+    "2. Use GraphMetadataCandidates.nodes and GraphMetadataCandidates.edges as the only library candidate source. Use the LLM to rank candidates by semantic fit to the goal, requirements, slice, node responsibility, titles, descriptions, and body previews.",
+    "2a. Agent-to-skill uses edges are recommendations, not fixed profiles. Compose each generated profile from independently approved agent and skill primitives. Skill-to-tool, skill-to-MCP, skill-to-instruction, evaluator-to-artifact, conflict, and incompatibility edges are hard composition constraints.",
     "3. Do not select stored agent_profile refs. Every task must use a generated profile id, and that id must appear in generatedComponentProposals as kind agent_profile with validationStatus validated.",
     "4. Design a DAG, not a manifest. Use explicit dependsOn edges. Choose task count and workerKind dynamically from the goal, graph evidence, risk, and deliverables.",
     "4a. Attach every task to the requirementIds it contributes to. Explicit coordination and summary nodes are the only exception. Every blocking requirement needs artifact-producing work and an independent verify/review evaluator with evidence.",
@@ -598,7 +648,7 @@ function renderDagAndAgentProfileSop(): string {
     "7. For each task, choose agentDefinitionRef, skillRefs, toolGrantRefs, mcpGrantRefs, instructionRefs, evaluatorProfileRef, inputArtifactRefs, and outputArtifactRefs from the graph.",
     "8. For each task, write nodePromptSpec as the worker-facing prompt brief: nodeType, node-local goal, requirements, boundaries, nonGoals, deliverableDocuments, expectedOutputs, testCases, acceptanceCriteria, and failureReportContract when failure should feed repair.",
     "8a. Type-specific nodePromptSpec fields: plan uses planningQuestions/decisionCriteria/planArtifactContract; implement uses implementationScope/filesLikelyToTouch/testCases; verify uses verificationChecks/testCases/failureArtifactContract; repair uses repairInputs/mustPreserve/reverificationChecks; review uses reviewChecklist/riskCriteria; summary uses summarySections/handoffCriteria.",
-    "9. Verify graph closure before output: selected agent must support selected skills; selected skills must include required tools, MCP grants, and instructions through edges; evaluator must validate output artifacts; conflicting/incompatible edges must not be selected together.",
+    "9. Verify graph closure before output: selected skills must include their required tools, MCP grants, and instructions; evaluator must validate output artifacts; conflicting/incompatible edges must not be selected together. Do not require a pre-authored agent-to-skill edge.",
     "10. For each generated profile, output a complete agentProfile that the compiler can materialize into Docker worker input agent-profile/profile.json and task execution.",
     "11. Each agentProfile must include workerKind, provider, model, thinkingLevel, harnessRef, instruction, promptTemplateRef, contextPolicyRef, sessionPolicyRef, memoryScopes, agentsMdRefs, vaultLeasePolicyRefs, toolPolicy, budgetPolicy, and execution.",
     "12. agentProfile.execution must include engine=tork, image, command, env, mounts, timeoutSeconds, and infraRetry.maxAttempts. Use an empty mounts array for workspace access; Southstar runtime injects the real host workspace mount from the task envelope. Never output source=\"workspace\" or container paths as mount sources.",
@@ -1183,18 +1233,18 @@ function boundCandidatePacket(packet: CandidatePacket): CandidatePacket {
     policyConstraints: packet.policyConstraints.slice(0, 50),
     profilePrimitiveCandidates: packet.profilePrimitiveCandidates
       ? {
-        agents: packet.profilePrimitiveCandidates.agents.slice(0, 100),
-        skills: packet.profilePrimitiveCandidates.skills.slice(0, 100),
-        tools: packet.profilePrimitiveCandidates.tools.slice(0, 100),
-        mcpGrants: packet.profilePrimitiveCandidates.mcpGrants.slice(0, 100),
-        instructions: packet.profilePrimitiveCandidates.instructions.slice(0, 100),
+        agents: packet.profilePrimitiveCandidates.agents.slice(0, 64),
+        skills: packet.profilePrimitiveCandidates.skills.slice(0, 48),
+        tools: packet.profilePrimitiveCandidates.tools.slice(0, 24),
+        mcpGrants: packet.profilePrimitiveCandidates.mcpGrants.slice(0, 16),
+        instructions: packet.profilePrimitiveCandidates.instructions.slice(0, 16),
       }
       : undefined,
     graphMetadataCandidates: packet.graphMetadataCandidates
       ? {
         ...packet.graphMetadataCandidates,
-        nodes: packet.graphMetadataCandidates.nodes.slice(0, 500),
-        edges: packet.graphMetadataCandidates.edges.slice(0, 1_500),
+        nodes: packet.graphMetadataCandidates.nodes.slice(0, 300),
+        edges: packet.graphMetadataCandidates.edges.slice(0, 500),
       }
       : undefined,
   };

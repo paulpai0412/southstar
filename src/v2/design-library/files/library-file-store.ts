@@ -2,7 +2,6 @@ import { createHash, randomUUID } from "node:crypto";
 import { link, lstat, mkdir, open, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { SouthstarDb } from "../../db/postgres.ts";
-import { isCatalogCanonicalDomain } from "../canonical-domains.ts";
 import {
   createLibraryObject,
   deactivateLibraryEdgesForSourceExcept,
@@ -737,21 +736,6 @@ export function validateLibraryFileGraphReferences(file: LibraryFileRecord): voi
 
 function edgeProjection(file: LibraryFileRecord): LibraryFileGraphProjection["edges"] {
   const edges: LibraryFileGraphProjection["edges"] = [];
-  if (isCatalogCanonicalDomain(file.scope)) {
-    edges.push({
-      fromObjectKey: file.objectKey,
-      edgeType: "belongs_to_domain",
-      toObjectKey: domainObjectKey(file.scope),
-      scope: file.scope,
-      metadata: {
-        sourcePath: file.path,
-        sourceHash: file.sourceHash,
-        source: "library-file-sync",
-        sourceKind: "catalog-domain-scope",
-        confidence: 1,
-      },
-    });
-  }
   for (const { key, edgeType } of EDGE_REF_PROJECTIONS) {
     addRefs(edges, file, key, edgeType);
   }
@@ -798,10 +782,6 @@ function edge(
     scope: file.scope,
     metadata: { sourcePath: file.path, sourceHash: file.sourceHash },
   };
-}
-
-function domainObjectKey(scope: string): string {
-  return `domain.${scope}`;
 }
 
 function validateReferencedObjects(projection: LibraryFileGraphProjection): void {

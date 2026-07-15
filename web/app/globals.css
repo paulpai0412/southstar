@@ -1826,6 +1826,49 @@ span.linenumber {
   margin-top: 10px;
 }
 
+.goal-contract-approval-form {
+  display: grid;
+  gap: 7px;
+  margin: -2px 0 10px;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--accent) 5%, var(--bg-panel));
+}
+
+.goal-contract-approval-form label {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.goal-contract-approval-form textarea {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  padding: 7px 8px;
+  font: 12px/1.45 var(--font-sans);
+}
+
+.goal-contract-approval-form > div {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.goal-contract-approval-form button {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text-muted);
+  padding: 5px 9px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
 .goal-contract-status {
   display: grid;
   gap: 2px;

@@ -17,6 +17,7 @@ import { createTestPostgresDb } from "./postgres-test-utils.ts";
 import { goalContractHash, type GoalContractV1 } from "../../src/v2/orchestration/goal-contract.ts";
 import {
   inspectSupportedImage,
+  loadFrozenCoverageContextsPg,
   prepareWorkspaceScreenshotProof,
   recordRequirementEvaluatorResultsPg,
 } from "../../src/v2/evaluators/requirement-evaluator-results.ts";
@@ -685,6 +686,58 @@ test("RequirementEvaluatorResultV2 passes only when every frozen criterion has v
     assert.equal((stored?.payload as any).schemaVersion, "southstar.requirement_evaluator_result.v2");
     assert.equal((stored?.payload as any).criteriaResults[0].verdict, "passed");
     assert.equal((stored?.payload as any).evaluatorProfileVersionRef, "evaluator.software-verification-quality@2");
+  });
+});
+
+test("frozen coverage scopes a shared evaluator pipeline by validation binding", async () => {
+  await withDb(async (db) => {
+    const runId = "run-requirement-shared-evaluator";
+    const requirementIds = ["req-entry", "req-quiz"];
+    const fixture = await seedRequirementEvidenceRun(db, runId, { requirementIds });
+    const coverage = requirementCoverage(requirementIds, fixture.goalContractHash);
+    for (const entry of coverage.entries) {
+      Object.assign(entry, {
+        evaluatorProfileVersionRefs: ["evaluator.shared-quality@2"],
+        validationBindingId: `binding-${entry.requirementId}`,
+        criterionIds: [`criterion-${entry.requirementId}`],
+        acceptanceCriteria: [`${entry.requirementId} is independently verified`],
+        requiredEvidenceKinds: ["artifact-ref"],
+      });
+      entry.evaluatorProfileRefs = ["evaluator.shared-quality"];
+    }
+    await replaceRequirementCoverage(db, runId, coverage);
+    await db.query(
+      `update southstar.workflow_runs
+          set workflow_manifest_json = workflow_manifest_json || $2::jsonb
+        where id = $1`,
+      [runId, JSON.stringify({
+        evaluatorPipelines: [{
+          id: "shared-quality",
+          libraryObjectRef: "evaluator.shared-quality",
+          libraryVersionRef: "evaluator.shared-quality@2",
+          validationBindingIds: requirementIds.map((requirementId) => `binding-${requirementId}`),
+          evaluators: requirementIds.map((requirementId) => ({
+            id: `check-${requirementId}`,
+            kind: "checker-agent",
+            required: true,
+            config: {
+              validationBindingId: `binding-${requirementId}`,
+              requirementId,
+              criterionId: `criterion-${requirementId}`,
+              acceptanceCriterion: `${requirementId} is independently verified`,
+              expectedEvidenceKinds: ["artifact-ref"],
+            },
+          })),
+          onFailure: { defaultStrategy: "request-workflow-revision" },
+        }],
+      })],
+    );
+
+    const contexts = await loadFrozenCoverageContextsPg(db, [runId]);
+    assert.deepEqual(
+      contexts.get(runId)?.coverage.entries.map((entry) => entry.criterionIds),
+      [["criterion-req-entry"], ["criterion-req-quiz"]],
+    );
   });
 });
 

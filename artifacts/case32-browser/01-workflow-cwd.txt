@@ -15,7 +15,7 @@ Workflow
 Operator
 π
 Southstar Mission Engine
-e▍
+b▍
 web v0.7.0
 pi v0.80.2
 Send

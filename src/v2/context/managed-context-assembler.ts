@@ -1,8 +1,10 @@
 import { buildTaskEnvelopeV2, type TaskEnvelopeV2 } from "../agent-runner/task-envelope.ts";
 import type { SouthstarDb } from "../db/postgres.ts";
 import type { WorkflowNodePromptSpec } from "../design-library/types.ts";
-import type { ArtifactContract } from "../design-library/runtime-types.ts";
+import type { ArtifactContract, EvaluatorPipelineDefinition } from "../design-library/runtime-types.ts";
 import type { SouthstarWorkflowManifest, WorkflowTaskDefinition } from "../manifests/types.ts";
+import { loadFrozenCoverageContextPg } from "../evaluators/requirement-evaluator-results.ts";
+import { storedGoalRequirementCoverage } from "../orchestration/goal-requirement-coverage.ts";
 import { materializeTaskLibraryRefs } from "../orchestration/runtime-library-materializer.ts";
 import { loadRunLibrarySnapshotPg, requireSnapshotObject } from "../orchestration/run-library-snapshot.ts";
 import { validateGoalRequirementDraft, type GoalRequirementDraftV1 } from "../orchestration/goal-requirement-draft.ts";
@@ -18,6 +20,7 @@ import {
   type ContextBlock,
   type ContextBlockCandidate,
   type ContextPacket,
+  type GoalRequirementContext,
 } from "./types.ts";
 
 export type ManagedContextAssemblerOptions = Record<string, never>;
@@ -58,7 +61,12 @@ export function createManagedContextAssembler(db: SouthstarDb, options: ManagedC
       const evaluatorPipelines = required(workflow.evaluatorPipelines, `missing workflow evaluatorPipelines in manifest ${workflow.workflowId}`);
       const contextPolicies = required(workflow.contextPolicies, `missing workflow contextPolicies in manifest ${workflow.workflowId}`);
       const memoryPolicies = required(workflow.memoryPolicies, `missing workflow memoryPolicies in manifest ${workflow.workflowId}`);
-      const evaluatorPipeline = required(evaluatorPipelines.find((candidate) => candidate.id === evaluatorPipelineRef), `missing evaluator pipeline ${evaluatorPipelineRef}`);
+      const evaluatorPipeline = await evaluatorPipelineForTask(
+        db,
+        input.runId,
+        task,
+        required(evaluatorPipelines.find((candidate) => candidate.id === evaluatorPipelineRef), `missing evaluator pipeline ${evaluatorPipelineRef}`),
+      );
       const artifactContracts = artifactContractsForTask(workflow, task);
       const contextPolicy = required(
         contextPolicies.find((policy) => policy.id === (task.contextPolicyRef ?? agentProfile.contextPolicyRef)) ?? contextPolicies[0],
@@ -106,6 +114,7 @@ export function createManagedContextAssembler(db: SouthstarDb, options: ManagedC
         libraryRoot: process.env.SOUTHSTAR_LIBRARY_ROOT ?? `${process.cwd()}/library`,
       });
       const uiInteractionContracts = await readTaskUiInteractionContracts(db, input.runId, task);
+      const goalRequirementContext = await readTaskGoalRequirementContext(db, input.runId, task);
 
       const contextPacketId = `ctx-${input.runId}-${input.taskId}-${input.attemptId}`;
       const taskEnvelopeId = `task-envelope-${input.runId}-${input.taskId}-${input.attemptId}`;
@@ -123,6 +132,7 @@ export function createManagedContextAssembler(db: SouthstarDb, options: ManagedC
         taskGoal: workflow.goalPrompt,
         roleInstruction: role.responsibility,
         nodePromptSpec: nodePromptSpecFromPromptInputs(task.promptInputs),
+        ...(goalRequirementContext ? { goalRequirementContext } : {}),
         systemInstruction: agentProfile.systemPromptRef,
         agentsMdBlocks,
         artifactContracts: artifactContractBlocks(artifactContracts),
@@ -275,6 +285,105 @@ async function readWorkspaceHandle(db: SouthstarDb, runId: string): Promise<Task
       worktreePath: "/workspace/repo",
       hostMountPath: projectRoot,
     },
+  };
+}
+
+async function readTaskGoalRequirementContext(
+  db: SouthstarDb,
+  runId: string,
+  task: WorkflowTaskDefinition,
+): Promise<GoalRequirementContext | undefined> {
+  const run = await db.maybeOne<{ runtime_context_json: unknown }>(
+    "select runtime_context_json from southstar.workflow_runs where id = $1",
+    [runId],
+  );
+  if (!stringValue(asRecord(run?.runtime_context_json).goalContractHash)) return undefined;
+  const frozen = await loadFrozenCoverageContextPg(db, runId);
+  if (!frozen) return undefined;
+  const targetRequirementIds = unique(stringArray(asRecord(task.promptInputs).requirementIds)).sort();
+  const blockingRequirementIds = [...frozen.blockingRequirementIds].sort();
+  const coverageByRequirementId = new Map(
+    frozen.coverage.entries.map((entry) => [entry.requirementId, entry]),
+  );
+  const requirements = frozen.goalContract.requirements
+    .filter((requirement) => frozen.blockingRequirementIds.has(requirement.id) || targetRequirementIds.includes(requirement.id))
+    .map((requirement) => {
+      const coverage = coverageByRequirementId.get(requirement.id);
+      return {
+        id: requirement.id,
+        statement: requirement.statement,
+        blocking: requirement.blocking,
+        acceptanceCriteria: [...requirement.acceptanceCriteria],
+        expectedArtifacts: requirement.expectedArtifacts.map((artifact) => ({
+          mediaType: artifact.mediaType,
+          description: artifact.description,
+        })),
+        producerTaskIds: [...(coverage?.producerTaskIds ?? [])],
+        evaluatorTaskIds: [...(coverage?.evaluatorTaskIds ?? [])],
+        criterionIds: [...(coverage?.criterionIds ?? [])],
+        requiredEvidenceKinds: [...(coverage?.requiredEvidenceKinds ?? [])],
+      };
+    });
+  return {
+    schemaVersion: "southstar.task_goal_requirement_context.v1",
+    goalContractHash: frozen.coverage.goalContractHash,
+    targetRequirementIds,
+    blockingRequirementIds,
+    requirements,
+  };
+}
+
+async function evaluatorPipelineForTask(
+  db: SouthstarDb,
+  runId: string,
+  task: WorkflowTaskDefinition,
+  pipeline: EvaluatorPipelineDefinition,
+): Promise<EvaluatorPipelineDefinition> {
+  const pipelineBindingIds = unique([
+    ...(pipeline.validationBindingIds ?? []),
+    ...pipeline.evaluators.flatMap((step) => {
+      const bindingId = stringValue(step.config.validationBindingId);
+      return bindingId ? [bindingId] : [];
+    }),
+  ]);
+  if (pipelineBindingIds.length <= 1) return pipeline;
+
+  const requirementIds = stringArray(asRecord(task.promptInputs).requirementIds);
+  if (requirementIds.length === 0) return pipeline;
+  const row = await db.maybeOne<{ payload_json: unknown }>(
+    `select payload_json
+       from southstar.runtime_resources
+      where run_id = $1
+        and resource_type = 'goal_requirement_coverage'
+        and status = 'frozen'
+      order by updated_at desc
+      limit 1`,
+    [runId],
+  );
+  const coverage = storedGoalRequirementCoverage(row?.payload_json);
+  if (!coverage) return pipeline;
+
+  const pipelineBindings = new Set(pipelineBindingIds);
+  const selectedBindingIds = unique(coverage.entries
+    .filter((entry) => requirementIds.includes(entry.requirementId))
+    .flatMap((entry) => entry.validationBindingId && pipelineBindings.has(entry.validationBindingId)
+      ? [entry.validationBindingId]
+      : []));
+  if (selectedBindingIds.length === 0) {
+    throw new Error(`task ${task.id} requirements do not map to evaluator pipeline ${pipeline.id}`);
+  }
+  const selectedBindings = new Set(selectedBindingIds);
+  const evaluators = pipeline.evaluators.filter((step) => {
+    const bindingId = stringValue(step.config.validationBindingId);
+    return bindingId ? selectedBindings.has(bindingId) : false;
+  });
+  if (evaluators.length === 0) {
+    throw new Error(`task ${task.id} evaluator pipeline ${pipeline.id} has no steps for validation bindings ${selectedBindingIds.join(", ")}`);
+  }
+  return {
+    ...pipeline,
+    evaluators,
+    validationBindingIds: selectedBindingIds,
   };
 }
 

@@ -45,10 +45,13 @@ test("workflow node profile editor exposes ontology-backed candidate controls", 
   assert.match(form, /nodePromptSpec/);
 });
 
-test("workflow node profile editor filters refs and uses pi model registry options", () => {
+test("workflow node profile editor adds refs with multi-select candidates and uses pi model registry options", () => {
   const editor = readFileSync(join(root, "web/components/WorkflowNodeProfileEditor.tsx"), "utf8");
 
-  assert.match(editor, /data-testid=\{`workflow-profile-filter-\$\{props\.field\}`\}/);
+  assert.match(editor, /data-testid=\{`workflow-profile-candidate-select-\$\{props\.field\}`\}/);
+  assert.match(editor, /multiple/);
+  assert.match(editor, /Add selected/);
+  assert.doesNotMatch(editor, /Search candidates/);
   assert.match(editor, /field="skillRefs"/);
   assert.match(editor, /field="mcpGrantRefs"/);
   assert.match(editor, /field="toolGrantRefs"/);

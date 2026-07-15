@@ -1070,12 +1070,6 @@ function prepareDynamicRepairCompositionForCompile(
   const taskIds = new Set(composition.tasks.map((task) => task.id));
   let previousTaskId: string | undefined;
   const tasksWithInternalDependencies = composition.tasks.map((task) => {
-    if (expected.sliceId && task.sliceId && task.sliceId !== expected.sliceId) {
-      throw new Error(`dynamic repair proposal moved sliceId: ${task.id}`);
-    }
-    if (task.requirementIds.length > 0 && !sameStringSet(task.requirementIds, expected.requirementIds)) {
-      throw new Error(`dynamic repair proposal moved requirementIds: ${task.id}`);
-    }
     const internalDependsOn = unique(task.dependsOn.filter((dependency) => taskIds.has(dependency)));
     const dependsOn = internalDependsOn.length > 0
       ? internalDependsOn
@@ -1086,7 +1080,7 @@ function prepareDynamicRepairCompositionForCompile(
     return {
       ...task,
       ...(expected.sliceId ? { sliceId: expected.sliceId } : {}),
-      requirementIds: task.requirementIds.length > 0 ? task.requirementIds : [...expected.requirementIds],
+      requirementIds: [...expected.requirementIds],
       dependsOn,
     };
   });
@@ -1099,12 +1093,6 @@ function prepareDynamicRepairCompositionForCompile(
       ),
     })),
   };
-}
-
-function sameStringSet(left: string[], right: string[]): boolean {
-  const leftSorted = [...new Set(left)].sort();
-  const rightSorted = [...new Set(right)].sort();
-  return JSON.stringify(leftSorted) === JSON.stringify(rightSorted);
 }
 
 function upstreamOutputArtifactRefs(tasks: WorkflowCompositionPlan["tasks"], taskId: string): Set<string> {
@@ -1216,9 +1204,11 @@ function dynamicRepairGoalPrompt(input: {
     `Root failed validation task: ${input.rootFailedTaskId}`,
     `Repair round: ${input.round} of ${input.maxRounds}`,
     `Target Goal Contract requirement ids: ${input.targetRequirementIds.join(", ")}`,
+    taskSliceId(input.failedTask) ? `Frozen slice id: ${taskSliceId(input.failedTask)}` : "",
     input.failedArtifactRefId ? `Failed artifact ref: ${input.failedArtifactRefId}` : "",
     "Generate only appended runtime repair nodes, not a replacement initial workflow.",
     "Every repair/reverify task must reference only the target Goal Contract requirement ids listed above.",
+    "When a frozen slice id is listed, every repair/reverify task must use that exact sliceId; do not invent or rename slice ownership.",
     "Generate one bounded repair task followed by one reverify task unless the failure evidence clearly requires a smaller or larger bounded set.",
     "The repair task must use workerKind=repair_worker, consume the failed verification report and prior implementation artifacts, preserve existing behavior, fix only reported blocking failures, and output a repaired implementation artifact.",
     "The reverify task must use workerKind=validation_worker, depend on the repair task, rerun the failed checks plus relevant regression checks, and output artifact.verification_report with pass, safeToSave, blockingTests/testResults, evidence, and remaining failures.",

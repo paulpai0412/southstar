@@ -1,0 +1,33 @@
+schemaVersion: southstar.library.artifact_contract_file.v1
+id: artifact.local-offline-verification-evidence
+title: "Local Offline Verification Evidence Artifact"
+scope: "software"
+status: approved
+artifactType: "local-offline-verification-evidence"
+mediaTypes:
+  - "application/json"
+evidenceKinds:
+  - "command-output"
+  - "file-diff"
+  - "test-result"
+  - "policy-decision"
+  - "workspace-snapshot"
+validationRules:
+  - "Must include a traceability matrix from blocking requirements to automated tests and verification checks."
+  - "Must include local verification run outputs showing required checks passing."
+  - "Must include explicit offline-only compliance evidence demonstrating no external network integrations are required for core outcomes."
+  - "Must include workspace snapshot evidence of local configuration and execution context."
+schemaRef: "southstar.artifact.local_offline_verification_evidence.v1"
+requiredFields:
+  - "requirementTestMatrix"
+  - "verificationRunResults"
+  - "offlineComplianceDeclaration"
+  - "networkDependencyAssessment"
+  - "workspaceSnapshotRefs"
+  - "policyDecisionRefs"
+provenanceRequirements:
+  - "Record repository revision and local execution environment metadata."
+  - "Reference immutable evidence handles for command outputs, test results, policy decisions, and workspace snapshots."
+importDraftId: "library-import-goal-72ff3dbbd140eea225fa74f6569ce9af"
+importCandidateKey: "artifact.local-offline-verification-evidence"
+importSourcePath: "Confirmed-Goal-validation-gaps.md"

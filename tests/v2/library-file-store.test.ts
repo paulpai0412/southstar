@@ -414,7 +414,7 @@ vaultLeasePolicyRefs:
   }
 });
 
-test("sync projects catalog domain membership edges for agent files", async () => {
+test("sync keeps agent scope as taxonomy without inventing domain membership edges", async () => {
   const root = await mkdtemp(join(tmpdir(), "southstar-library-"));
   const db = await createTestPostgresDb();
 
@@ -452,15 +452,14 @@ Plans organic search programs.
     const domainObject = await findLibraryObjectByKey(db, "domain.marketing");
     assert.equal(domainObject?.objectKind, "domain_taxonomy");
     assert.equal(domainObject?.state.scope, "marketing");
+    const agentObject = await findLibraryObjectByKey(db, "agent.marketing-seo-specialist");
+    assert.equal(agentObject?.state.scope, "marketing");
 
     const edges = await findLibraryEdgesFrom(db, "agent.marketing-seo-specialist", "belongs_to_domain", {
       scope: "marketing",
       status: "active",
     });
-    assert.deepEqual(
-      edges.map((edge) => edge.toObjectKey),
-      ["domain.marketing"],
-    );
+    assert.deepEqual(edges, []);
   } finally {
     await db.close();
     await rm(root, { recursive: true, force: true });

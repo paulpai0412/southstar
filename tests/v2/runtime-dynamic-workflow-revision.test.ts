@@ -233,7 +233,7 @@ test("dynamic repair scopes compound Goal Contract coverage to the failed task r
   }
 });
 
-test("dynamic repair rejects proposals that move failed task slice or requirement ownership", async () => {
+test("dynamic repair host-normalizes proposed slice and requirement ownership to frozen lineage", async () => {
   const db = await createTestPostgresDb();
   try {
     await seedDynamicRepairPrimitives(db);
@@ -275,6 +275,7 @@ test("dynamic repair rejects proposals that move failed task slice or requiremen
     });
     const moved = repairCompositionPlan();
     moved.tasks[0]!.sliceId = "slice-admin";
+    moved.tasks[0]!.requirementIds = [goalContract.requirements[0]!.id];
 
     const result = await maybeApplyDynamicRepairRevisionPg(db, {
       runId: "run-dynamic-repair-moved-slice",
@@ -283,8 +284,17 @@ test("dynamic repair rejects proposals that move failed task slice or requiremen
       workflowComposer: new GoalContractBindingWorkflowComposer([moved], [billingRequirement.id]),
     });
 
-    assert.equal(result.status, "skipped");
-    assert.match(result.reason ?? "", /dynamic repair proposal moved sliceId/);
+    assert.equal(result.status, "applied", JSON.stringify(result));
+    const run = await db.one<{ workflow_manifest_json: SouthstarWorkflowManifest }>(
+      "select workflow_manifest_json from southstar.workflow_runs where id = $1",
+      ["run-dynamic-repair-moved-slice"],
+    );
+    const appendedTasks = run.workflow_manifest_json.tasks.filter((task) => task.id.includes("verify-feature-attempt-1"));
+    assert.equal(appendedTasks.length, 2);
+    assert.equal(appendedTasks.every((task) => task.promptInputs?.sliceId === "slice-billing"), true);
+    assert.equal(appendedTasks.every((task) => (
+      JSON.stringify(task.promptInputs?.requirementIds) === JSON.stringify([billingRequirement.id])
+    )), true);
   } finally {
     await db.close();
   }
@@ -520,7 +530,7 @@ test("dynamic repair requires exact snapshotted object versions", async () => {
       objectKind: "tool_definition",
       status: "approved",
       headVersionId: "tool.workspace-write@2",
-      state: { scope: "global", title: "Workspace Write v2", toolName: "workspace-write", proxyToolName: "workspace-write-proxy" },
+      state: { scope: "global", title: "Workspace Write v2", runtimeToolNames: ["edit", "write"] },
     });
 
     const result = await maybeApplyDynamicRepairRevisionPg(db, {
@@ -1542,7 +1552,7 @@ test("failed validation callback applies dynamic repair revision before completi
     });
 
     assert.equal(result.accepted, false);
-    assert.equal(result.dynamicRepairRevision?.status, "applied");
+    assert.equal(result.dynamicRepairRevision?.status, "applied", JSON.stringify(result.dynamicRepairRevision));
     const run = await db.one<{ status: string }>("select status from southstar.workflow_runs where id = $1", ["run-callback-dynamic-repair"]);
     assert.equal(run.status, "running");
     const tasks = await db.query<{ id: string; status: string }>(
@@ -2140,7 +2150,7 @@ function repairCompositionPlan(): WorkflowCompositionPlan {
         instructionRefs: ["instruction.react-review"],
         skillRefs: ["skill.react-ui"],
         toolGrantRefs: ["tool.workspace-write"],
-        mcpGrantRefs: ["mcp.filesystem-workspace"],
+        mcpGrantRefs: [],
         vaultLeasePolicyRefs: [],
         inputArtifactRefs: ["artifact.todo_app"],
         outputArtifactRefs: ["artifact.todo_app"],
@@ -2160,7 +2170,7 @@ function repairCompositionPlan(): WorkflowCompositionPlan {
         instructionRefs: ["instruction.react-review"],
         skillRefs: ["skill.react-ui"],
         toolGrantRefs: ["tool.workspace-write"],
-        mcpGrantRefs: ["mcp.filesystem-workspace"],
+        mcpGrantRefs: [],
         vaultLeasePolicyRefs: [],
         inputArtifactRefs: ["artifact.todo_app"],
         outputArtifactRefs: ["artifact.todo_app"],
@@ -2369,7 +2379,7 @@ async function seedDynamicRepairPrimitives(db: Awaited<ReturnType<typeof createT
   await upsertLibraryObject(db, { objectKey: "capability.frontend-ui", objectKind: "capability_spec", status: "approved", headVersionId: "capability.frontend-ui@1", state: { scope: "software", title: "Frontend UI" } });
   await upsertLibraryObject(db, { objectKey: "agent.frontend-developer", objectKind: "agent_definition", status: "approved", headVersionId: "agent.frontend-developer@1", state: { scope: "software", title: "Frontend Developer" } });
   await upsertLibraryObject(db, { objectKey: "skill.react-ui", objectKind: "skill_spec", status: "approved", headVersionId: "skill.react-ui@1", state: { scope: "software", title: "React UI", body: "# Instructions\n\nBuild React UI." } });
-  await upsertLibraryObject(db, { objectKey: "tool.workspace-write", objectKind: "tool_definition", status: "approved", headVersionId: "tool.workspace-write@1", state: { scope: "global", title: "Workspace Write", toolName: "workspace-write", proxyToolName: "workspace-write-proxy" } });
+  await upsertLibraryObject(db, { objectKey: "tool.workspace-write", objectKind: "tool_definition", status: "approved", headVersionId: "tool.workspace-write@1", state: { scope: "global", title: "Workspace Write", runtimeToolNames: ["edit", "write"] } });
   await upsertLibraryObject(db, { objectKey: "mcp.filesystem-workspace", objectKind: "mcp_tool_grant", status: "approved", headVersionId: "mcp.filesystem-workspace@1", state: { scope: "global", title: "Filesystem Workspace", serverId: "filesystem-workspace", allowedTools: ["read_file", "write_file"] } });
   await upsertLibraryObject(db, { objectKey: "instruction.react-review", objectKind: "instruction_template", status: "approved", headVersionId: "instruction.react-review@1", state: { scope: "software", title: "React Review", content: "Use React best practices.", variables: [] } });
   await upsertLibraryObject(db, { objectKey: "artifact.todo_app", objectKind: "artifact_contract", status: "approved", headVersionId: "artifact.todo_app@1", state: { scope: "software", title: "Todo app artifact" } });
@@ -2378,7 +2388,6 @@ async function seedDynamicRepairPrimitives(db: Awaited<ReturnType<typeof createT
   await upsertLibraryEdge(db, { fromObjectKey: "agent.frontend-developer", edgeType: "uses", toObjectKey: "skill.react-ui", scope: "software" });
   await upsertLibraryEdge(db, { fromObjectKey: "agent.frontend-developer", edgeType: "produces_artifact", toObjectKey: "artifact.todo_app", scope: "software" });
   await upsertLibraryEdge(db, { fromObjectKey: "skill.react-ui", edgeType: "requires_tool", toObjectKey: "tool.workspace-write", scope: "software" });
-  await upsertLibraryEdge(db, { fromObjectKey: "skill.react-ui", edgeType: "allows_mcp_grant", toObjectKey: "mcp.filesystem-workspace", scope: "software" });
   await upsertLibraryEdge(db, { fromObjectKey: "skill.react-ui", edgeType: "uses_instruction", toObjectKey: "instruction.react-review", scope: "software" });
   await upsertLibraryEdge(db, { fromObjectKey: "evaluator.todo-quality", edgeType: "validates_artifact", toObjectKey: "artifact.todo_app", scope: "software" });
 }

@@ -354,7 +354,7 @@ function stagedGoalInput(): { requirementDraft: GoalRequirementDraftV1; goalCont
       businessRules: ["No network dependency"],
       acceptanceCriteria: [{
         statement: "article/article.html loads with the network disabled",
-        evidenceIntent: ["browser interaction", "screenshot"],
+        evidenceIntent: ["url", "screenshot"],
       }],
       expectedOutcomeArtifacts: [{ description: "Self-contained article HTML", mediaType: "text/html" }],
       verificationIntent: ["Open with the network disabled"],

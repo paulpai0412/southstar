@@ -7,7 +7,12 @@ import { implementationReportContract, makerAgentProfile, makerRole, softwareFea
 test("TaskEnvelopeV2 carries resolved runtime inputs and renders prompt from ContextPacket", () => {
   const role = makerRole();
   const agentProfile = makerAgentProfile();
-  const artifactContracts = [implementationReportContract()];
+  const artifactContracts = [{
+    ...implementationReportContract(),
+    requiredFields: ["summary", "commandsRun"],
+    evidenceFields: ["summary", "commandsRun"],
+    evidenceKinds: ["command-output", "test-result", "url", "screenshot", "artifact-ref"],
+  }];
   const evaluatorPipeline = softwareFeatureQualityPipeline();
   const envelope = buildTaskEnvelopeV2({
     runId: "run-env2",
@@ -68,7 +73,12 @@ test("TaskEnvelopeV2 carries resolved runtime inputs and renders prompt from Con
   assert.equal(envelope.workspace?.baseSnapshotRef?.provider, "git");
   assert.match(envelope.agentPrompt, /ContextPacket: ctx-env2/);
   assert.match(envelope.agentPrompt, /Task goal:\nImplement calc sum/);
+  assert.match(envelope.agentPrompt, /Frozen Goal requirement context:/);
+  assert.match(envelope.agentPrompt, /Complete blocking requirement IDs: req-entry, req-quiz/);
+  assert.match(envelope.agentPrompt, /never validate coverage against a self-declared subset/);
   assert.match(envelope.agentPrompt, /Southstar runtime owns workflow orchestration, session state, evaluator execution, and stop-condition decisions/);
+  assert.match(envelope.agentPrompt, /every command must be bounded and must clean up any server or child process it starts/);
+  assert.match(envelope.agentPrompt, /Never use a synchronous child-process call from the same event loop that is hosting the server/);
   assert.match(envelope.agentPrompt, /Runtime grants:/);
   assert.match(envelope.agentPrompt, /These entries are grant policy, not bundled tool or MCP server implementations/);
   assert.match(envelope.agentPrompt, /Allowed tools: workspace-read/);
@@ -79,6 +89,13 @@ test("TaskEnvelopeV2 carries resolved runtime inputs and renders prompt from Con
   assert.match(envelope.agentPrompt, /Artifact contracts:\n- implementation_report/);
   assert.match(envelope.agentPrompt, /Prior artifacts:\n- ArtifactRef: artifact_ref:run-env2:task-build:attempt-1:abc/);
   assert.match(envelope.agentPrompt, /verifiedArtifactRefs/);
+  assert.match(envelope.agentPrompt, /Every criteriaResults\[\]\.evidenceRefs value must equal the id of a schema-valid evidence record/);
+  assert.match(envelope.agentPrompt, /A command-output record cited by criteriaResults must use this schema on one object/);
+  assert.match(envelope.agentPrompt, /Prefer adding id and evidenceKind to the exact commandsRun item and citing that id/);
+  assert.match(envelope.agentPrompt, /testResults\.status allowed values: passed, failed, failed_non_gating, blocked, not-verified, not-run, skipped, pass_with_environment_gap/);
+  assert.match(envelope.agentPrompt, /A cited URL record must include/);
+  assert.match(envelope.agentPrompt, /A cited screenshot record must include/);
+  assert.match(envelope.agentPrompt, /A cited artifact-ref record must include/);
   assert.doesNotMatch(JSON.stringify(envelope), /do-not-leak/);
 });
 
@@ -93,6 +110,33 @@ function contextPacket(budget: ContextPacket["budget"]): ContextPacket {
     agentProfileRef: "software-maker-pi",
     taskGoal: "Implement calc sum",
     roleInstruction: "Implement the feature with tests and documentation.",
+    goalRequirementContext: {
+      schemaVersion: "southstar.task_goal_requirement_context.v1",
+      goalContractHash: "a".repeat(64),
+      targetRequirementIds: ["req-quiz"],
+      blockingRequirementIds: ["req-entry", "req-quiz"],
+      requirements: [{
+        id: "req-entry",
+        statement: "Entries can be created.",
+        blocking: true,
+        acceptanceCriteria: ["Entry creation passes."],
+        expectedArtifacts: [{ mediaType: "application/json", description: "Entry evidence" }],
+        producerTaskIds: ["implement-entry"],
+        evaluatorTaskIds: ["verify-entry"],
+        criterionIds: ["criterion-entry"],
+        requiredEvidenceKinds: ["test-result"],
+      }, {
+        id: "req-quiz",
+        statement: "Quiz answers persist.",
+        blocking: true,
+        acceptanceCriteria: ["Quiz persistence passes."],
+        expectedArtifacts: [{ mediaType: "application/json", description: "Quiz evidence" }],
+        producerTaskIds: ["implement-quiz"],
+        evaluatorTaskIds: ["verify-quiz"],
+        criterionIds: ["criterion-quiz"],
+        requiredEvidenceKinds: ["artifact-ref", "test-result"],
+      }],
+    },
     agentsMdBlocks: [{ id: "agents", sourceType: "agents-md", title: "AGENTS", text: "Follow repo instructions.", tokenEstimate: 5 }],
     artifactContracts: [{ id: "artifact", sourceType: "artifact", title: "implementation_report", text: "Return summary, commandsRun, risks.", tokenEstimate: 7 }],
     selectedMemories: [{ id: "memory-preference", sourceType: "memory", title: "preference", text: "Prefer tests around calc sum behavior.", sourceRef: "mem-1", tokenEstimate: 9 }],

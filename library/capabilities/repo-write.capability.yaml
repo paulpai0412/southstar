@@ -5,7 +5,8 @@ scope: software
 status: approved
 description: Modify source files and tests in a workspace repository.
 requiredOperations:
-  - workspace-write
+  - edit_file
+  - apply_patch
 risk:
   level: medium
   dataSensitivity: workspace

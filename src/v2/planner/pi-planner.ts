@@ -130,6 +130,7 @@ export function createHttpPiPlannerClient(options: {
 export type PiSdkPlannerSession = {
   prompt(text: string): Promise<void>;
   send?: (command: unknown) => Promise<unknown>;
+  dispose?: () => void;
   subscribe?: (listener: (event: unknown) => void) => () => void;
   on?: (listener: (event: unknown) => void) => () => void;
   sessionManager?: {
@@ -149,18 +150,65 @@ export type PiSdkPlannerClientOptions = {
 export function createPiSdkPlannerClient(options: PiSdkPlannerClientOptions = {}): PiPlannerClient {
   return {
     async generate(prompt: string): Promise<string> {
-      const session = await (options.createSession ?? createDefaultPiSdkSession)(plannerSessionOptions(options));
-      markPiSdkPlannerSessionKind(session, options.sessionKind ?? "workflow");
-      await configurePiSdkPlannerSession(session, options.model ?? plannerModelFromEnv());
-      return runPromptAndCollectAssistantText(session, prompt, options.timeoutMs ?? 180_000);
+      const timeoutMs = options.timeoutMs ?? 180_000;
+      const deadline = Date.now() + timeoutMs;
+      const session = await withPlannerTimeout(
+        (options.createSession ?? createDefaultPiSdkSession)(plannerSessionOptions(options)),
+        timeoutMs,
+        "creating session",
+      );
+      try {
+        markPiSdkPlannerSessionKind(session, options.sessionKind ?? "workflow");
+        await withPlannerTimeout(
+          configurePiSdkPlannerSession(session, options.model ?? plannerModelFromEnv()),
+          remainingPlannerTimeout(deadline),
+          "configuring session",
+        );
+        return await runPromptAndCollectAssistantText(session, prompt, remainingPlannerTimeout(deadline));
+      } finally {
+        session.dispose?.();
+      }
     },
     async generateStream(prompt: string, handlers: PiPlannerStreamHandlers = {}): Promise<string> {
-      const session = await (options.createSession ?? createDefaultPiSdkSession)(plannerSessionOptions(options));
-      markPiSdkPlannerSessionKind(session, options.sessionKind ?? "workflow");
-      await configurePiSdkPlannerSession(session, options.model ?? plannerModelFromEnv());
-      return runPromptAndCollectAssistantText(session, prompt, options.timeoutMs ?? 180_000, handlers);
+      const timeoutMs = options.timeoutMs ?? 180_000;
+      const deadline = Date.now() + timeoutMs;
+      const session = await withPlannerTimeout(
+        (options.createSession ?? createDefaultPiSdkSession)(plannerSessionOptions(options)),
+        timeoutMs,
+        "creating session",
+      );
+      try {
+        markPiSdkPlannerSessionKind(session, options.sessionKind ?? "workflow");
+        await withPlannerTimeout(
+          configurePiSdkPlannerSession(session, options.model ?? plannerModelFromEnv()),
+          remainingPlannerTimeout(deadline),
+          "configuring session",
+        );
+        return await runPromptAndCollectAssistantText(session, prompt, remainingPlannerTimeout(deadline), handlers);
+      } finally {
+        session.dispose?.();
+      }
     },
   };
+}
+
+function remainingPlannerTimeout(deadline: number): number {
+  return Math.max(1, deadline - Date.now());
+}
+
+async function withPlannerTimeout<T>(promise: Promise<T>, timeoutMs: number, phase: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`Pi SDK planner timed out while ${phase} after ${timeoutMs}ms`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    promise.catch(() => undefined);
+  }
 }
 
 function plannerSessionOptions(options: PiSdkPlannerClientOptions): { cwd: string; noTools?: "all" | null } {
@@ -438,6 +486,15 @@ async function runPromptAndCollectAssistantText(
         if (delta) handlers.onDelta?.(delta);
         lastStreamedText = text;
       }
+      const assistantStop = terminalAssistantStopFromEvent(event);
+      if (assistantStop === "stop" || assistantStop === "length") {
+        resolve(finalText);
+        return;
+      }
+      if (assistantStop === "error" || assistantStop === "aborted") {
+        reject(new Error(assistantFailureFromEvent(event) ?? `Pi SDK planner assistant stopped with ${assistantStop}`));
+        return;
+      }
       if (isRecord(event) && event.type === "agent_end") {
         resolve(finalText);
       }
@@ -447,10 +504,11 @@ async function runPromptAndCollectAssistantText(
       reject(new Error("Pi SDK AgentSession must expose subscribe(listener)"));
     }
   });
-  const promptAndDone = (async () => {
-    await session.prompt(prompt);
-    return done;
-  })();
+  const promptInvocation = session.prompt(prompt);
+  const promptAndDone = Promise.race([
+    done,
+    promptInvocation.then(() => done),
+  ]);
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new Error(`Pi SDK planner timed out after ${timeoutMs}ms`)), timeoutMs);
   });
@@ -461,8 +519,22 @@ async function runPromptAndCollectAssistantText(
   } finally {
     if (timer) clearTimeout(timer);
     promptAndDone.catch(() => undefined);
+    promptInvocation.catch(() => undefined);
     unsubscribe?.();
   }
+}
+
+function terminalAssistantStopFromEvent(event: unknown): string | undefined {
+  if (!isRecord(event) || event.type !== "message_end" || !isRecord(event.message)) return undefined;
+  if (event.message.role !== "assistant" || typeof event.message.stopReason !== "string") return undefined;
+  return event.message.stopReason === "toolUse" ? undefined : event.message.stopReason;
+}
+
+function assistantFailureFromEvent(event: unknown): string | undefined {
+  if (!isRecord(event) || !isRecord(event.message)) return undefined;
+  return typeof event.message.errorMessage === "string" && event.message.errorMessage.trim()
+    ? event.message.errorMessage
+    : undefined;
 }
 
 function assistantTextFromEvent(event: unknown): string | undefined {

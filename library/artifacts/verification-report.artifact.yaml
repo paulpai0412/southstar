@@ -4,6 +4,18 @@ title: Verification Report
 scope: software
 status: approved
 artifactType: verification_report
+mediaTypes:
+  - application/json
+schemaRef: schema.verification-report.v1
+requiredFields:
+  - verdict
+  - checks
+  - evidenceRefs
+validationRules:
+  - rule.verdict-supported-by-checks
+  - rule.verification-evidence-resolvable
 evidenceKinds:
   - test-result
   - command-output
+provenanceRequirements:
+  - independent-verification-run

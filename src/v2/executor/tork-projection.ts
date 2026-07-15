@@ -48,6 +48,7 @@ export function buildTorkJobProjection(
         command: [...task.execution.command, "--envelope", envelopePath],
         env: {
           ...sanitizeEnv(task.execution.env),
+          ...workspaceIdentityEnv(),
           SOUTHSTAR_RUN_ID: options.runId,
           SOUTHSTAR_TASK_ID: task.id,
           SOUTHSTAR_ENVELOPE_PATH: envelopePath,
@@ -71,6 +72,17 @@ export function buildTorkJobProjection(
     executor: "tork",
     fingerprint: createHash("sha256").update(JSON.stringify(job)).digest("hex"),
     job,
+  };
+}
+
+function workspaceIdentityEnv(): Record<string, string> {
+  const uid = process.getuid?.();
+  const gid = process.getgid?.();
+  if (uid === undefined || gid === undefined) return {};
+  return {
+    SOUTHSTAR_WORKSPACE_UID: String(uid),
+    SOUTHSTAR_WORKSPACE_GID: String(gid),
+    SOUTHSTAR_WORKSPACE_PATH: "/workspace/repo",
   };
 }
 

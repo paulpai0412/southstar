@@ -1,16 +1,21 @@
-import { readdir, readFile, writeFile } from "node:fs/promises";
+import { readdir, readFile, readlink, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import type { AgentHarness, HarnessRunInput, HarnessRunResult } from "../harness/types.ts";
 import { createPiSdkAgentHarness } from "../harness/pi-sdk-harness.ts";
 import { createBuiltinAgentHarness } from "../harness/builtin-agent-harness.ts";
 import { runTaskEnvelope, type TaskRunResult, type TaskRunnerRuntimeFault } from "./task-runner.ts";
 import { refreshTaskEnvelopeV2Prompt, type AnyTaskEnvelope } from "./task-envelope.ts";
 
+const execFileAsync = promisify(execFile);
+
 export async function runAgentRunnerCli(
   argv = process.argv.slice(2),
   io: { write?: (text: string) => void; writeError?: (text: string) => void } = {},
 ): Promise<number> {
   try {
+    await prepareWorkspaceIdentity();
     const options = parseAgentRunnerArgs(argv);
     const envelope = JSON.parse(await readFile(options.envelopePath, "utf8")) as AnyTaskEnvelope;
     const refreshedEnvelope = options.contextRefreshUrl
@@ -27,6 +32,7 @@ export async function runAgentRunnerCli(
         });
       } finally {
         await stopHeartbeat();
+        await cleanupWorkspaceProcesses(process.env.SOUTHSTAR_WORKSPACE_PATH);
       }
     })();
     result.materializationRoot = options.materializationRoot;
@@ -45,6 +51,81 @@ export async function runAgentRunnerCli(
     (io.writeError ?? console.error)((error as Error).message);
     return 1;
   }
+}
+
+/**
+ * A task may start a local development server while collecting evidence. Those
+ * processes can outlive the shell/Pi tool that started them and retain the
+ * runner's stdio pipe, preventing the terminal callback from ever being sent.
+ * The Tork container is single-task scoped, so at task finalization it is safe
+ * to terminate any remaining processes whose cwd is inside the mounted
+ * workspace. This is best-effort and never masks the task result.
+ */
+async function cleanupWorkspaceProcesses(workspacePath: string | undefined): Promise<void> {
+  if (!workspacePath) return;
+  const normalizedRoot = workspacePath.replace(/\/+$/, "");
+  let entries: string[];
+  try {
+    entries = await readdir("/proc");
+  } catch {
+    return;
+  }
+  const candidates: number[] = [];
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue;
+    const pid = Number(entry);
+    if (!Number.isSafeInteger(pid) || pid <= 1 || pid === process.pid) continue;
+    try {
+      const cwd = await readlink(`/proc/${entry}/cwd`);
+      if (cwd === normalizedRoot || cwd.startsWith(`${normalizedRoot}/`)) candidates.push(pid);
+    } catch {
+      // Process exited or its cwd is not readable; continue cleanup best-effort.
+    }
+  }
+  for (const pid of candidates) {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      // Process may have exited between discovery and termination.
+    }
+  }
+  if (candidates.length === 0) return;
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  for (const pid of candidates) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // Process already exited.
+    }
+  }
+}
+
+async function prepareWorkspaceIdentity(): Promise<void> {
+  const uid = numericEnv("SOUTHSTAR_WORKSPACE_UID");
+  const gid = numericEnv("SOUTHSTAR_WORKSPACE_GID");
+  if (uid === undefined || gid === undefined || process.getuid?.() !== 0) return;
+
+  const workspacePath = process.env.SOUTHSTAR_WORKSPACE_PATH;
+  const paths = [workspacePath, process.env.PI_CODING_AGENT_SESSION_DIR].filter((value): value is string => Boolean(value));
+  for (const path of paths) {
+    try {
+      await execFileAsync("chown", ["-R", `${uid}:${gid}`, path]);
+    } catch {
+      // A missing or read-only optional mount must not prevent the task from running.
+    }
+  }
+  try {
+    process.setgid?.(gid);
+    process.setuid?.(uid);
+  } catch (error) {
+    throw new Error(`failed to drop task runner privileges to ${uid}:${gid}: ${(error as Error).message}`);
+  }
+}
+
+function numericEnv(name: string): number | undefined {
+  const value = process.env[name];
+  if (!value || !/^\d+$/.test(value)) return undefined;
+  return Number(value);
 }
 
 export function parseAgentRunnerArgs(argv: string[], env: Record<string, string | undefined> = process.env) {
@@ -257,18 +338,9 @@ export function timeoutFromEnvelope(envelope: AnyTaskEnvelope): number {
 
 function requiredFieldsFromEnvelope(envelope: AnyTaskEnvelope): string[] {
   if (envelope.schemaVersion === "southstar.task-envelope.v2") {
-    return [...new Set(envelope.artifactContracts.flatMap((contract) => [
-      ...knownContractRequiredFields(contract.id),
-      ...contract.requiredFields,
-    ]))];
+    return [...new Set(envelope.artifactContracts.flatMap((contract) => contract.requiredFields))];
   }
   return envelope.artifactContract?.requiredFields ?? [];
-}
-
-function knownContractRequiredFields(contractId: string): string[] {
-  if (contractId === "verification_report") return ["summary", "pass", "safeToSave", "commandsRun", "testResults"];
-  if (contractId === "completion_report") return ["summary", "acceptedArtifacts", "tests"];
-  return [];
 }
 
 function numberFromEnv(value: string | undefined): number | undefined {

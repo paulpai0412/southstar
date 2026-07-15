@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { SouthstarWorkflowCanvas } from "./workflow-canvas/SouthstarWorkflowCanvas";
 import { GoalContractCard } from "./GoalContractCard";
 import type { WorkflowCanvasModel, WorkflowDependencyModel, WorkflowTaskNodeModel } from "./workflow-canvas/types";
@@ -18,6 +18,11 @@ type SaveTemplateStatus =
 type ApprovalStatus =
   | { phase: "idle"; message: null }
   | { phase: "pending" | "succeeded" | "error"; message: string };
+
+type ApprovalDraft = {
+  command: WorkflowCommandDescriptor;
+  reason: string;
+};
 
 export function WorkflowDagBlock({
   dag,
@@ -39,6 +44,7 @@ export function WorkflowDagBlock({
   const [saveTemplateStatus, setSaveTemplateStatus] = useState<SaveTemplateStatus>({ phase: "idle" });
   const [reviewMode, setReviewMode] = useState(false);
   const [approvalStatus, setApprovalStatus] = useState<ApprovalStatus>({ phase: "idle", message: null });
+  const [approvalDraft, setApprovalDraft] = useState<ApprovalDraft | null>(null);
   const [refreshedMission, setRefreshedMission] = useState<GoalMissionReadModel | null>(null);
   const approvalInFlightRef = useRef(false);
   const { state, createDraft, validateDraft, runDraft, executeRun } = useWorkflowLifecycle(dag, cwd);
@@ -54,8 +60,34 @@ export function WorkflowDagBlock({
   const executeDisabled = busy || !activeRunId;
   const nodeById = useMemo(() => new Map(dag.nodes.map((node) => [node.id, node])), [dag.nodes]);
   const canvas = useMemo(() => workflowDagToCanvasModel(dag, selectedNodeId), [dag, selectedNodeId]);
-  const mission = refreshedMission?.goalContractHash === dag.mission?.goalContractHash ? refreshedMission : dag.mission;
+  const mission = refreshedMission && (!dag.mission || refreshedMission.goalContractHash === dag.mission.goalContractHash)
+    ? refreshedMission
+    : dag.mission;
   const approvalComplete = approvalStatus.phase === "succeeded" || Boolean(mission?.approval && mission.approval.status !== "pending");
+
+  useEffect(() => {
+    if (!dag.runId) return;
+    let active = true;
+    let timer: number | undefined;
+    const refresh = async () => {
+      try {
+        const next = await refreshGoalMission(dag);
+        if (!active || !next) return;
+        setRefreshedMission(next);
+        if (next.status.outcome !== "in_progress" && timer !== undefined) {
+          window.clearInterval(timer);
+        }
+      } catch {
+        // A persisted DAG remains usable when the runtime is temporarily unavailable.
+      }
+    };
+    void refresh();
+    timer = window.setInterval(() => void refresh(), 5000);
+    return () => {
+      active = false;
+      if (timer !== undefined) window.clearInterval(timer);
+    };
+  }, [dag.runId]);
 
   const handleDraft = () => {
     void createDraft();
@@ -79,15 +111,23 @@ export function WorkflowDagBlock({
     void executeRun();
   };
 
-  const handleApproval = async (command: WorkflowCommandDescriptor) => {
+  const openApprovalForm = (command: WorkflowCommandDescriptor) => {
     if (!dag.runId || approvalInFlightRef.current || approvalComplete) return;
-    const reason = window.prompt(`Reason for ${command.label}`, "Approve Goal Contract execution");
-    if (reason === null) return;
-    if (command.requiresConfirmation && !window.confirm(`Run ${command.label}?`)) return;
+    setApprovalDraft({ command, reason: "Approve Goal Contract execution" });
+    setApprovalStatus({ phase: "idle", message: null });
+  };
+
+  const submitApproval = async () => {
+    if (!dag.runId || !approvalDraft || approvalInFlightRef.current || approvalComplete) return;
+    const reason = approvalDraft.reason.trim();
+    if (!reason) {
+      setApprovalStatus({ phase: "error", message: "Approval reason is required." });
+      return;
+    }
     approvalInFlightRef.current = true;
     setApprovalStatus({ phase: "pending", message: "Approving…" });
     try {
-      await invokeOperatorCommand({ command, runId: dag.runId, reason: reason.trim() || command.label });
+      await invokeOperatorCommand({ command: approvalDraft.command, runId: dag.runId, reason });
       try {
         const refreshed = onMissionRefresh
           ? await onMissionRefresh(dag)
@@ -98,6 +138,7 @@ export function WorkflowDagBlock({
         const message = refreshError instanceof Error ? refreshError.message : String(refreshError);
         setApprovalStatus({ phase: "succeeded", message: `Approved · ${message}` });
       }
+      setApprovalDraft(null);
     } catch (error) {
       setApprovalStatus({ phase: "error", message: error instanceof Error ? error.message : String(error) });
     } finally {
@@ -186,9 +227,51 @@ export function WorkflowDagBlock({
               approvalCommand={approvalComplete ? undefined : dag.approvalCommand}
               onOpenDetails={() => onGoalContractSelect?.(dag)}
               onReviseGoal={(choice) => onReviseGoal?.(dag, choice)}
-              onApprove={(command) => void handleApproval(command)}
+              onApprove={openApprovalForm}
               approvalPending={approvalStatus.phase === "pending"}
             />
+          ) : null}
+          {approvalDraft && !approvalComplete ? (
+            <form
+              className="goal-contract-approval-form"
+              data-testid="goal-contract-approval-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void submitApproval();
+              }}
+            >
+              <label htmlFor="goal-contract-approval-reason">Reason for {approvalDraft.command.label}</label>
+              <textarea
+                id="goal-contract-approval-reason"
+                aria-label={`Reason for ${approvalDraft.command.label}`}
+                value={approvalDraft.reason}
+                onChange={(event) => {
+                  const reason = event.currentTarget.value;
+                  setApprovalDraft((current) => current ? { ...current, reason } : current);
+                }}
+                rows={2}
+                disabled={approvalStatus.phase === "pending"}
+              />
+              <div>
+                <button
+                  type="submit"
+                  data-testid="goal-contract-confirm-approval"
+                  disabled={approvalStatus.phase === "pending" || !approvalDraft.reason.trim()}
+                >
+                  Confirm {approvalDraft.command.label}
+                </button>
+                <button
+                  type="button"
+                  disabled={approvalStatus.phase === "pending"}
+                  onClick={() => {
+                    setApprovalDraft(null);
+                    setApprovalStatus({ phase: "idle", message: null });
+                  }}
+                >
+                  Cancel approval
+                </button>
+              </div>
+            </form>
           ) : null}
           {approvalStatus.message ? <p className="goal-contract-command-status" aria-live="polite">{approvalStatus.message}</p> : null}
           <button

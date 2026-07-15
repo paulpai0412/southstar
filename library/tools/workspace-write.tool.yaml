@@ -3,8 +3,9 @@ id: tool.workspace-write
 title: Workspace Write
 scope: software
 status: approved
-toolName: workspace-write
-proxyToolName: workspace-write
+runtimeToolNames:
+  - edit
+  - write
 operations:
   - edit_file
   - apply_patch

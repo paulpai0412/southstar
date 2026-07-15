@@ -58,7 +58,7 @@ test("candidate resolver returns agents but disables legacy stored agent profile
   }
 });
 
-test("candidate resolver exposes MCP primitives without direct profile edges", async () => {
+test("candidate resolver excludes MCP metadata until the task runner has an executable adapter", async () => {
   const db = await createTestPostgresDb();
   try {
     await seedSoftwareLibraryGraph(db);
@@ -67,7 +67,7 @@ test("candidate resolver exposes MCP primitives without direct profile edges", a
 
     assert.deepEqual(packet.mcpGrantCandidatesByProfile, {});
     assert.deepEqual(packet.vaultLeaseCandidatesByProfile, {});
-    assert.equal(packet.profilePrimitiveCandidates?.mcpGrants.includes("mcp.filesystem-workspace"), true);
+    assert.deepEqual(packet.profilePrimitiveCandidates?.mcpGrants, []);
   } finally {
     await db.close();
   }

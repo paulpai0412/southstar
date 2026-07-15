@@ -188,7 +188,8 @@ async function sendGoalReceipt(
   }
   if (result.runId) send("run", { runId: result.runId, runStatus: result.runStatus });
   if (!result.runId && (
-    result.draftStatus === "ready_for_review"
+    result.draftStatus === "requirements_review"
+    || result.draftStatus === "ready_for_review"
     || result.draftStatus === "needs_input"
     || result.draftStatus === "needs_library_input"
   )) {

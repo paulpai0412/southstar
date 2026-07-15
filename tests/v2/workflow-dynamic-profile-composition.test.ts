@@ -31,7 +31,7 @@ test("workflow composition accepts generated profiles built from approved primit
     assert.deepEqual(packet.profilePrimitiveCandidates?.agents, ["agent.frontend-developer"]);
     assert.deepEqual(packet.profilePrimitiveCandidates?.skills, ["skill.react-ui"]);
     assert.deepEqual(packet.profilePrimitiveCandidates?.tools, ["tool.workspace-write"]);
-    assert.deepEqual(packet.profilePrimitiveCandidates?.mcpGrants, ["mcp.filesystem-workspace"]);
+    assert.deepEqual(packet.profilePrimitiveCandidates?.mcpGrants, []);
     assert.deepEqual(packet.profilePrimitiveCandidates?.instructions, ["instruction.react-review"]);
 
     const validation = await validateWorkflowCompositionPlan(db, packet, generatedProfilePlan(), { scope: "software" });
@@ -66,7 +66,7 @@ test("compiler preserves generated profile and primitive refs in the manifest", 
     assert.equal(task.agentProfileRef, "profile.generated.todo.implement-ui");
     assert.deepEqual(task.skillRefs, ["skill.react-ui"]);
     assert.deepEqual(task.toolGrantRefs, ["tool.workspace-write"]);
-    assert.deepEqual(task.mcpGrantRefs, ["mcp.filesystem-workspace"]);
+    assert.deepEqual(task.mcpGrantRefs, []);
     assert.deepEqual(task.instructionRefs, ["instruction.react-review"]);
     const generatedProfile = compiled.workflow.agentProfiles?.find((profile) => profile.id === "profile.generated.todo.implement-ui");
     assert.ok(generatedProfile);
@@ -76,31 +76,21 @@ test("compiler preserves generated profile and primitive refs in the manifest", 
   }
 });
 
-test("workflow composition rejects generated profiles with invalid primitive graph closure", async () => {
+test("workflow composition rejects a generated profile that omits a selected skill's required tool", async () => {
   const db = await createTestPostgresDb();
   try {
     await seedDynamicPrimitives(db);
-    await upsertLibraryObject(db, {
-      objectKey: "skill.database-design",
-      objectKind: "skill_spec",
-      status: "approved",
-      headVersionId: "skill.database-design@1",
-      state: { scope: "software", title: "Database Design" },
-    });
     const packet = await resolveWorkflowCandidates(db, {
       requirementSpec: requirementSpec(),
       scope: "software",
     });
     const plan = generatedProfilePlan();
-    plan.tasks[0]!.skillRefs = ["skill.database-design"];
     plan.tasks[0]!.toolGrantRefs = [];
-    plan.tasks[0]!.mcpGrantRefs = [];
-    plan.tasks[0]!.instructionRefs = [];
 
     const validation = await validateWorkflowCompositionPlan(db, packet, plan, { scope: "software" });
 
     assert.equal(validation.ok, false);
-    assert.equal(validation.issues.some((issue) => issue.code === "agent_does_not_use_skill"), true);
+    assert.equal(validation.issues.some((issue) => issue.code === "missing_required_tool"), true);
   } finally {
     await db.close();
   }
@@ -192,7 +182,7 @@ test("workflow composition allows generated profiles to produce task artifacts w
   }
 });
 
-test("workflow composition accepts generated profile skill closure through ontology uses edge", async () => {
+test("workflow composition allows independently approved agent and skill without a uses edge", async () => {
   const db = await createTestPostgresDb();
   try {
     await seedDynamicPrimitives(db);
@@ -201,12 +191,6 @@ test("workflow composition accepts generated profile skill closure through ontol
        where from_object_key = $1 and edge_type = $2 and to_object_key = $3`,
       ["agent.frontend-developer", "uses", "skill.react-ui"],
     );
-    await upsertLibraryEdge(db, {
-      fromObjectKey: "agent.frontend-developer",
-      edgeType: "uses",
-      toObjectKey: "skill.react-ui",
-      scope: "software",
-    });
     const packet = await resolveWorkflowCandidates(db, {
       requirementSpec: requirementSpec(),
       scope: "software",
@@ -395,7 +379,7 @@ function generatedProfilePlan(): WorkflowCompositionPlan {
       instructionRefs: ["instruction.react-review"],
       skillRefs: ["skill.react-ui"],
       toolGrantRefs: ["tool.workspace-write"],
-      mcpGrantRefs: ["mcp.filesystem-workspace"],
+      mcpGrantRefs: [],
       vaultLeasePolicyRefs: [],
       inputArtifactRefs: [],
       outputArtifactRefs: ["artifact.todo_app"],
@@ -416,7 +400,7 @@ function generatedProfilePlan(): WorkflowCompositionPlan {
         model: "pi-agent-default",
         thinkingLevel: "high",
         harnessRef: "pi",
-        instruction: "Implement the todo web app using the approved React UI skill, workspace write tool, filesystem MCP grant, and React review instruction. Produce artifact.todo_app.",
+        instruction: "Implement the todo web app using the approved React UI skill, workspace write tool, and React review instruction. Produce artifact.todo_app.",
         promptTemplateRef: "react-review",
         contextPolicyRef: "context.generated",
         sessionPolicyRef: "session.generated",
@@ -493,14 +477,7 @@ async function seedDynamicPrimitives(db: Awaited<ReturnType<typeof createTestPos
     objectKind: "tool_definition",
     status: "approved",
     headVersionId: "tool.workspace-write@1",
-    state: { scope: "global", title: "Workspace Write", toolName: "workspace-write", proxyToolName: "workspace-write-proxy" },
-  });
-  await upsertLibraryObject(db, {
-    objectKey: "mcp.filesystem-workspace",
-    objectKind: "mcp_tool_grant",
-    status: "approved",
-    headVersionId: "mcp.filesystem-workspace@1",
-    state: { scope: "global", title: "Filesystem Workspace", serverId: "filesystem-workspace", allowedTools: ["read_file", "write_file"] },
+    state: { scope: "global", title: "Workspace Write", runtimeToolNames: ["edit", "write"] },
   });
   await upsertLibraryObject(db, {
     objectKey: "instruction.react-review",
@@ -545,12 +522,6 @@ async function seedDynamicPrimitives(db: Awaited<ReturnType<typeof createTestPos
     fromObjectKey: "skill.react-ui",
     edgeType: "requires_tool",
     toObjectKey: "tool.workspace-write",
-    scope: "software",
-  });
-  await upsertLibraryEdge(db, {
-    fromObjectKey: "skill.react-ui",
-    edgeType: "allows_mcp_grant",
-    toObjectKey: "mcp.filesystem-workspace",
     scope: "software",
   });
   await upsertLibraryEdge(db, {

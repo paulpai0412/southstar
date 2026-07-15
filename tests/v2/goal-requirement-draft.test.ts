@@ -27,7 +27,7 @@ function validInput(overrides: Partial<GoalRequirementDraftInputV1> = {}): GoalR
       businessRules: ["No network dependency"],
       acceptanceCriteria: [{
         statement: "article.html opens while the network is disabled",
-        evidenceIntent: ["browser interaction", "screenshot"],
+        evidenceIntent: ["url", "screenshot"],
       }],
       expectedOutcomeArtifacts: [{ description: "Offline HTML", mediaType: "text/html" }],
       verificationIntent: ["Open the file with network disabled"],
@@ -85,7 +85,7 @@ test("LLM Requirement interpreter returns rich requirements without Library refs
             businessRules: ["No network"],
             acceptanceCriteria: [{
               statement: "article.html opens with network disabled",
-              evidenceIntent: ["browser interaction"],
+              evidenceIntent: ["screenshot"],
             }],
             expectedOutcomeArtifacts: [{ description: "Offline HTML", mediaType: "text/html" }],
             verificationIntent: ["Open in a browser"],
@@ -109,6 +109,8 @@ test("LLM Requirement interpreter returns rich requirements without Library refs
   assert.equal(draft.revision, 1);
   assert.match(prompts[0] ?? "", /GoalRequirementDraftOutputSchema/);
   assert.match(prompts[0] ?? "", /Do not return host-owned fields/);
+  assert.match(prompts[0] ?? "", /file-diff, test-result, command-output, url, screenshot/);
+  assert.match(prompts[0] ?? "", /Do not attach interactionContractRefs to persistence, data integrity, offline operation/);
   assert.doesNotMatch(prompts[0] ?? "", /evaluatorContracts|slicePlan|agentDefinitionRef/);
   assert.match(draft.requirements[0]!.id, /^req-/);
   assert.equal(draft.requirements[0]!.status, "ready");
@@ -154,6 +156,83 @@ test("LLM Requirement interpreter performs at most one schema repair", async () 
   assert.equal(draft.requirements.length, 1);
 });
 
+test("LLM Requirement interpreter repairs prose evidence intent into canonical evidence kinds", async () => {
+  let calls = 0;
+  const interpreter = createLlmGoalRequirementDraftInterpreter({
+    model: "inline-evidence-repair-test",
+    client: {
+      async generateText() {
+        calls += 1;
+        const requirement = structuredClone(validInput().requirements[0]!);
+        requirement.acceptanceCriteria[0]!.evidenceIntent = (calls === 1
+          ? ["Functional browser verification"]
+          : ["screenshot", "url"]) as typeof requirement.acceptanceCriteria[0]["evidenceIntent"];
+        return JSON.stringify({
+          summary: "Create an offline article",
+          requirements: [requirement],
+          nonGoals: [],
+          blockingInputs: [],
+        });
+      },
+    },
+  });
+  const draft = await interpreter.interpret({
+    goalPrompt: "Create an offline article",
+    cwd: "/workspace/article",
+    workspaceDiscovery: discovery("/workspace/article"),
+    goalDesignSkill: skill(),
+  });
+  assert.equal(calls, 2);
+  assert.deepEqual(draft.requirements[0]!.acceptanceCriteria[0]!.evidenceIntent, ["screenshot", "url"]);
+});
+
+test("LLM Requirement interpreter designs every declared UI interaction contract for host validation", async () => {
+  const requirementDraft = finalizeGoalRequirementDraft({
+    ...validInput(),
+    requirements: [{
+      ...validInput().requirements[0]!,
+      interactionContractRefs: ["ui.offline-reader"],
+    }],
+  });
+  const requirement = requirementDraft.requirements[0]!;
+  const criterion = requirement.acceptanceCriteria[0]!;
+  const prompts: string[] = [];
+  const interpreter = createLlmGoalRequirementDraftInterpreter({
+    model: "inline-ui-contract-design",
+    client: {
+      async generateText({ prompt }) {
+        prompts.push(prompt);
+        return JSON.stringify({
+          contracts: [{
+            id: "ui.offline-reader",
+            requirementIds: [requirement.id],
+            screens: [{
+              id: "screen-reader",
+              title: "Offline reader",
+              purpose: "Read the article locally",
+              layout: { regions: [{ id: "region-main", role: "main", position: "center", childRefs: ["element-article"] }] },
+              elements: [{ id: "element-article", type: "text", label: "Article", visibleInStates: ["ready"], enabledInStates: ["ready"] }],
+              states: ["ready"],
+              actions: [],
+              responsiveRules: ["Content remains readable on narrow screens"],
+              accessibilityRules: ["Article text uses semantic content"],
+            }],
+            flows: [],
+            criterionBindings: [{ criterionId: criterion.id, screenIds: ["screen-reader"], elementIds: ["element-article"], actionIds: [] }],
+          }],
+        });
+      },
+    },
+  });
+  const contracts = await interpreter.designUiInteractionContracts!({ requirementDraft, goalDesignSkill: skill() });
+  assert.equal(contracts.length, 1);
+  assert.equal(contracts[0]!.id, "ui.offline-reader");
+  assert.equal(contracts[0]!.status, "draft");
+  assert.deepEqual(contracts[0]!.requirementIds, [requirement.id]);
+  assert.match(prompts[0] ?? "", /ExpectedInteractionContractRefs/);
+  assert.match(prompts[0] ?? "", /button \| input \| textarea/);
+});
+
 test("LLM revision finalizes semantic content while preserving host lineage", async () => {
   const current = validDraft();
   const existingId = current.requirements[0]!.id;
@@ -194,10 +273,12 @@ test("LLM revision operation targets only host-selected requirement", async () =
   const current = validDraft();
   const existingId = current.requirements[0]!.id;
   const deltas: string[] = [];
+  const prompts: string[] = [];
   const interpreter = createLlmGoalRequirementDraftInterpreter({
     model: "inline-operation-revision",
     client: {
-      async generateTextStream(_input, handlers) {
+      async generateTextStream(input, handlers) {
+        prompts.push(input.prompt);
         handlers.onDelta?.("validated-update");
         return JSON.stringify({
           kind: "revision",
@@ -221,6 +302,7 @@ test("LLM revision operation targets only host-selected requirement", async () =
   assert.equal(result.draft.requirements[0]!.id, existingId);
   assert.equal(result.draft.requirements[0]!.statement, "The article opens offline in a browser");
   assert.deepEqual(deltas, ["validated-update"]);
+  assert.match(prompts[0] ?? "", /Preserve the interaction-contract policy/);
 });
 
 test("LLM revision preserves explicit host mapping for multiple edited requirements", async () => {

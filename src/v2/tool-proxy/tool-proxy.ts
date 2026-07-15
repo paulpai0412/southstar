@@ -26,9 +26,8 @@ export async function executeTool(
   if (!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()) throw new Error(`vault lease expired or invalid: ${input.leaseId}`);
 
   const handler = deps.handlers?.[input.toolName];
-  const rawResult = handler
-    ? await handler(input.input, { lease, toolName: input.toolName })
-    : { message: `tool ${input.toolName} executed with vault lease ${lease.id}` };
+  if (!handler) throw new Error(`tool proxy handler is not configured: ${input.toolName}`);
+  const rawResult = await handler(input.input, { lease, toolName: input.toolName });
   const redactionDigests = lease.secretDigest ? [lease.secretDigest] : [];
   const redactedInput = redact(input.input, redactionDigests);
   const redactedResult = redact(rawResult, redactionDigests);

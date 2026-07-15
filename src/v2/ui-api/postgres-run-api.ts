@@ -225,7 +225,11 @@ export async function createPostgresPlannerDraft(db: SouthstarDb, input: CreateP
   }
   const contractHash = goalContractHash(goalContract);
   input.onProgress?.({ stage: "goal_contract.interpreted", message: "Goal Contract interpreted." });
-  if (goalContract.blockingInputs.length > 0) {
+  // A Goal Design package reaches this path only after the host has already
+  // confirmed the Goal Contract and its requirements.  The contract retains
+  // the host-owned confirmation note for lineage/audit purposes, but it must
+  // not send the already-confirmed composition back to `needs_input`.
+  if (goalContract.blockingInputs.length > 0 && !input.goalDesignPackage) {
     return persistNeedsInputPlannerDraft(db, plannerRequest, goalContract, contractHash, input.onProgress, input.persistDraft);
   }
   const draftInput: InterpretedPlannerDraftInput = {
@@ -1106,7 +1110,12 @@ export async function createPostgresRunFromDraft(db: SouthstarDb, input: { draft
   const contract = storedOrLegacyGoalContract(draftPayload, draftSummary, input.draftId);
   const contractHash = goalContractHash(contract);
   assertStoredGoalContractHashes(draftPayload, draftSummary, contractHash);
-  if (contract.blockingInputs.length > 0) {
+  // A Goal Design package is host-confirmed before composition.  Its original
+  // Goal Contract may retain the audit note that was present before review;
+  // that note must not block run materialization after the package has been
+  // validated and persisted with the DAG.
+  const goalDesignPackage = storedGoalDesignPackage(draftPayload.goalDesignPackage);
+  if (contract.blockingInputs.length > 0 && !goalDesignPackage) {
     await validatePostgresPlannerDraft(db, input);
     throw new Error(`planner draft has blocking inputs: ${input.draftId}`);
   }
@@ -1134,7 +1143,6 @@ export async function createPostgresRunFromDraft(db: SouthstarDb, input: { draft
   if (stringValue(draftPayload.workflowManifestHash) !== storedManifestHash) {
     throw new Error(`planner draft workflow manifest hash mismatch: ${input.draftId}`);
   }
-  const goalDesignPackage = storedGoalDesignPackage(draftPayload.goalDesignPackage);
   if (draftPayload.goalDesignPackage !== undefined && !goalDesignPackage) {
     throw new Error(`planner draft Goal Design Package is invalid: ${input.draftId}`);
   }

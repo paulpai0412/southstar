@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { EVIDENCE_KINDS, type EvidenceKind } from "../artifacts/types.ts";
 import type { WorkflowComposer } from "../orchestration/composer.ts";
 import type { WorkflowComposerMode } from "../orchestration/composer-registry.ts";
 import { LlmWorkflowComposer, loadWorkflowComposerSopPg } from "../orchestration/llm-composer.ts";
@@ -22,6 +23,7 @@ import {
   GoalSubmissionPendingError,
   claimGoalSubmissionPg,
   confirmGoalDesignPg,
+  isGoalDesignConfirmationActive,
   submitClaimedGoalPg,
   submitGoalPg,
   type GoalSubmissionClaim,
@@ -239,6 +241,17 @@ export async function handlePlannerRoute(
     } catch (error) {
       return goalRequirementRevisionErrorResponse(error);
     }
+  }
+
+  const goalRequirementConfirmStreamMatch = url.pathname.match(/^\/api\/v2\/planner\/drafts\/([^/]+)\/confirm-requirements\/stream$/);
+  if (request.method === "POST" && goalRequirementConfirmStreamMatch) {
+    if (!context.libraryImportLlmProvider) return goalValidationProviderConfigurationResponse();
+    const body = await readJsonBody<{ expectedDraftHash?: unknown; actor?: unknown }>(request);
+    return createGoalRequirementConfirmationStreamResponse(context, {
+      draftId: decodeURIComponent(goalRequirementConfirmStreamMatch[1]!),
+      expectedDraftHash: requiredString(body.expectedDraftHash, "expectedDraftHash"),
+      actor: optionalString(body.actor),
+    });
   }
 
   const draftReviseStreamMatch = url.pathname.match(/^\/api\/v2\/planner\/drafts\/([^/]+)\/revise\/stream$/);
@@ -534,6 +547,111 @@ function createGoalDesignConfirmationStreamResponse(
   });
 }
 
+function createGoalRequirementConfirmationStreamResponse(
+  context: RuntimeServerContext,
+  input: { draftId: string; expectedDraftHash: string; actor?: string },
+): Response {
+  const encoder = new TextEncoder();
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
+  let closed = false;
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const send = (event: string, data: unknown) => {
+        if (closed) return;
+        try {
+          controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+        } catch {
+          closed = true;
+          if (heartbeat) clearInterval(heartbeat);
+        }
+      };
+      const startedAt = Date.now();
+      heartbeat = setInterval(() => {
+        send("heartbeat", {
+          phase: "goal_validation",
+          draftId: input.draftId,
+          elapsedMs: Date.now() - startedAt,
+          at: new Date().toISOString(),
+        });
+      }, Math.max(1, context.libraryChatHeartbeatMs ?? 15_000));
+      try {
+        send("goal.validation.started", { draftId: input.draftId, expectedDraftHash: input.expectedDraftHash });
+        const confirmed = await confirmGoalRequirementsPg(context.db, {
+          draftId: input.draftId,
+          expectedDraftHash: input.expectedDraftHash,
+          actor: input.actor,
+          goalInterpreter: resolveGoalInterpreter(context),
+        });
+        send("goal.validation.requirements_confirmed", {
+          draftId: confirmed.draftId,
+          goalContractHash: confirmed.goalContractHash,
+          goalRequirementDraftHash: confirmed.goalRequirementDraftHash,
+        });
+        if (!confirmed.goalContractHash) {
+          send("goal_requirements", confirmed);
+          send("done", confirmed);
+          return;
+        }
+        const validation = await resolveAndPersistGoalValidationPg(context.db, {
+          draftId: confirmed.draftId,
+          expectedGoalContractHash: confirmed.goalContractHash,
+          libraryImportLlmProvider: context.libraryImportLlmProvider,
+          libraryImportSourceFetcher: context.libraryImportSourceFetcher,
+          actor: input.actor,
+          progress(progress) {
+            send(progress.event, progress.data);
+          },
+        });
+        if (validation.status !== "validation_ready") {
+          send("goal.validation.library_review", {
+            draftId: validation.draftId,
+            libraryImportDraftId: validation.libraryImportDraftId,
+            gapCount: validation.validationGaps.length,
+          });
+          send("goal_requirements", validation);
+          send("done", validation);
+          return;
+        }
+        send("goal.validation.slice_design.started", {
+          draftId: validation.draftId,
+          resolutionHash: validation.goalValidationResolution.resolutionHash,
+        });
+        const designed = await designAndPersistGoalSlicesPg(context.db, {
+          draftId: validation.draftId,
+          expectedResolutionHash: validation.goalValidationResolution.resolutionHash,
+          sliceDesigner: resolveGoalSliceDesigner(context),
+        });
+        send("goal_design", designed);
+        send("done", designed);
+      } catch (error) {
+        send("error", { error: error instanceof Error ? error.message : String(error) });
+      } finally {
+        const wasClosed = closed;
+        closed = true;
+        if (heartbeat) clearInterval(heartbeat);
+        if (!wasClosed) {
+          try {
+            controller.close();
+          } catch {
+            // Client cancelled the stream.
+          }
+        }
+      }
+    },
+    cancel() {
+      closed = true;
+      if (heartbeat) clearInterval(heartbeat);
+    },
+  });
+  return new Response(stream, {
+    headers: {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive",
+    },
+  });
+}
+
 async function preflightGoalDesignConfirmation(
   context: RuntimeServerContext,
   input: { draftId: string; expectedPackageHash: string },
@@ -553,6 +671,7 @@ async function preflightGoalDesignConfirmation(
     );
     if (!existing || existing.status === "completed" || existing.status === "failed") return undefined;
     if (existing.status === "stale") return undefined;
+    if (existing.status === "composing" && !isGoalDesignConfirmationActive(existing.id)) return undefined;
     if (existing.payload_json.packageHash !== input.expectedPackageHash) {
       return errorJson("goal_design_confirmation_conflict", 409);
     }
@@ -1103,7 +1222,7 @@ function parseGoalRequirementPatch(value: unknown): GoalRequirementDraftRevision
     patch.acceptanceCriteria = value.acceptanceCriteria.map((criterion, index) => ({
       ...(criterion.id === undefined ? {} : { id: requiredString(criterion.id, `patch.acceptanceCriteria.${index}.id`) }),
       statement: requiredString(criterion.statement, `patch.acceptanceCriteria.${index}.statement`),
-      evidenceIntent: parseRequiredStringArray(criterion.evidenceIntent, `patch.acceptanceCriteria.${index}.evidenceIntent`),
+      evidenceIntent: parseRequiredEvidenceKinds(criterion.evidenceIntent, `patch.acceptanceCriteria.${index}.evidenceIntent`),
     }));
   }
   if (value.expectedOutcomeArtifacts !== undefined) {
@@ -1144,6 +1263,16 @@ function parseRequiredStringArray(value: unknown, field: string): string[] {
     throw new Error(`${field} must be an array of strings`);
   }
   return value;
+}
+
+function parseRequiredEvidenceKinds(value: unknown, field: string): EvidenceKind[] {
+  const values = parseRequiredStringArray(value, field);
+  const allowed = new Set<string>(EVIDENCE_KINDS);
+  const unsupported = values.filter((item) => !allowed.has(item));
+  if (unsupported.length > 0) {
+    throw new Error(`${field} contains unsupported evidence kinds: ${unsupported.join(", ")}; allowed values: ${EVIDENCE_KINDS.join(", ")}`);
+  }
+  return values as EvidenceKind[];
 }
 
 function goalDesignRevisionErrorResponse(error: unknown): Response {

@@ -9,7 +9,7 @@ type HandExecutionRow = {
   run_id: string | null;
   task_id: string | null;
   session_id: string | null;
-  status: "queued" | "running";
+  status: "queued" | "running" | "cancel_requested";
   payload_json: unknown;
 };
 
@@ -26,7 +26,7 @@ export async function observeTorkHandExecutionExceptionsPg(
     `select resource_key, run_id, task_id, session_id, status, payload_json
        from southstar.runtime_resources
       where resource_type = 'hand_execution'
-        and status in ('queued', 'running')
+        and status in ('queued', 'running', 'cancel_requested')
       order by updated_at, resource_key`,
   );
 
@@ -142,7 +142,7 @@ async function observeAndDecide(input: {
   handExecutionId: string;
   resourceKey: string;
   externalJobId?: string;
-  status: "queued" | "running";
+    status: "queued" | "running" | "cancel_requested";
   kind: "tork_queue_timeout" | "tork_running_hang" | "tork_terminal_without_callback";
   observedAt: string;
   torkObservedStatus?: string;
@@ -300,7 +300,7 @@ async function patchTerminalWithoutCallbackPg(db: SouthstarDb, input: {
             updated_at = now()
       where resource_type = 'hand_execution'
         and resource_key = $1
-        and status in ('queued', 'running')`,
+        and status in ('queued', 'running', 'cancel_requested')`,
     [input.resourceKey, input.terminalStatus, JSON.stringify(patch)],
   );
   return (result.rowCount ?? 0) > 0;

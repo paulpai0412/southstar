@@ -220,9 +220,11 @@ function renderContextPacketPrompt(
     `Agent profile: ${input.agentProfile.id}`,
     input.agentProfile.model ? `Model: ${input.agentProfile.model}` : "",
     "Southstar runtime owns workflow orchestration, session state, evaluator execution, and stop-condition decisions. Complete only this task's artifact and repository work; do not try to modify or operate Southstar runtime internals unless the task explicitly asks for runtime code changes.",
+    "Command lifecycle: every command must be bounded and must clean up any server or child process it starts. When browser or HTTP verification needs a local server, run the server in a separate process, wait for readiness with a bounded retry, run the client, and terminate the server in finally/trap cleanup. Never use a synchronous child-process call from the same event loop that is hosting the server, because the server cannot answer while that event loop is blocked.",
     "",
     "Task goal:",
     packet.taskGoal,
+    formatGoalRequirementContext(packet.goalRequirementContext),
     formatNodePromptSpec(packet.nodePromptSpec),
     "",
     "Role instruction:",
@@ -244,6 +246,19 @@ function renderContextPacketPrompt(
     `Forbidden actions: ${packet.forbiddenActions.length > 0 ? packet.forbiddenActions.join(", ") : "none"}`,
     "Return exactly one JSON object with keys: artifact, progress, metrics.",
   ].filter((line) => line !== "").join("\n");
+}
+
+function formatGoalRequirementContext(context: ContextPacket["goalRequirementContext"]): string {
+  if (!context) return "";
+  return [
+    "",
+    "Frozen Goal requirement context:",
+    `Goal Contract hash: ${context.goalContractHash}`,
+    `This task owns requirement IDs: ${context.targetRequirementIds.length > 0 ? context.targetRequirementIds.join(", ") : "none"}`,
+    `Complete blocking requirement IDs: ${context.blockingRequirementIds.join(", ")}`,
+    "The complete blocking requirement ID list is host-authoritative. If this task says every/all blocking requirement, use exactly this complete list; never validate coverage against a self-declared subset.",
+    `Requirement catalog: ${JSON.stringify(context.requirements)}`,
+  ].join("\n");
 }
 
 function formatUiInteractionContracts(contracts: NonNullable<ContextPacket["uiInteractionContracts"]>): string {
@@ -413,6 +428,13 @@ function contractSpecificOutputRules(contract: ArtifactContract): string[] {
   const fields = new Set([...contract.requiredFields, ...contract.evidenceFields]);
   const evidenceKinds = new Set(contract.evidenceKinds ?? []);
   const rules: string[] = [];
+  if (evidenceKinds.size > 0) {
+    rules.push(
+      `evidenceKind allowed values for this contract: ${[...evidenceKinds].join(", ")}.`,
+      "Every criteriaResults[].evidenceRefs value must equal the id of a schema-valid evidence record in the same artifact; descriptions, findings, and unlinked file paths are not evidence references.",
+      "An evidence record cannot borrow kind, execution outcome, or provenance from a different object. Put the id and every field required by that evidenceKind on the same record.",
+    );
+  }
   if (fields.has("pass") || fields.has("safeToSave")) {
     rules.push("pass and safeToSave, when present, must be booleans: true or false.");
   }
@@ -423,6 +445,8 @@ function contractSpecificOutputRules(contract: ArtifactContract): string[] {
       `commandsRun item schema: {"command": "npm test" or ["npm","test"], "status": "passed", "exitCode": 0, "output": "bounded relevant output"}.`,
       "Each commandsRun item must include status or exitCode; command records without an outcome do not satisfy command-output evidence.",
       "exitCode must be an integer; use 0 for success and non-zero for failed command execution.",
+      `A command-output record cited by criteriaResults must use this schema on one object: {"id":"ev-command-1","evidenceKind":"command-output","command":"npm test" or ["npm","test"],"status":"passed"|"failed"|"blocked","exitCode":0,"output":"bounded relevant output","path":"optional safe evidence path"}.`,
+      "Prefer adding id and evidenceKind to the exact commandsRun item and citing that id. A separate object containing only id, output, or path is invalid command-output evidence even when another commandsRun item passed.",
     );
   }
   if (fields.has("testResults") || evidenceKinds.has("test-result")) {
@@ -430,10 +454,20 @@ function contractSpecificOutputRules(contract: ArtifactContract): string[] {
       "testResults.status allowed values: passed, failed, failed_non_gating, blocked, not-verified, not-run, skipped, pass_with_environment_gap.",
       "gating allowed values: blocking, non-gating.",
       "when status is failed/blocked/not-verified/not-run, include gating: blocking or non-gating.",
+      `A cited test-result record must include {"id":"tr-1","evidenceKind":"test-result","status":"passed"|"failed"|"failed_non_gating"|"blocked"|"not-verified"|"not-run"|"skipped"|"pass_with_environment_gap","gating":"blocking"|"non-gating","summary":"bounded result"}.`,
     );
   }
+  if (evidenceKinds.has("url")) {
+    rules.push(`A cited URL record must include {"id":"ev-url-1","evidenceKind":"url","url":"credential-free http:// or https:// URL"}.`);
+  }
+  if (evidenceKinds.has("screenshot")) {
+    rules.push(`A cited screenshot record must include {"id":"ev-shot-1","evidenceKind":"screenshot","path":"safe relative .png, .jpg, .jpeg, or .webp path"}.`);
+  }
   if (fields.has("verifiedArtifactRefs") || evidenceKinds.has("artifact-ref")) {
-    rules.push("verifiedArtifactRefs must be an array of exact upstream ArtifactRef values evaluated by this verifier.");
+    rules.push(
+      "verifiedArtifactRefs must be an array of exact upstream ArtifactRef values evaluated by this verifier.",
+      `A cited artifact-ref record must include {"id":"ev-artifact-1","evidenceKind":"artifact-ref","artifactRef":"exact ArtifactRef or safe artifact path"}.`,
+    );
   }
   if (fields.has("remainingFailures")) {
     rules.push(

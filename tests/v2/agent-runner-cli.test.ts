@@ -123,6 +123,48 @@ test("agent runner CLI refreshes v2 context packet before harness run", async ()
   }
 });
 
+test("agent runner CLI validates only fields declared by a dynamic contract", async () => {
+  const root = await mkdtemp(join(tmpdir(), "southstar-agent-runner-dynamic-contract-"));
+  const envelopePath = join(root, "envelope-dynamic-contract.json");
+  const resultPath = join(root, "result-dynamic-contract.json");
+  const dynamicEnvelope = envelopeV2();
+  dynamicEnvelope.artifactContracts = [{
+    id: "verification_report",
+    artifactType: "custom-verification-report",
+    requiredFields: ["verdict", "checks"],
+    evidenceFields: [],
+  }];
+  await writeFile(envelopePath, JSON.stringify(dynamicEnvelope), "utf8");
+  const server = createServer(async (_request, response) => {
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({
+      artifact: { verdict: "pass", checks: [{ id: "smoke", status: "passed" }] },
+      progress: ["dynamic contract satisfied"],
+    }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.equal(typeof address, "object");
+    const exitCode = await runAgentRunnerCli([
+      "--envelope",
+      envelopePath,
+      "--result",
+      resultPath,
+      "--harness-endpoint",
+      `http://127.0.0.1:${address?.port}`,
+    ]);
+    assert.equal(exitCode, 0);
+    const result = JSON.parse(await readFile(resultPath, "utf8"));
+    assert.equal(result.ok, true);
+    assert.equal(result.events.some((event: { eventType: string }) => event.eventType === "repair.requested"), false);
+    assert.deepEqual(result.artifact.verdict, "pass");
+    assert.deepEqual(result.artifact.checks, [{ id: "smoke", status: "passed" }]);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
 test("agent runner CLI sends heartbeat without a Tork job id", async () => {
   const root = await mkdtemp(join(tmpdir(), "southstar-agent-runner-heartbeat-"));
   const envelopePath = join(root, "envelope-heartbeat.json");

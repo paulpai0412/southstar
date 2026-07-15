@@ -14,13 +14,11 @@ test("builds compact approved graph metadata nodes and executable edges", async 
 
     assert.deepEqual(packet.nodes.map((node) => node.ref), [
       "agent.frontend-developer",
-      "mcp.filesystem-workspace",
       "skill.react-ui",
       "tool.workspace-write",
     ]);
     assert.deepEqual(packet.edges.map((edge) => `${edge.from}|${edge.type}|${edge.to}`), [
       "agent.frontend-developer|uses|skill.react-ui",
-      "skill.react-ui|allows_mcp_grant|mcp.filesystem-workspace",
       "skill.react-ui|requires_tool|tool.workspace-write",
     ]);
     assert.equal(packet.nodes.some((node) => node.kind === "agent_profile"), false);
@@ -246,7 +244,11 @@ async function seedGraph(db: Awaited<ReturnType<typeof createTestPostgresDb>>) {
     objectKind: "tool_definition",
     status: "approved",
     headVersionId: "tool.workspace-write@1",
-    state: { scope: "global", title: "Workspace Write", toolName: "workspace-write", proxyToolName: "workspace-write-proxy" },
+    state: {
+      scope: "global",
+      title: "Workspace Write",
+      runtimeToolNames: ["edit", "write"],
+    },
   });
   await upsertLibraryObject(db, {
     objectKey: "mcp.filesystem-workspace",

@@ -5,8 +5,7 @@ scope: "general"
 status: approved
 aliases:
   - "vocabulary-learning"
-  - "flashcards"
-  - "language-study"
-importDraftId: "library-import-draft-5b27e3ac-0add-43e4-af93-312d4f120c0f"
+  - "flashcard-study"
+importDraftId: "library-import-draft-954a4960-e0ca-4c76-af4c-4a5733d390b5"
 importCandidateKey: "domain.academic"
 importSourcePath: "Library-chat-prompt.md"

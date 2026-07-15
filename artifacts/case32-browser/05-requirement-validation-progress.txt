@@ -1,0 +1,249 @@
+Southstar
+New
+.../apps/southstar-vocab
+WORKFLOW SESSIONS
+Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+8m ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+9m ago
+2 messages
+(no messages)
+25m ago
+0 messages
+(no messages)
+30m ago
+0 messages
+Use the approved Library Goal Design SOP to design outcome slices from the confirmed Goal Contract and frozen validation bindings. GoalDesignSkillRef: skill.southstar-goal-design G...
+30m ago
+2 messages
+Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+38m ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+40m ago
+2 messages
+Use the approved Goal Design skill to turn only the Requirement Draft's declared interactionContractRefs into reviewable UI interaction contracts. GoalDesignSkillRef: skill.southst...
+44m ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+47m ago
+2 messages
+Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+1h ago
+2 messages
+Use the approved Goal Design skill to turn only the Requirement Draft's declared interactionContractRefs into reviewable UI interaction contracts. GoalDesignSkillRef: skill.southst...
+1h ago
+2 messages
+Use the approved Goal Design skill to turn only the Requirement Draft's declared interactionContractRefs into reviewable UI interaction contracts. GoalDesignSkillRef: skill.southst...
+1h ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+1h ago
+2 messages
+Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+1h ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+1h ago
+2 messages
+(no messages)
+1h ago
+0 messages
+Use the approved Library Goal Design SOP to design outcome slices from the confirmed Goal Contract and frozen validation bindings. GoalDesignSkillRef: skill.southstar-goal-design G...
+1h ago
+2 messages
+Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+1h ago
+2 messages
+Use the approved Goal Design skill to turn only the Requirement Draft's declared interactionContractRefs into reviewable UI interaction contracts. GoalDesignSkillRef: skill.southst...
+1h ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+1h ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+1h ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+1h ago
+2 messages
+Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+2h ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+2h ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+2h ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+2h ago
+2 messages
+Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+3h ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+3h ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+3h ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+3h ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+3h ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+3h ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+3h ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+3h ago
+2 messages
+Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+1d ago
+2 messages
+(no messages)
+1d ago
+0 messages
+You are Southstar's library-constrained workflow architect. Return exactly one JSON object matching schemaVersion southstar.workflow_composition_plan.v1. Do not return markdown, co...
+1d ago
+1 messages
+Use the approved Library Goal Design SOP to design this Goal Contract. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill.southstar-goal-design@132bb1...
+1d ago
+2 messages
+Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+1d ago
+2 messages
+Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+1d ago
+2 messages
+(no messages)
+1d ago
+0 messages
+You are Southstar's library-constrained workflow architect. Return exactly one JSON object matching schemaVersion southstar.workflow_composition_plan.v1. Do not return markdown, co...
+1d ago
+1 messages
+Use the approved Library Goal Design SOP to design this Goal Contract. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill.southstar-goal-design@132bb1...
+1d ago
+2 messages
+Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+1d ago
+2 messages
+Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+1d ago
+2 messages
+You are Southstar's library-constrained workflow architect. Return exactly one JSON object matching schemaVersion southstar.workflow_composition_plan.v1. Do not return markdown, co...
+1d ago
+1 messages
+Use the approved Library Goal Design SOP to design this Goal Contract. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill.southstar-goal-design@132bb1...
+1d ago
+2 messages
+Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+1d ago
+2 messages
+Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+1d ago
+2 messages
+(no messages)
+1d ago
+0 messages
+WORKFLOW LIBRARY
+all
+workflows
+Models
+Skills
+MCP
+Chat
+Library
+Workflow
+Operator
+Goal draft is ready for review.
+
+Build a small local vocabulary flashcard system in this workspace. Users can add and list words with translations and examples, run flashcard quizzes, submit answers with persisted history, and see session and cumulative accuracy. The product must produce a vocabulary-specific persisted-answer and accuracy evidence artifact contract; generic repository implementation or verification reports do not represent that product outcome. Include a browser-accessible local UI, automated tests, and verification evidence for every blocking requirement. Do not use external services or network integrations.
+
+Copy
+15:17
+workflow-generate
+
+[request.normalized] request.normalized [goal_requirements] <draft> <hash> [requirements.persisted] requirements.persisted [draft.requirements_review] draft.requirements_review [draft] <draft> requirements_review
+
+Deliver a local, browser-accessible vocabulary flashcard product in this workspace where users can manage vocabulary entries, run quizzes, submit answers with persisted history, view session and cumulative accuracy, and provide vocabulary-specific persisted-answer/accuracy evidence artifacts backed by automated verification for all blocking outcomes, without external network integrations.
+draft <draft> · requirements_review · rev 1
+7 requirements
+7 explicit
+0 inferred
+7 blocking
+clarification clear
+Browser UI for vocabulary entry and listing
+explicit
+blocking
+The product must provide a local browser-accessible interface where users can add vocabulary entries containing a word, its translation, and an example, and list existing entries for review.
+2 AC
+ready
+coverage unknown
+no visual contract
+Flashcard quiz execution from vocabulary
+explicit
+blocking
+Users must be able to run flashcard quizzes generated from the stored vocabulary entries in the local browser UI.
+2 AC
+ready
+coverage unknown
+no visual contract
+Persisted answer submission history
+explicit
+blocking
+The system must allow quiz answer submission and persist answer history records so that submitted responses remain available as durable product data.
+2 AC
+ready
+coverage unknown
+no visual contract
+Session and cumulative accuracy visibility
+explicit
+blocking
+Users must see both session accuracy and cumulative accuracy in the product based on submitted quiz answers.
+2 AC
+ready
+coverage unknown
+no visual contract
+Vocabulary-specific persisted-answer and accuracy evidence artifact contract
+explicit
+blocking
+The product must output a vocabulary-specific evidence artifact contract for persisted answers and accuracy outcomes, and generic implementation diffs or generic verification logs alone are insufficient as product evidence.
+2 AC
+ready
+coverage unknown
+no visual contract
+Automated tests and requirement-level verification evidence
+explicit
+blocking
+Automated tests must be included, and verification evidence must be provided for every blocking requirement in this draft.
+2 AC
+ready
+coverage unknown
+no visual contract
+Local-only operation with no external services
+explicit
+blocking
+The flashcard system must operate without external services or network integrations for core product functionality.
+2 AC
+ready
+coverage unknown
+no visual contract
+
+Non-goals: Cloud sync, remote collaboration, or multi-device account features. · Production deployment hardening beyond local workspace execution. · Advanced spaced-repetition algorithms beyond required quiz and accuracy behavior. · Third-party translation APIs or external vocabulary content imports.
+
+Confirming the Requirement contract…
+Confirming…
+Copy
+15:19
+Send
+GPT-5.3 Codex
+auto
+default
+Compact

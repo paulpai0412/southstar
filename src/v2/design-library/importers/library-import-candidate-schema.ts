@@ -1,16 +1,8 @@
 import type { LibraryImportCandidate, LibraryImportCandidateKind } from "./library-candidate-extractor.ts";
+import { EVIDENCE_KINDS } from "../../artifacts/types.ts";
+import { unsupportedPiRuntimeToolNames } from "../../harness/pi-runtime-tools.ts";
 
-export const LIBRARY_VALIDATION_EVIDENCE_KINDS = [
-  "file-diff",
-  "test-result",
-  "command-output",
-  "url",
-  "screenshot",
-  "human-approval",
-  "artifact-ref",
-  "workspace-snapshot",
-  "policy-decision",
-] as const;
+export const LIBRARY_VALIDATION_EVIDENCE_KINDS = EVIDENCE_KINDS;
 
 export const LIBRARY_VERIFICATION_MODES = [
   "deterministic",
@@ -21,7 +13,7 @@ export const LIBRARY_VERIFICATION_MODES = [
 
 export const REQUIREMENT_EVALUATOR_RESULT_SCHEMA_REF = "southstar.requirement_evaluator_result.v2" as const;
 
-const EVIDENCE_KINDS = new Set<string>(LIBRARY_VALIDATION_EVIDENCE_KINDS);
+const EVIDENCE_KIND_SET = new Set<string>(LIBRARY_VALIDATION_EVIDENCE_KINDS);
 const VERIFICATION_MODES = new Set<string>(LIBRARY_VERIFICATION_MODES);
 
 export const LIBRARY_IMPORT_CANDIDATE_COMMON_FIELDS = [
@@ -39,7 +31,7 @@ export const LIBRARY_IMPORT_CANDIDATE_KIND_FIELDS: Record<LibraryImportCandidate
   agent: [],
   skill: [],
   mcp: [],
-  tool: [],
+  tool: ["operations", "runtimeToolNames"],
   domain: ["aliases"],
   capability: ["requiredOperations"],
   artifact: [
@@ -76,8 +68,20 @@ export function normalizeLibraryImportCandidateKindFields(
 ): Partial<LibraryImportCandidate> {
   assertLibraryImportCandidateExactKeys(record, kind, objectKey, options.surface);
   const description = optionalNonEmptyString(record.description, `candidates.${objectKey}.description`);
-  if (kind === "agent" || kind === "skill" || kind === "tool" || kind === "mcp") {
+  if (kind === "agent" || kind === "skill" || kind === "mcp") {
     return description ? { description } : {};
+  }
+  if (kind === "tool") {
+    const runtimeToolNames = strictStringArray(record.runtimeToolNames, `candidates.${objectKey}.runtimeToolNames`);
+    const unsupportedRuntimeToolNames = unsupportedPiRuntimeToolNames(runtimeToolNames);
+    if (unsupportedRuntimeToolNames.length > 0) {
+      throw new Error(`library import tool ${objectKey} has unsupported Pi runtimeToolNames: ${unsupportedRuntimeToolNames.join(", ")}`);
+    }
+    return {
+      ...(description ? { description } : {}),
+      operations: strictStringArray(record.operations, `candidates.${objectKey}.operations`),
+      runtimeToolNames,
+    };
   }
   if (kind === "domain") {
     return {
@@ -142,7 +146,7 @@ export function strictStringArray(value: unknown, label: string): string[] {
 
 function strictEvidenceKinds(value: unknown, label: string): string[] {
   const values = strictStringArray(value, label);
-  if (values.some((item) => !EVIDENCE_KINDS.has(item))) throw new Error(`${label} contains unsupported evidenceKinds`);
+  if (values.some((item) => !EVIDENCE_KIND_SET.has(item))) throw new Error(`${label} contains unsupported evidenceKinds`);
   return values;
 }
 

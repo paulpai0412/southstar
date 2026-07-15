@@ -45,6 +45,8 @@ export type LibraryImportCandidate = {
   description?: string;
   aliases?: string[];
   requiredOperations?: string[];
+  operations?: string[];
+  runtimeToolNames?: string[];
   artifactType?: string;
   mediaTypes?: string[];
   evidenceKinds?: string[];
@@ -64,6 +66,31 @@ export type LibraryImportCandidate = {
   independencePolicy?: "independent";
   resultSchemaRef?: string;
   failureClassifications?: string[];
+};
+
+/**
+ * Goal-scoped provenance for an import proposal. This is intentionally kept
+ * outside LibraryImportCandidate so reusable Library files never inherit one
+ * Goal Contract's Requirement ids or Acceptance Criteria.
+ */
+export type LibraryImportCandidateCoverageTarget = {
+  candidateObjectKey: string;
+  gapRef: string;
+  requirementId: string;
+  criterionIds: string[];
+};
+
+export type LibraryImportCoverageConstraint = {
+  gapRef: string;
+  requirementId: string;
+  criterionIds: string[];
+  requiredEvidenceKinds: string[];
+  blocking: boolean;
+  gapKind: string;
+  requirementStatement?: string;
+  criterionStatements?: Array<{ criterionId: string; statement: string }>;
+  expectedOutcomeArtifacts?: Array<{ description: string; mediaType?: string }>;
+  verificationIntent?: string[];
 };
 
 export type LibraryImportProposedEdge = {

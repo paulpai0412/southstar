@@ -4,5 +4,17 @@ title: Completion Report
 scope: software
 status: approved
 artifactType: completion_report
+mediaTypes:
+  - application/json
+schemaRef: schema.completion-report.v1
+requiredFields:
+  - status
+  - summary
+  - evidenceRefs
+validationRules:
+  - rule.completion-status-valid
+  - rule.completion-evidence-resolvable
 evidenceKinds:
   - artifact-ref
+provenanceRequirements:
+  - accepted-workflow-artifacts

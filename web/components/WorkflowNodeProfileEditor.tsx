@@ -66,12 +66,6 @@ export function WorkflowNodeProfileEditor({
   const [selectedDefinition, setSelectedDefinition] = useState<unknown>(null);
   const [candidates, setCandidates] = useState<unknown>(null);
   const [piModels, setPiModels] = useState<unknown>(null);
-  const [refInputs, setRefInputs] = useState<Record<RefField, string>>({
-    skillRefs: "",
-    mcpGrantRefs: "",
-    toolGrantRefs: "",
-    vaultLeasePolicyRefs: "",
-  });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -224,21 +218,10 @@ export function WorkflowNodeProfileEditor({
     });
   };
 
-  const addRef = (field: RefField, value: string) => {
-    const ref = value.trim();
-    if (!ref) return;
-    setForm((current) => ({ ...current, [field]: [...new Set([...current[field], ref])] }));
-    setRefInputs((current) => ({ ...current, [field]: "" }));
-  };
-
-  const toggleRef = (field: RefField, value: string) => {
-    setForm((current) => {
-      const exists = current[field].includes(value);
-      return {
-        ...current,
-        [field]: exists ? current[field].filter((item) => item !== value) : [...current[field], value],
-      };
-    });
+  const addRefs = (field: RefField, values: string[]) => {
+    const refs = values.map((value) => value.trim()).filter(Boolean);
+    if (refs.length === 0) return;
+    setForm((current) => ({ ...current, [field]: [...new Set([...current[field], ...refs])] }));
   };
 
   const removeRef = (field: RefField, value: string) => {
@@ -403,11 +386,8 @@ export function WorkflowNodeProfileEditor({
           field="skillRefs"
           refs={form.skillRefs}
           disabled={!editable}
-          input={refInputs.skillRefs}
           suggestions={candidateAlternatives?.skills}
-          onInputChange={(value) => setRefInputs((current) => ({ ...current, skillRefs: value }))}
-          onAdd={() => addRef("skillRefs", refInputs.skillRefs)}
-          onToggle={(ref) => toggleRef("skillRefs", ref)}
+          onAdd={(refs) => addRefs("skillRefs", refs)}
           onRemove={(ref) => removeRef("skillRefs", ref)}
         />
         <RefEditor
@@ -415,11 +395,8 @@ export function WorkflowNodeProfileEditor({
           field="mcpGrantRefs"
           refs={form.mcpGrantRefs}
           disabled={!editable}
-          input={refInputs.mcpGrantRefs}
           suggestions={candidateAlternatives?.mcpServers}
-          onInputChange={(value) => setRefInputs((current) => ({ ...current, mcpGrantRefs: value }))}
-          onAdd={() => addRef("mcpGrantRefs", refInputs.mcpGrantRefs)}
-          onToggle={(ref) => toggleRef("mcpGrantRefs", ref)}
+          onAdd={(refs) => addRefs("mcpGrantRefs", refs)}
           onRemove={(ref) => removeRef("mcpGrantRefs", ref)}
         />
         <RefEditor
@@ -427,11 +404,8 @@ export function WorkflowNodeProfileEditor({
           field="toolGrantRefs"
           refs={form.toolGrantRefs}
           disabled={!editable}
-          input={refInputs.toolGrantRefs}
           suggestions={candidateAlternatives?.tools}
-          onInputChange={(value) => setRefInputs((current) => ({ ...current, toolGrantRefs: value }))}
-          onAdd={() => addRef("toolGrantRefs", refInputs.toolGrantRefs)}
-          onToggle={(ref) => toggleRef("toolGrantRefs", ref)}
+          onAdd={(refs) => addRefs("toolGrantRefs", refs)}
           onRemove={(ref) => removeRef("toolGrantRefs", ref)}
         />
         <RefEditor
@@ -439,11 +413,8 @@ export function WorkflowNodeProfileEditor({
           field="vaultLeasePolicyRefs"
           refs={form.vaultLeasePolicyRefs}
           disabled={!editable}
-          input={refInputs.vaultLeasePolicyRefs}
           suggestions={candidateAlternatives?.vaultLeasePolicies}
-          onInputChange={(value) => setRefInputs((current) => ({ ...current, vaultLeasePolicyRefs: value }))}
-          onAdd={() => addRef("vaultLeasePolicyRefs", refInputs.vaultLeasePolicyRefs)}
-          onToggle={(ref) => toggleRef("vaultLeasePolicyRefs", ref)}
+          onAdd={(refs) => addRefs("vaultLeasePolicyRefs", refs)}
           onRemove={(ref) => removeRef("vaultLeasePolicyRefs", ref)}
         />
 
@@ -509,20 +480,23 @@ function RefEditor(props: {
   field: RefField;
   refs: string[];
   disabled: boolean;
-  input: string;
   suggestions?: unknown;
-  onInputChange: (value: string) => void;
-  onAdd: () => void;
-  onToggle: (ref: string) => void;
+  onAdd: (refs: string[]) => void;
   onRemove: (ref: string) => void;
 }) {
-  const [filter, setFilter] = useState("");
-  const suggestions = Array.isArray(props.suggestions) ? props.suggestions.map(readCandidateOption).filter((item): item is CandidateOption => item !== null) : [];
-  const normalizedFilter = filter.trim().toLowerCase();
-  const candidateIds = suggestions
-    .map((item) => item.id)
-    .filter((id) => !props.refs.includes(id))
-    .filter((id) => !normalizedFilter || id.toLowerCase().includes(normalizedFilter));
+  const [selectedCandidates, setSelectedCandidates] = useState<string[]>([]);
+  const suggestions = useMemo(
+    () => Array.isArray(props.suggestions) ? props.suggestions.map(readCandidateOption).filter((item): item is CandidateOption => item !== null) : [],
+    [props.suggestions]
+  );
+  const candidateIds = useMemo(
+    () => uniqueOptionIds(suggestions.map((item) => item.id).filter((id) => !props.refs.includes(id))),
+    [props.refs, suggestions]
+  );
+  useEffect(() => {
+    setSelectedCandidates((current) => current.filter((id) => candidateIds.includes(id)));
+  }, [candidateIds]);
+  const addDisabled = props.disabled || selectedCandidates.length === 0;
   return (
     <section style={sectionStyle}>
       <div style={sectionHeaderStyle}>
@@ -538,38 +512,23 @@ function RefEditor(props: {
           </span>
         ))}
       </div>
-      <input
-        data-testid={`workflow-profile-filter-${props.field}`}
-        value={filter}
-        disabled={props.disabled}
-        onChange={(event) => setFilter(event.currentTarget.value)}
-        placeholder="Search candidates..."
-        style={inputStyle}
-      />
-      {candidateIds.length > 0 && (
-        <div style={candidateGridStyle}>
-          {candidateIds.slice(0, 12).map((id) => (
-            <button
-              key={id}
-              type="button"
-              data-testid={`workflow-profile-candidate-${props.field}`}
-              disabled={props.disabled}
-              onClick={() => props.onToggle(id)}
-              style={candidateButtonStyle(props.disabled)}
-              title={id}
-            >
-              + {id}
-            </button>
-          ))}
-        </div>
-      )}
       <div style={{ display: "flex", gap: 6 }}>
-        <input value={props.input} disabled={props.disabled} onChange={(event) => props.onInputChange(event.currentTarget.value)} list={`${props.field}-suggestions`} style={inputStyle} />
-        <button type="button" disabled={props.disabled || !props.input.trim()} onClick={props.onAdd} style={buttonStyle(props.disabled || !props.input.trim())}>Add</button>
+        <select
+          data-testid={`workflow-profile-candidate-select-${props.field}`}
+          multiple
+          value={selectedCandidates}
+          disabled={props.disabled || candidateIds.length === 0}
+          onChange={(event) => {
+            const values = Array.from(event.currentTarget.selectedOptions).map((option) => option.value);
+            setSelectedCandidates(values);
+          }}
+          size={Math.min(Math.max(candidateIds.length, 3), 8)}
+          style={candidateSelectStyle}
+        >
+          {candidateIds.map((id) => <option key={id} value={id}>{id}</option>)}
+        </select>
+        <button type="button" disabled={addDisabled} onClick={() => { props.onAdd(selectedCandidates); setSelectedCandidates([]); }} style={buttonStyle(addDisabled)}>Add selected</button>
       </div>
-      <datalist id={`${props.field}-suggestions`}>
-        {suggestions.map((item) => <option key={item.id} value={item.id} />)}
-      </datalist>
     </section>
   );
 }
@@ -773,12 +732,6 @@ const chipButtonStyle = {
   fontSize: 11,
 } as const;
 
-const candidateGridStyle = {
-  display: "grid",
-  gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-  gap: 6,
-} as const;
-
 const noticeStyle = {
   border: "1px solid var(--border)",
   borderRadius: 6,
@@ -812,14 +765,9 @@ function primaryButtonStyle(disabled: boolean) {
   } as const;
 }
 
-function candidateButtonStyle(disabled: boolean) {
-  return {
-    ...buttonStyle(disabled),
-    textAlign: "left",
-    overflow: "hidden",
-    textOverflow: "ellipsis",
-    whiteSpace: "nowrap",
-    fontFamily: "var(--font-mono)",
-    background: disabled ? "var(--bg-panel)" : "var(--bg-panel)",
-  } as const;
-}
+const candidateSelectStyle = {
+  ...inputStyle,
+  flex: "1 1 auto",
+  minHeight: 84,
+  padding: 6,
+} as const;

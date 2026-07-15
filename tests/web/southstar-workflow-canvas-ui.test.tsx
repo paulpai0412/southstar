@@ -249,6 +249,67 @@ test("workflow generate proxy replay fallback preserves host requirement blocker
   }
 });
 
+test("workflow generate proxy does not enrich requirement review into an empty DAG", async () => {
+  const originalFetch = global.fetch;
+  const originalBaseUrl = process.env.SOUTHSTAR_V2_API_BASE_URL;
+  process.env.SOUTHSTAR_V2_API_BASE_URL = "http://runtime.test";
+  const requirementResult = {
+    draftId: "draft-requirements",
+    draftStatus: "requirements_review",
+    goalRequirementDraftId: "draft-requirements",
+    goalRequirementDraftHash: "hash-requirements",
+    goalDesignPhase: "requirements_review",
+    goalRequirementDraft: {
+      schemaVersion: "southstar.goal_requirement_draft.v1",
+      revision: 1,
+      draftHash: "hash-requirements",
+      requirements: [],
+    },
+    confirmable: true,
+    validationIssues: [],
+    blockers: [],
+  };
+  global.fetch = (async (url) => {
+    const pathname = new URL(String(url)).pathname;
+    if (pathname === "/api/v2/run-goal") {
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(
+            `event: goal_requirements\ndata: ${JSON.stringify({
+              draftId: requirementResult.draftId,
+              status: requirementResult.draftStatus,
+              phase: requirementResult.goalDesignPhase,
+              goalRequirementDraftHash: requirementResult.goalRequirementDraftHash,
+              package: requirementResult,
+              confirmable: true,
+              validationIssues: [],
+            })}\n\nevent: done\ndata: ${JSON.stringify(requirementResult)}\n\n`,
+          ));
+          controller.close();
+        },
+      }), { status: 200, headers: { "content-type": "text/event-stream" } });
+    }
+    throw new Error(`requirement review must not request workflow enrichment: ${url}`);
+  }) as typeof fetch;
+  try {
+    const { POST } = await import("../../web/app/api/workflow/generate/route.ts");
+    const response = await POST(new Request("http://southstar.test/api/workflow/generate", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "review requirements", cwd: "/workspace/project", idempotencyKey: "requirements-key" }),
+    }) as never);
+    const stream = await response.text();
+    assert.match(stream, /event: goal_requirements/);
+    assert.match(stream, /event: done/);
+    assert.doesNotMatch(stream, /event: dag/);
+    assert.doesNotMatch(stream, /event: recoverable/);
+  } finally {
+    global.fetch = originalFetch;
+    if (originalBaseUrl === undefined) delete process.env.SOUTHSTAR_V2_API_BASE_URL;
+    else process.env.SOUTHSTAR_V2_API_BASE_URL = originalBaseUrl;
+  }
+});
+
 test("workflow generate proxy forwards Goal Design controls without browser skill execution", async () => {
   const originalFetch = global.fetch;
   const originalBaseUrl = process.env.SOUTHSTAR_V2_API_BASE_URL;
@@ -599,12 +660,11 @@ test("Goal Contract approval guards double-click and refreshes persisted mission
     });
     await page.getByRole("button", { name: "Approve" }).waitFor();
     await page.evaluate(`
-      window.prompt = function () { return "approved by operator"; };
-      window.confirm = function () { return true; };
       Object.defineProperty(window.crypto, "randomUUID", { configurable: true, value: function () { return "00000000-0000-4000-8000-000000000001"; } });
     `);
-    await page.evaluate(() => {
-      const button = [...document.querySelectorAll("button")].find((candidate) => candidate.textContent?.trim() === "Approve") as HTMLButtonElement;
+    await page.getByRole("button", { name: "Approve" }).click();
+    await page.getByRole("textbox", { name: "Reason for Approve" }).fill("approved by operator");
+    await page.locator('[data-testid="goal-contract-confirm-approval"]').evaluate((button: HTMLButtonElement) => {
       button.click();
       button.click();
     });
@@ -612,7 +672,15 @@ test("Goal Contract approval guards double-click and refreshes persisted mission
     await page.evaluate("new Promise(function (resolve) { requestAnimationFrame(function () { requestAnimationFrame(resolve); }); })");
     assert.equal(pendingRoutes.length, 1, "double click must create one deferred command request");
     for (const route of pendingRoutes) {
-      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ accepted: true }) });
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: true,
+          kind: "approval-decision",
+          result: { id: "approval-mission", status: "approved", runStatus: "scheduling" },
+        }),
+      });
     }
     await page.locator('[aria-live="polite"]').filter({ hasText: "Approved" }).waitFor({ timeout: 1_000 });
     assert.equal(await page.evaluate(() => window.missionRefreshes), 1);
@@ -638,11 +706,11 @@ test("accepted Goal Contract approval stays completed when persisted mission ref
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ accepted: true }) });
     });
     await page.evaluate(`
-      window.prompt = function () { return "approve"; };
-      window.confirm = function () { return true; };
       Object.defineProperty(window.crypto, "randomUUID", { configurable: true, value: function () { return "00000000-0000-4000-8000-000000000003"; } });
     `);
     await page.getByRole("button", { name: "Approve" }).click();
+    await page.getByRole("textbox", { name: "Reason for Approve" }).fill("approve");
+    await page.locator('[data-testid="goal-contract-confirm-approval"]').click();
     await page.locator('[aria-live="polite"]').filter({ hasText: "Approved" }).waitFor({ timeout: 1_000 });
     assert.equal(await page.getByRole("button", { name: "Approve" }).count(), 0);
     assert.match(await page.locator('[aria-live="polite"]').textContent() ?? "", /refresh unavailable/);
@@ -673,14 +741,14 @@ test("Goal Contract approval failure restores retry and a later success refreshe
       else await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ accepted: true }) });
     });
     await page.evaluate(`
-      window.prompt = function () { return "retry"; };
-      window.confirm = function () { return true; };
       Object.defineProperty(window.crypto, "randomUUID", { configurable: true, value: function () { return "00000000-0000-4000-8000-000000000002"; } });
     `);
     await page.getByRole("button", { name: "Approve" }).click();
+    await page.getByRole("textbox", { name: "Reason for Approve" }).fill("retry");
+    await page.locator('[data-testid="goal-contract-confirm-approval"]').click();
     await page.locator('[aria-live="polite"]').filter({ hasText: "failed" }).waitFor({ timeout: 1_000 });
-    assert.equal(await page.getByRole("button", { name: "Approve" }).isEnabled(), true);
-    await page.getByRole("button", { name: "Approve" }).click();
+    assert.equal(await page.locator('[data-testid="goal-contract-confirm-approval"]').isEnabled(), true);
+    await page.locator('[data-testid="goal-contract-confirm-approval"]').click();
     await page.waitForFunction(() => window.missionRefreshes === 1, undefined, { timeout: 1_000 });
     assert.equal(calls, 2);
   });
@@ -1154,6 +1222,40 @@ test("visual requirement opens the existing sidecar with structured screen and s
     assert.equal(await page.locator('[data-element-id="element-reveal"]').count(), 1);
     await page.locator('[data-testid="ui-state-answer"]').click();
     assert.equal(await page.locator('[data-element-id="element-reveal"]').count(), 0);
+  });
+});
+
+test("Requirement editor deduplicates shared evidence and can remove a visual contract reference", async () => {
+  const draft = requirementDraftView();
+  draft.requirements[0]!.acceptanceCriteria.push({
+    id: "criterion-review-visible",
+    statement: "The completed review appears in history",
+    evidenceIntent: ["database row"],
+  });
+  draft.requirements[0]!.interactionContractRefs = ["ui-review"];
+  let body: Record<string, unknown> | null = null;
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { GoalRequirementEditor } from "./web/components/GoalRequirementEditor";
+    const draft = ${JSON.stringify(draft)};
+    createRoot(document.getElementById("root")).render(<GoalRequirementEditor selection={{ draftId: "draft-goal-1", expectedDraftHash: "hash-1", requirementId: "req-review", draft, status: "requirements_review", confirmable: false }} />);
+  `, async (page) => {
+    assert.equal(await page.getByRole("textbox", { name: "Evidence intent", exact: true }).inputValue(), "database row");
+    await page.locator('[data-testid="goal-requirement-remove-ui-contract-ui-review"]').click();
+    assert.equal(await page.getByRole("textbox", { name: "Interaction contract refs", exact: true }).inputValue(), "");
+    await page.route("**/api/workflow/planner-drafts/draft-goal-1/goal-requirements/req-review", async (route) => {
+      body = JSON.parse(route.request().postData() ?? "{}");
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ result: { draftId: "draft-goal-1", status: "requirements_review", phase: "requirements_review", goalRequirementDraftHash: "hash-2", goalRequirementDraft: { ...draft, revision: 2, draftHash: "hash-2", requirements: draft.requirements.map((item) => ({ ...item, interactionContractRefs: [] })) }, confirmable: true, validationIssues: [] } }) });
+    });
+    await page.locator('[data-testid="goal-requirement-save"]').click();
+    await page.getByText(/Saved revision 2/).waitFor();
+    const patch = (body as { patch?: Record<string, unknown> } | null)?.patch;
+    assert.deepEqual(patch?.interactionContractRefs, []);
+    assert.deepEqual(patch?.acceptanceCriteria, [
+      { id: "criterion-review", statement: "A completed review is persisted", evidenceIntent: ["database row"] },
+      { id: "criterion-review-visible", statement: "The completed review appears in history", evidenceIntent: ["database row"] },
+    ]);
   });
 });
 

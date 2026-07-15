@@ -1,0 +1,740 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - generic [ref=e3]:
+      - generic [ref=e90]:
+        - generic [ref=e91]:
+          - generic [ref=e92]:
+            - button "Southstar" [ref=e93]
+            - generic [ref=e100]:
+              - button "New" [ref=e101] [cursor=pointer]
+              - button "Refresh" [ref=e103] [cursor=pointer]
+          - button ".../apps/southstar-vocab" [ref=e108] [cursor=pointer]
+        - generic [ref=e109]:
+          - generic [ref=e110]: Workflow Sessions
+          - generic [ref=e111]:
+            - generic [ref=e112] [cursor=pointer]:
+              - generic [ref=e113]:
+                - generic [ref=e114]: 完成一個可離線運作的背單字系統：可以新增與列出單字、開始測驗並提交答案、查看本次與累積正確率，需要瀏覽器 UI、持久化資料、啟動與離線依賴檢查，以及可重現的測試與證據。請先產生 Goal Contract、requirements 與 slices，確認後再產生同一張 DAG 執行。
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e115]:
+                - generic [ref=e116]: 10m ago
+                - generic [ref=e117]: 2 messages
+            - generic [ref=e118] [cursor=pointer]:
+              - generic [ref=e119]:
+                - generic [ref=e120]: Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e121]:
+                - generic [ref=e122]: 13m ago
+                - generic [ref=e123]: 2 messages
+            - generic [ref=e124] [cursor=pointer]:
+              - generic [ref=e125]:
+                - generic [ref=e126]: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e127]:
+                - generic [ref=e128]: 15m ago
+                - generic [ref=e129]: 2 messages
+            - generic [ref=e130] [cursor=pointer]:
+              - generic [ref=e131]:
+                - generic [ref=e132]: "{\"schemaVersion\":\"southstar.workflow_composition_plan.v1\",\"title\":\"Runtime dynamic repair append for req-08 startup/depcheck validation callback mismatch\",\"rationale\":\"Append a bou..."
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e133]:
+                - generic [ref=e134]: 44m ago
+                - generic [ref=e135]: 1 messages
+            - generic [ref=e136] [cursor=pointer]:
+              - generic [ref=e137]:
+                - generic [ref=e138]: (no messages)
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e139]:
+                - generic [ref=e140]: 47m ago
+                - generic [ref=e141]: 0 messages
+            - generic [ref=e142] [cursor=pointer]:
+              - generic [ref=e143]:
+                - generic [ref=e144]: 完成一個可離線運作的背單字系統：可以新增與列出單字、開始測驗並提交答案、查看本次與累積正確率，需要瀏覽器 UI、持久化資料、啟動與離線依賴檢查，以及可重現的測試與證據。請先產生 Goal Contract、requirements 與 slices，確認後再產生同一張 DAG 執行。
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e145]:
+                - generic [ref=e146]: 2h ago
+                - generic [ref=e147]: 2 messages
+            - generic [ref=e148] [cursor=pointer]:
+              - generic [ref=e149]:
+                - generic [ref=e150]: (no messages)
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e151]:
+                - generic [ref=e152]: 2h ago
+                - generic [ref=e153]: 0 messages
+            - generic [ref=e154] [cursor=pointer]:
+              - generic [ref=e155]:
+                - generic [ref=e156]: (no messages)
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e157]:
+                - generic [ref=e158]: 2h ago
+                - generic [ref=e159]: 0 messages
+            - generic [ref=e160] [cursor=pointer]:
+              - generic [ref=e161]:
+                - generic [ref=e162]: "Use the approved Library Goal Design SOP to design outcome slices from the confirmed Goal Contract and frozen validation bindings. GoalDesignSkillRef: skill.southstar-goal-design G..."
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e163]:
+                - generic [ref=e164]: 2h ago
+                - generic [ref=e165]: 2 messages
+            - generic [ref=e166] [cursor=pointer]:
+              - generic [ref=e167]:
+                - generic [ref=e168]: Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e169]:
+                - generic [ref=e170]: 2h ago
+                - generic [ref=e171]: 2 messages
+            - generic [ref=e172] [cursor=pointer]:
+              - generic [ref=e173]:
+                - generic [ref=e174]: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e175]:
+                - generic [ref=e176]: 2h ago
+                - generic [ref=e177]: 2 messages
+            - generic [ref=e178] [cursor=pointer]:
+              - generic [ref=e179]:
+                - generic [ref=e180]: 完成一個可離線運作的背單字系統：可以新增與列出單字、開始測驗並提交答案、查看本次與累積正確率，需要瀏覽器 UI、持久化資料、啟動與離線依賴檢查，以及可重現的測試與證據。請先產生 Goal Contract、requirements 與 slices，確認後再產生同一張 DAG 執行。
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e181]:
+                - generic [ref=e182]: 3h ago
+                - generic [ref=e183]: 2 messages
+            - generic [ref=e184] [cursor=pointer]:
+              - generic [ref=e185]:
+                - generic [ref=e186]: Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e187]:
+                - generic [ref=e188]: 3h ago
+                - generic [ref=e189]: 2 messages
+            - generic [ref=e190] [cursor=pointer]:
+              - generic [ref=e191]:
+                - generic [ref=e192]: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e193]:
+                - generic [ref=e194]: 3h ago
+                - generic [ref=e195]: 2 messages
+            - generic [ref=e196] [cursor=pointer]:
+              - generic [ref=e197]:
+                - generic [ref=e198]: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e199]:
+                - generic [ref=e200]: 3h ago
+                - generic [ref=e201]: 2 messages
+            - generic [ref=e202] [cursor=pointer]:
+              - generic [ref=e203]:
+                - generic [ref=e204]: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e205]:
+                - generic [ref=e206]: 3h ago
+                - generic [ref=e207]: 2 messages
+            - generic [ref=e208] [cursor=pointer]:
+              - generic [ref=e209]:
+                - generic [ref=e210]: 完成目前工作目錄中的離線背單字系統：新增與列出單字、開始測驗並提交答案、顯示本次與累積正確率、瀏覽器 UI、持久化資料、啟動與離線依賴檢查，以及可重現測試與證據。請直接採用合理且明確的產品預設，不要提出或留下任何 blocking open question；產生可審核 Goal Contract、完整 requirements 與 slices，確認後再生...
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e211]:
+                - generic [ref=e212]: 3h ago
+                - generic [ref=e213]: 2 messages
+            - generic [ref=e214] [cursor=pointer]:
+              - generic [ref=e215]:
+                - generic [ref=e216]: 在目前工作目錄完成一個可離線運作的背單字系統：使用者可以新增與列出單字、開始測驗並提交答案、查看本次與累積正確率；需要有瀏覽器 UI、持久化資料、啟動與離線依賴檢查，並以可重現的測試與證據驗證所有功能。請先產生可審核的 Goal Contract、requirements 與 slices，確認後再產生同一張 DAG 執行。
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e217]:
+                - generic [ref=e218]: 3h ago
+                - generic [ref=e219]: 2 messages
+            - generic [ref=e220] [cursor=pointer]:
+              - generic [ref=e221]:
+                - generic [ref=e222]: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e223]:
+                - generic [ref=e224]: 3h ago
+                - generic [ref=e225]: 2 messages
+            - generic [ref=e226] [cursor=pointer]:
+              - generic [ref=e227]:
+                - generic [ref=e228]: (no messages)
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e229]:
+                - generic [ref=e230]: 4h ago
+                - generic [ref=e231]: 0 messages
+            - generic [ref=e232] [cursor=pointer]:
+              - generic [ref=e233]:
+                - generic [ref=e234]: (no messages)
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e235]:
+                - generic [ref=e236]: 5h ago
+                - generic [ref=e237]: 0 messages
+            - generic [ref=e238] [cursor=pointer]:
+              - generic [ref=e239]:
+                - generic [ref=e240]: (no messages)
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e241]:
+                - generic [ref=e242]: 5h ago
+                - generic [ref=e243]: 0 messages
+            - generic [ref=e244] [cursor=pointer]:
+              - generic [ref=e245]:
+                - generic [ref=e246]: (no messages)
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e247]:
+                - generic [ref=e248]: 5h ago
+                - generic [ref=e249]: 0 messages
+            - generic [ref=e250] [cursor=pointer]:
+              - generic [ref=e251]:
+                - generic [ref=e252]: (no messages)
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e253]:
+                - generic [ref=e254]: 5h ago
+                - generic [ref=e255]: 0 messages
+            - generic [ref=e256] [cursor=pointer]:
+              - generic [ref=e257]:
+                - generic [ref=e258]: (no messages)
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e259]:
+                - generic [ref=e260]: 5h ago
+                - generic [ref=e261]: 0 messages
+            - generic [ref=e262] [cursor=pointer]:
+              - generic [ref=e263]:
+                - generic [ref=e264]: (no messages)
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e265]:
+                - generic [ref=e266]: 6h ago
+                - generic [ref=e267]: 0 messages
+            - generic [ref=e268] [cursor=pointer]:
+              - generic [ref=e269]:
+                - generic [ref=e270]: (no messages)
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e271]:
+                - generic [ref=e272]: 6h ago
+                - generic [ref=e273]: 0 messages
+            - generic [ref=e274] [cursor=pointer]:
+              - generic [ref=e275]:
+                - generic [ref=e276]: Build a small local vocabulary flashcard system in this workspace. Users can add and list words with translations and examples, run flashcard quizzes, submit answers with persisted...
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e277]:
+                - generic [ref=e278]: 6h ago
+                - generic [ref=e279]: 2 messages
+            - generic [ref=e280] [cursor=pointer]:
+              - generic [ref=e281]:
+                - generic [ref=e282]: (no messages)
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e283]:
+                - generic [ref=e284]: 6h ago
+                - generic [ref=e285]: 0 messages
+            - generic [ref=e286] [cursor=pointer]:
+              - generic [ref=e287]:
+                - generic [ref=e288]: (no messages)
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e289]:
+                - generic [ref=e290]: 6h ago
+                - generic [ref=e291]: 0 messages
+            - generic [ref=e292] [cursor=pointer]:
+              - generic [ref=e293]:
+                - generic [ref=e294]: "Use the approved Library Goal Design SOP to design outcome slices from the confirmed Goal Contract and frozen validation bindings. GoalDesignSkillRef: skill.southstar-goal-design G..."
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e295]:
+                - generic [ref=e296]: 7h ago
+                - generic [ref=e297]: 2 messages
+            - generic [ref=e298] [cursor=pointer]:
+              - generic [ref=e299]:
+                - generic [ref=e300]: Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e301]:
+                - generic [ref=e302]: 7h ago
+                - generic [ref=e303]: 2 messages
+            - generic [ref=e304] [cursor=pointer]:
+              - generic [ref=e305]:
+                - generic [ref=e306]: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e307]:
+                - generic [ref=e308]: 7h ago
+                - generic [ref=e309]: 2 messages
+            - generic [ref=e310] [cursor=pointer]:
+              - generic [ref=e311]:
+                - generic [ref=e312]: "Use the approved Goal Design skill to turn only the Requirement Draft's declared interactionContractRefs into reviewable UI interaction contracts. GoalDesignSkillRef: skill.southst..."
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e313]:
+                - generic [ref=e314]: 7h ago
+                - generic [ref=e315]: 2 messages
+            - generic [ref=e316] [cursor=pointer]:
+              - generic [ref=e317]:
+                - generic [ref=e318]: "Use the approved Goal Design skill to turn only the Requirement Draft's declared interactionContractRefs into reviewable UI interaction contracts. GoalDesignSkillRef: skill.southst..."
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e319]:
+                - generic [ref=e320]: 7h ago
+                - generic [ref=e321]: 2 messages
+            - generic [ref=e322] [cursor=pointer]:
+              - generic [ref=e323]:
+                - generic [ref=e324]: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e325]:
+                - generic [ref=e326]: 7h ago
+                - generic [ref=e327]: 2 messages
+            - generic [ref=e328] [cursor=pointer]:
+              - generic [ref=e329]:
+                - generic [ref=e330]: Build a small local vocabulary flashcard system in this workspace. Users can add and list words with translations and examples, run flashcard quizzes, submit answers with persisted...
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e331]:
+                - generic [ref=e332]: 7h ago
+                - generic [ref=e333]: 2 messages
+            - generic [ref=e334] [cursor=pointer]:
+              - generic [ref=e335]:
+                - generic [ref=e336]: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e337]:
+                - generic [ref=e338]: 7h ago
+                - generic [ref=e339]: 2 messages
+            - generic [ref=e340] [cursor=pointer]:
+              - generic [ref=e341]:
+                - generic [ref=e342]: Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e343]:
+                - generic [ref=e344]: 8h ago
+                - generic [ref=e345]: 2 messages
+            - generic [ref=e346] [cursor=pointer]:
+              - generic [ref=e347]:
+                - generic [ref=e348]: "Use the approved Goal Design skill to turn only the Requirement Draft's declared interactionContractRefs into reviewable UI interaction contracts. GoalDesignSkillRef: skill.southst..."
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e349]:
+                - generic [ref=e350]: 8h ago
+                - generic [ref=e351]: 2 messages
+            - generic [ref=e352] [cursor=pointer]:
+              - generic [ref=e353]:
+                - generic [ref=e354]: "Use the approved Goal Design skill to turn only the Requirement Draft's declared interactionContractRefs into reviewable UI interaction contracts. GoalDesignSkillRef: skill.southst..."
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e355]:
+                - generic [ref=e356]: 8h ago
+                - generic [ref=e357]: 2 messages
+            - generic [ref=e358] [cursor=pointer]:
+              - generic [ref=e359]:
+                - generic [ref=e360]: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e361]:
+                - generic [ref=e362]: 8h ago
+                - generic [ref=e363]: 2 messages
+            - generic [ref=e364] [cursor=pointer]:
+              - generic [ref=e365]:
+                - generic [ref=e366]: (no messages)
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e367]:
+                - generic [ref=e368]: 10h ago
+                - generic [ref=e369]: 0 messages
+            - generic [ref=e370] [cursor=pointer]:
+              - generic [ref=e371]:
+                - generic [ref=e372]: (no messages)
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e373]:
+                - generic [ref=e374]: 10h ago
+                - generic [ref=e375]: 0 messages
+            - generic [ref=e376] [cursor=pointer]:
+              - generic [ref=e377]:
+                - generic [ref=e378]: (no messages)
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e379]:
+                - generic [ref=e380]: 10h ago
+                - generic [ref=e381]: 0 messages
+            - generic [ref=e382] [cursor=pointer]:
+              - generic [ref=e383]:
+                - generic [ref=e384]: "Return exactly: vocab-ok"
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e385]:
+                - generic [ref=e386]: 11h ago
+                - generic [ref=e387]: 2 messages
+            - generic [ref=e388] [cursor=pointer]:
+              - generic [ref=e389]:
+                - generic [ref=e390]: "Return exactly this text and nothing else: second-ok"
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e391]:
+                - generic [ref=e392]: 11h ago
+                - generic [ref=e393]: 2 messages
+            - generic [ref=e394] [cursor=pointer]:
+              - generic [ref=e395]:
+                - generic [ref=e396]: "Return exactly this text and nothing else: first-ok"
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e397]:
+                - generic [ref=e398]: 11h ago
+                - generic [ref=e399]: 2 messages
+            - generic [ref=e400] [cursor=pointer]:
+              - generic [ref=e401]:
+                - generic [ref=e402]: Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e403]:
+                - generic [ref=e404]: 11h ago
+                - generic [ref=e405]: 2 messages
+            - generic [ref=e406] [cursor=pointer]:
+              - generic [ref=e407]:
+                - generic [ref=e408]: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+                - generic:
+                  - button "Rename"
+                  - button "Delete"
+              - generic [ref=e409]:
+                - generic [ref=e410]: 11h ago
+                - generic [ref=e411]: 2 messages
+        - generic [ref=e412]:
+          - generic [ref=e413]:
+            - button "Workflow Library" [ref=e414] [cursor=pointer]
+            - button "Refresh workflow library" [ref=e417] [cursor=pointer]
+          - generic [ref=e422]:
+            - button "all" [ref=e423] [cursor=pointer]
+            - button "workflows" [ref=e430] [cursor=pointer]
+      - generic [ref=e27]:
+        - button "Models" [ref=e28] [cursor=pointer]
+        - button "Skills" [ref=e32] [cursor=pointer]
+        - button "MCP" [ref=e37] [cursor=pointer]
+    - generic [ref=e44]:
+      - generic [ref=e45]:
+        - button "Hide sidebar" [ref=e46] [cursor=pointer]
+        - button "Switch to dark mode" [ref=e49] [cursor=pointer]
+        - generic [ref=e437]:
+          - button "Export HTML" [ref=e438] [cursor=pointer]
+          - button "Branches" [ref=e444] [cursor=pointer]
+        - generic [ref=e52]:
+          - button [ref=e53] [cursor=pointer]
+          - button [ref=e57] [cursor=pointer]
+          - button [pressed] [ref=e61] [cursor=pointer]
+          - button [ref=e70] [cursor=pointer]
+        - 'button "in: 0 | out: 0 | cache read: 0 | cache write: 0" [ref=e449] [cursor=pointer]'
+      - generic [ref=e451]:
+        - generic [ref=e455]:
+          - generic [ref=e457]:
+            - paragraph [ref=e461]: 完成一個可離線運作的背單字系統：可以新增與列出單字、開始測驗並提交答案、查看本次與累積正確率，需要瀏覽器 UI、持久化資料、啟動與離線依賴檢查，以及可重現的測試與證據。請先產生 Goal Contract、requirements 與 slices，確認後再產生同一張 DAG 執行。
+            - generic [ref=e462]:
+              - generic:
+                - button "Copy"
+              - generic [ref=e463]: 02:16
+          - generic [ref=e465]:
+            - generic [ref=e466]: workflow-generate
+            - generic [ref=e468]:
+              - paragraph [ref=e470]: "[request.normalized] request.normalized [goal_requirements] draft-goal-requirements-12951e1876a5 12951e1876a5 [requirements.persisted] requirements.persisted [draft.requirements_review] draft.requirements_review [draft] draft-goal-requirements-12951e1876a5 requirements_review"
+              - generic [ref=e471]:
+                - generic [ref=e472]:
+                  - generic [ref=e473]:
+                    - heading "目標是交付一個可離線運作的背單字系統，涵蓋：瀏覽器 UI 的新增/列出單字、開始測驗與提交答案、顯示本次與累積正確率、資料持久化與重啟延續、啟動與離線依賴檢查，以及可重現的測試與證據追溯。" [level=3] [ref=e474]
+                    - generic [ref=e475]: draft draft-goal-requirements-12951e1876a5 · requirements_review · rev 1
+                  - generic [ref=e476]: 6 requirements
+                - generic [ref=e477]:
+                  - generic [ref=e478]: 6 explicit
+                  - generic [ref=e479]: 0 inferred
+                  - generic [ref=e480]: 6 blocking
+                  - generic [ref=e481]: clarification clear
+                - generic [ref=e482]:
+                  - button "新增與列出單字的離線瀏覽器流程 explicit blocking 系統必須提供瀏覽器 UI，讓使用者在離線環境中可以新增單字並列出目前單字清單，且結果可被重新載入後重現。 2 AC ready coverage unknown no visual contract" [ref=e483] [cursor=pointer]:
+                    - generic [ref=e484]:
+                      - strong [ref=e485]: 新增與列出單字的離線瀏覽器流程
+                      - generic [ref=e486]: explicit
+                      - generic [ref=e487]: blocking
+                    - generic [ref=e488]: 系統必須提供瀏覽器 UI，讓使用者在離線環境中可以新增單字並列出目前單字清單，且結果可被重新載入後重現。
+                    - generic [ref=e489]:
+                      - generic [ref=e490]: 2 AC
+                      - generic [ref=e491]: ready
+                      - generic [ref=e492]: coverage unknown
+                      - generic [ref=e493]: no visual contract
+                  - button "開始測驗與提交答案流程 explicit blocking 系統必須支援從既有單字開始一輪測驗，使用者可提交答案並取得該輪作答結果。 2 AC ready coverage unknown no visual contract" [ref=e494] [cursor=pointer]:
+                    - generic [ref=e495]:
+                      - strong [ref=e496]: 開始測驗與提交答案流程
+                      - generic [ref=e497]: explicit
+                      - generic [ref=e498]: blocking
+                    - generic [ref=e499]: 系統必須支援從既有單字開始一輪測驗，使用者可提交答案並取得該輪作答結果。
+                    - generic [ref=e500]:
+                      - generic [ref=e501]: 2 AC
+                      - generic [ref=e502]: ready
+                      - generic [ref=e503]: coverage unknown
+                      - generic [ref=e504]: no visual contract
+                  - button "本次與累積正確率呈現 explicit blocking 系統必須在提交測驗後顯示本次正確率，並提供跨多次測驗累積的正確率。 2 AC ready coverage unknown no visual contract" [ref=e505] [cursor=pointer]:
+                    - generic [ref=e506]:
+                      - strong [ref=e507]: 本次與累積正確率呈現
+                      - generic [ref=e508]: explicit
+                      - generic [ref=e509]: blocking
+                    - generic [ref=e510]: 系統必須在提交測驗後顯示本次正確率，並提供跨多次測驗累積的正確率。
+                    - generic [ref=e511]:
+                      - generic [ref=e512]: 2 AC
+                      - generic [ref=e513]: ready
+                      - generic [ref=e514]: coverage unknown
+                      - generic [ref=e515]: no visual contract
+                  - button "離線運作與重啟持久化連續性 explicit blocking 系統在無外網條件下仍需可完成核心流程，且單字資料、測驗歷史與累積統計在重啟後必須延續。 2 AC ready coverage unknown no visual contract" [ref=e516] [cursor=pointer]:
+                    - generic [ref=e517]:
+                      - strong [ref=e518]: 離線運作與重啟持久化連續性
+                      - generic [ref=e519]: explicit
+                      - generic [ref=e520]: blocking
+                    - generic [ref=e521]: 系統在無外網條件下仍需可完成核心流程，且單字資料、測驗歷史與累積統計在重啟後必須延續。
+                    - generic [ref=e522]:
+                      - generic [ref=e523]: 2 AC
+                      - generic [ref=e524]: ready
+                      - generic [ref=e525]: coverage unknown
+                      - generic [ref=e526]: no visual contract
+                  - button "啟動流程與離線依賴檢查 explicit blocking 專案必須提供可執行的啟動命令與離線依賴檢查機制，能在本地輸出可驗證結果。 2 AC ready coverage unknown no visual contract" [ref=e527] [cursor=pointer]:
+                    - generic [ref=e528]:
+                      - strong [ref=e529]: 啟動流程與離線依賴檢查
+                      - generic [ref=e530]: explicit
+                      - generic [ref=e531]: blocking
+                    - generic [ref=e532]: 專案必須提供可執行的啟動命令與離線依賴檢查機制，能在本地輸出可驗證結果。
+                    - generic [ref=e533]:
+                      - generic [ref=e534]: 2 AC
+                      - generic [ref=e535]: ready
+                      - generic [ref=e536]: coverage unknown
+                      - generic [ref=e537]: no visual contract
+                  - button "可重現測試與證據追溯包 explicit blocking 必須提供可重現的測試執行方式與證據映射，能將每個阻塞需求對應到可檢視證據。 2 AC ready coverage unknown no visual contract" [ref=e538] [cursor=pointer]:
+                    - generic [ref=e539]:
+                      - strong [ref=e540]: 可重現測試與證據追溯包
+                      - generic [ref=e541]: explicit
+                      - generic [ref=e542]: blocking
+                    - generic [ref=e543]: 必須提供可重現的測試執行方式與證據映射，能將每個阻塞需求對應到可檢視證據。
+                    - generic [ref=e544]:
+                      - generic [ref=e545]: 2 AC
+                      - generic [ref=e546]: ready
+                      - generic [ref=e547]: coverage unknown
+                      - generic [ref=e548]: no visual contract
+                - paragraph [ref=e549]:
+                  - strong [ref=e550]: "Non-goals:"
+                  - text: 不包含帳號登入、權限管理或多使用者協作功能 · 不包含雲端同步、遠端資料庫或線上服務部署需求 · 不包含進階學習演算法（如間隔重複排程）與個人化推薦
+                - generic [ref=e551]:
+                  - generic [ref=e552]: Host marked this requirement draft confirmable.
+                  - button "Confirm requirements" [ref=e553] [cursor=pointer]
+            - generic [ref=e554]:
+              - button "Copy"
+          - generic [ref=e556]:
+            - generic [ref=e557]: workflow-state
+            - generic [ref=e559]:
+              - generic [ref=e560]:
+                - generic [ref=e561]:
+                  - generic [ref=e562]:
+                    - heading "目標是交付一個可離線運作的背單字系統，涵蓋：瀏覽器 UI 的新增/列出單字、開始測驗與提交答案、顯示本次與累積正確率、資料持久化與重啟延續、啟動與離線依賴檢查，以及可重現的測試與證據追溯。" [level=3] [ref=e563]
+                    - generic [ref=e564]: draft draft-goal-requirements-12951e1876a5 · library_review · rev 1
+                  - generic [ref=e565]: 6 requirements
+                - generic [ref=e566]:
+                  - generic [ref=e567]: 6 explicit
+                  - generic [ref=e568]: 0 inferred
+                  - generic [ref=e569]: 6 blocking
+                  - generic [ref=e570]: clarification clear
+                - generic [ref=e571]:
+                  - button "新增與列出單字的離線瀏覽器流程 explicit blocking 系統必須提供瀏覽器 UI，讓使用者在離線環境中可以新增單字並列出目前單字清單，且結果可被重新載入後重現。 2 AC ready coverage unknown no visual contract" [ref=e572] [cursor=pointer]:
+                    - generic [ref=e573]:
+                      - strong [ref=e574]: 新增與列出單字的離線瀏覽器流程
+                      - generic [ref=e575]: explicit
+                      - generic [ref=e576]: blocking
+                    - generic [ref=e577]: 系統必須提供瀏覽器 UI，讓使用者在離線環境中可以新增單字並列出目前單字清單，且結果可被重新載入後重現。
+                    - generic [ref=e578]:
+                      - generic [ref=e579]: 2 AC
+                      - generic [ref=e580]: ready
+                      - generic [ref=e581]: coverage unknown
+                      - generic [ref=e582]: no visual contract
+                  - button "開始測驗與提交答案流程 explicit blocking 系統必須支援從既有單字開始一輪測驗，使用者可提交答案並取得該輪作答結果。 2 AC ready coverage unknown no visual contract" [ref=e583] [cursor=pointer]:
+                    - generic [ref=e584]:
+                      - strong [ref=e585]: 開始測驗與提交答案流程
+                      - generic [ref=e586]: explicit
+                      - generic [ref=e587]: blocking
+                    - generic [ref=e588]: 系統必須支援從既有單字開始一輪測驗，使用者可提交答案並取得該輪作答結果。
+                    - generic [ref=e589]:
+                      - generic [ref=e590]: 2 AC
+                      - generic [ref=e591]: ready
+                      - generic [ref=e592]: coverage unknown
+                      - generic [ref=e593]: no visual contract
+                  - button "本次與累積正確率呈現 explicit blocking 系統必須在提交測驗後顯示本次正確率，並提供跨多次測驗累積的正確率。 2 AC ready coverage unknown no visual contract" [ref=e594] [cursor=pointer]:
+                    - generic [ref=e595]:
+                      - strong [ref=e596]: 本次與累積正確率呈現
+                      - generic [ref=e597]: explicit
+                      - generic [ref=e598]: blocking
+                    - generic [ref=e599]: 系統必須在提交測驗後顯示本次正確率，並提供跨多次測驗累積的正確率。
+                    - generic [ref=e600]:
+                      - generic [ref=e601]: 2 AC
+                      - generic [ref=e602]: ready
+                      - generic [ref=e603]: coverage unknown
+                      - generic [ref=e604]: no visual contract
+                  - button "離線運作與重啟持久化連續性 explicit blocking 系統在無外網條件下仍需可完成核心流程，且單字資料、測驗歷史與累積統計在重啟後必須延續。 2 AC ready coverage unknown no visual contract" [ref=e605] [cursor=pointer]:
+                    - generic [ref=e606]:
+                      - strong [ref=e607]: 離線運作與重啟持久化連續性
+                      - generic [ref=e608]: explicit
+                      - generic [ref=e609]: blocking
+                    - generic [ref=e610]: 系統在無外網條件下仍需可完成核心流程，且單字資料、測驗歷史與累積統計在重啟後必須延續。
+                    - generic [ref=e611]:
+                      - generic [ref=e612]: 2 AC
+                      - generic [ref=e613]: ready
+                      - generic [ref=e614]: coverage unknown
+                      - generic [ref=e615]: no visual contract
+                  - button "啟動流程與離線依賴檢查 explicit blocking 專案必須提供可執行的啟動命令與離線依賴檢查機制，能在本地輸出可驗證結果。 2 AC ready coverage unknown no visual contract" [ref=e616] [cursor=pointer]:
+                    - generic [ref=e617]:
+                      - strong [ref=e618]: 啟動流程與離線依賴檢查
+                      - generic [ref=e619]: explicit
+                      - generic [ref=e620]: blocking
+                    - generic [ref=e621]: 專案必須提供可執行的啟動命令與離線依賴檢查機制，能在本地輸出可驗證結果。
+                    - generic [ref=e622]:
+                      - generic [ref=e623]: 2 AC
+                      - generic [ref=e624]: ready
+                      - generic [ref=e625]: coverage unknown
+                      - generic [ref=e626]: no visual contract
+                  - button "可重現測試與證據追溯包 explicit blocking 必須提供可重現的測試執行方式與證據映射，能將每個阻塞需求對應到可檢視證據。 2 AC ready coverage unknown no visual contract" [ref=e627] [cursor=pointer]:
+                    - generic [ref=e628]:
+                      - strong [ref=e629]: 可重現測試與證據追溯包
+                      - generic [ref=e630]: explicit
+                      - generic [ref=e631]: blocking
+                    - generic [ref=e632]: 必須提供可重現的測試執行方式與證據映射，能將每個阻塞需求對應到可檢視證據。
+                    - generic [ref=e633]:
+                      - generic [ref=e634]: 2 AC
+                      - generic [ref=e635]: ready
+                      - generic [ref=e636]: coverage unknown
+                      - generic [ref=e637]: no visual contract
+                - paragraph [ref=e638]:
+                  - strong [ref=e639]: "Non-goals:"
+                  - text: 不包含帳號登入、權限管理或多使用者協作功能 · 不包含雲端同步、遠端資料庫或線上服務部署需求 · 不包含進階學習演算法（如間隔重複排程）與個人化推薦
+                - generic [ref=e640]:
+                  - generic [ref=e641]: Waiting for host validation readiness.
+                  - button "Confirm requirements" [disabled] [ref=e642] [cursor=pointer]
+              - generic [ref=e643]:
+                - generic [ref=e644]:
+                  - generic [ref=e645]:
+                    - generic [ref=e646]: ›
+                    - generic [ref=e647]:
+                      - generic [ref=e648]: Import candidates
+                      - generic [ref=e649]: library-import-goal-b8d22f7611d9d0f033a129126ec0b8f9
+                  - generic [ref=e650]:
+                    - button "Select all candidates" [disabled] [ref=e651]
+                    - button "Unselect all candidates" [disabled] [ref=e655]
+                    - button "Install selected candidates" [ref=e658] [cursor=pointer]
+                    - button "Hide candidates" [ref=e662] [cursor=pointer]
+                    - generic [ref=e665]: 3/3 selected
+                    - generic [ref=e666]: Complete blocking-gap proposal · all candidates required
+                - generic [ref=e667]:
+                  - generic [ref=e668]:
+                    - checkbox "Offline UI Persistence Verification Report artifact.offline-ui-persistence-verification-report" [checked] [disabled] [ref=e669]
+                    - generic [ref=e670]:
+                      - generic [ref=e671]:
+                        - strong [ref=e672]: Offline UI Persistence Verification Report
+                        - generic [ref=e673]: artifact
+                        - generic [ref=e674]: "0.95"
+                      - generic [ref=e675]: artifact.offline-ui-persistence-verification-report
+                      - generic [ref=e676]: Confirmed-Goal-validation-gaps.md
+                      - generic [ref=e677]: Covers req-2489f06b9e72 · criterion-23852379f2d8, criterion-5eb99bf1c46a
+                  - generic [ref=e679]:
+                    - checkbox "Reproducible Validation Evidence Map artifact.reproducible-validation-evidence-map" [checked] [disabled] [ref=e680]
+                    - generic [ref=e681]:
+                      - generic [ref=e682]:
+                        - strong [ref=e683]: Reproducible Validation Evidence Map
+                        - generic [ref=e684]: artifact
+                        - generic [ref=e685]: "0.96"
+                      - generic [ref=e686]: artifact.reproducible-validation-evidence-map
+                      - generic [ref=e687]: Confirmed-Goal-validation-gaps.md
+                      - generic [ref=e688]:
+                        - generic [ref=e689]: Covers req-8dd37775dac0 · criterion-9c779a5a0688, criterion-f350da1c79c9
+                        - generic [ref=e690]: Covers req-8dd37775dac0 · criterion-9c779a5a0688, criterion-f350da1c79c9
+                  - generic [ref=e691]:
+                    - checkbox "Software Validation Evidence Integrity Evaluator evaluator.software-validation-evidence-integrity" [checked] [disabled] [ref=e692]
+                    - generic [ref=e693]:
+                      - generic [ref=e694]:
+                        - strong [ref=e695]: Software Validation Evidence Integrity Evaluator
+                        - generic [ref=e696]: evaluator
+                        - generic [ref=e697]: "0.94"
+                      - generic [ref=e698]: evaluator.software-validation-evidence-integrity
+                      - generic [ref=e699]: Confirmed-Goal-validation-gaps.md
+                      - generic [ref=e700]:
+                        - generic [ref=e701]: Covers req-2489f06b9e72 · criterion-23852379f2d8, criterion-5eb99bf1c46a
+                        - generic [ref=e702]: Covers req-8dd37775dac0 · criterion-9c779a5a0688, criterion-f350da1c79c9
+                        - generic [ref=e703]: Covers req-8dd37775dac0 · criterion-9c779a5a0688, criterion-f350da1c79c9
+            - generic [ref=e704]: 02:22
+        - generic [ref=e714]:
+          - generic [ref=e716]:
+            - textbox "Message… Type / for commands" [ref=e717]
+            - button "Send" [disabled] [ref=e718]
+          - generic [ref=e721]:
+            - generic [ref=e722]:
+              - button "Attach image" [ref=e723] [cursor=pointer]
+              - button "GPT-5.3 Codex" [ref=e729] [cursor=pointer]
+            - generic [ref=e734]:
+              - button "high" [ref=e736] [cursor=pointer]
+              - button "default" [ref=e741] [cursor=pointer]
+              - button "Compact" [ref=e746] [cursor=pointer]
+              - button "关闭完成提示音" [ref=e752] [cursor=pointer]
+    - button "Show sidecar" [ref=e77] [cursor=pointer]
+  - button "Open Next.js Dev Tools" [ref=e85] [cursor=pointer]
+  - alert [ref=e89]

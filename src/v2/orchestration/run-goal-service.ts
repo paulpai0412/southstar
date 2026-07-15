@@ -36,11 +36,22 @@ import { loadRunLibrarySnapshotPg } from "./run-library-snapshot.ts";
 import { getResourceByKeyPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 import type { StartRunSchedulingResult } from "../server/run-execution-controller.ts";
 import { startRunSchedulingPg } from "../server/run-execution-controller.ts";
-import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../ui-api/postgres-run-api.ts";
+import { createPostgresPlannerDraft, createPostgresRunFromDraft, type PostgresPlannerDraftResult } from "../ui-api/postgres-run-api.ts";
 import type { SouthstarWorkflowManifest } from "../manifests/types.ts";
 import type { LibraryImportLlmProvider } from "../design-library/importers/library-llm-import-analyzer.ts";
 import type { LibraryImportSourceFetcher } from "../design-library/importers/library-source-fetcher.ts";
 import type { GoalRequirementDraftInterpreter, GoalRequirementDraftV1 } from "./goal-requirement-draft.ts";
+
+// A confirmation is only considered actively composing while this runtime
+// process owns the request.  This lets a restarted runtime recover a durable
+// `composing` resource instead of leaving the browser permanently stuck at
+// 202/processing.  The database remains the source of truth for the final
+// result; this set is only a process-liveness hint.
+const activeGoalDesignConfirmations = new Set<string>();
+
+export function isGoalDesignConfirmationActive(confirmationId: string): boolean {
+  return activeGoalDesignConfirmations.has(confirmationId);
+}
 
 export type RunGoalRequest = {
   goalPrompt: string;
@@ -456,20 +467,24 @@ export async function continueGoalDesignToRunPg(
       });
       return result;
     }
-    composedDraft = await createPostgresPlannerDraft(context.db, {
-      goalPrompt: prepared.goalPrompt,
-      cwd: prepared.cwd,
-      ...(prepared.projectRef !== undefined ? { projectRef: prepared.projectRef } : {}),
-      goalInterpreter: fixedGoalInterpreter(prepared.package.goalContract),
-      goalDesignPackage: prepared.package,
-      composer: context.composer,
-      ...(prepared.goalRequirementDraftId ? { goalRequirementDraftId: prepared.goalRequirementDraftId } : {}),
-      ...(prepared.goalRequirementDraftHash ? { goalRequirementDraftHash: prepared.goalRequirementDraftHash } : {}),
-      onProgress(event) {
-        observedStages.push(event.stage);
-        context.onStage?.(event.stage);
-      },
-    });
+    composedDraft = await findReusableValidatedGoalDesignDraftPg(context.db, {
+      packageHash: prepared.package.packageHash,
+      goalContractHash: prepared.package.goalContractHash,
+      goalRequirementDraftHash: prepared.goalRequirementDraftHash,
+    }) ?? await createPostgresPlannerDraft(context.db, {
+        goalPrompt: prepared.goalPrompt,
+        cwd: prepared.cwd,
+        ...(prepared.projectRef !== undefined ? { projectRef: prepared.projectRef } : {}),
+        goalInterpreter: fixedGoalInterpreter(prepared.package.goalContract),
+        goalDesignPackage: prepared.package,
+        composer: context.composer,
+        ...(prepared.goalRequirementDraftId ? { goalRequirementDraftId: prepared.goalRequirementDraftId } : {}),
+        ...(prepared.goalRequirementDraftHash ? { goalRequirementDraftHash: prepared.goalRequirementDraftHash } : {}),
+        onProgress(event) {
+          observedStages.push(event.stage);
+          context.onStage?.(event.stage);
+        },
+      });
   } catch (error) {
     await failGoalDesignConfirmationPg(context.db, {
       draftId: input.draftId,
@@ -589,6 +604,49 @@ type GoalDesignConfirmationPreparation = {
   schedulingRequest?: RunGoalResult;
 };
 
+async function findReusableValidatedGoalDesignDraftPg(
+  db: SouthstarDb,
+  input: { packageHash: string; goalContractHash: string; goalRequirementDraftHash?: string },
+): Promise<PostgresPlannerDraftResult | undefined> {
+  const row = await db.maybeOne<{
+    resource_key: string;
+    payload_json: Record<string, unknown>;
+  }>(
+    `select resource_key, payload_json
+       from southstar.runtime_resources
+      where resource_type = 'planner_draft'
+        and status = 'validated'
+        and payload_json->>'goalDesignPackageHash' = $1
+        and payload_json->>'goalContractHash' = $2
+        and ($3::text is null or payload_json->>'goalRequirementDraftHash' = $3)
+      order by updated_at desc
+      limit 1`,
+    [input.packageHash, input.goalContractHash, input.goalRequirementDraftHash ?? null],
+  );
+  if (!row) return undefined;
+  const payload = asRecord(row.payload_json);
+  const workflow = asRecord(payload.workflow);
+  const plannerRequest = asRecord(payload.plannerRequest);
+  const goalContractHash = optionalString(payload.goalContractHash);
+  if (!goalContractHash) return undefined;
+  const workflowId = optionalString(workflow.workflowId) ?? row.resource_key.replace(/^draft-/, "");
+  return {
+    draftId: row.resource_key,
+    goalPrompt: optionalString(plannerRequest.goalPrompt) ?? "",
+    workflowId,
+    status: "validated",
+    goalContractHash,
+    ...(optionalString(payload.goalRequirementDraftId) ? { goalRequirementDraftId: optionalString(payload.goalRequirementDraftId) } : {}),
+    ...(optionalString(payload.goalRequirementDraftHash) ? { goalRequirementDraftHash: optionalString(payload.goalRequirementDraftHash) } : {}),
+    ...(optionalString(payload.goalDesignPackageHash) ? { goalDesignPackageHash: optionalString(payload.goalDesignPackageHash) } : {}),
+    // The package was confirmed before this reusable draft was persisted;
+    // the original interpreter blocker is audit lineage, not a pending input.
+    blockers: [],
+    validationIssues: [],
+    taskSummaries: [],
+  };
+}
+
 async function prepareGoalDesignConfirmationPg(
   db: SouthstarDb,
   input: { draftId: string; expectedPackageHash: string; confirmationMode: "manual" | "auto" },
@@ -645,6 +703,7 @@ async function prepareGoalDesignConfirmationPg(
       ],
     );
     if (inserted) {
+      activeGoalDesignConfirmations.add(inserted.id);
       await transitionGoalDesignPhaseTx(tx, {
         draftId: input.draftId,
         expectedPackageHash: input.expectedPackageHash,
@@ -668,7 +727,19 @@ async function prepareGoalDesignConfirmationPg(
       "select id, status, payload_json from southstar.runtime_resources where resource_type = 'goal_design_confirmation' and resource_key = $1 for update",
       [input.draftId],
     );
+    // A process restart loses the in-memory active marker while the durable
+    // resource remains `composing`.  Treat that orphaned lease as retryable;
+    // an in-process request still owns its marker and remains protected by the
+    // normal pending response.
+    if (existing.status === "composing" && !activeGoalDesignConfirmations.has(existing.id)) {
+      await tx.query(
+        "update southstar.runtime_resources set status = 'stale', payload_json = payload_json || $2::jsonb, summary_json = summary_json || $2::jsonb, updated_at = now() where id = $1",
+        [existing.id, JSON.stringify({ staleReason: "runtime_restarted_during_composition", staleAt: new Date().toISOString() })],
+      );
+      existing.status = "stale";
+    }
     if (existing.status === "stale") {
+      activeGoalDesignConfirmations.add(existing.id);
       await tx.query(
         "update southstar.runtime_resources set status = 'composing', payload_json = $2::jsonb, summary_json = $3::jsonb, updated_at = now() where id = $1",
         [
@@ -771,6 +842,7 @@ async function prepareGoalDesignConfirmationPg(
       };
     }
     if (existing.status === "failed") {
+      activeGoalDesignConfirmations.add(existing.id);
       const { failure: _failure, failedAt: _failedAt, result: _result, ...payload } = existing.payload_json;
       await tx.query(
         "update southstar.runtime_resources set status = 'composing', payload_json = $2::jsonb, summary_json = $3::jsonb, updated_at = now() where id = $1",
@@ -1193,6 +1265,7 @@ async function completeSubmissionPg(
       JSON.stringify(result),
     ],
   );
+  activeGoalDesignConfirmations.delete(submissionId);
 }
 
 async function failSubmissionPg(
@@ -1229,6 +1302,7 @@ async function failSubmissionTx(
       JSON.stringify({ retryable: true, failure: error instanceof Error ? error.message : String(error) }),
     ],
   );
+  activeGoalDesignConfirmations.delete(submissionId);
 }
 
 function validateRequest(request: RunGoalRequest): void {

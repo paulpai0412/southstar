@@ -1,10 +1,14 @@
 import type { SouthstarDb } from "../db/postgres.ts";
 import { contentHashForPayload } from "../design-library/canonical-json.ts";
-import { createLibraryImportDraft } from "../design-library/importers/library-import-draft-store.ts";
+import {
+  createLibraryImportDraft,
+  loadLibraryImportCandidateDraft,
+} from "../design-library/importers/library-import-draft-store.ts";
 import type { LibraryImportCandidateInstallResult } from "../design-library/importers/library-import-draft-store.ts";
 import type { LibraryImportLlmProvider } from "../design-library/importers/library-llm-import-analyzer.ts";
 import type { LibraryImportSourceFetcher } from "../design-library/importers/library-source-fetcher.ts";
 import type { GoalValidationResolutionV1 } from "../design-library/types.ts";
+import { resolveApprovedValidationCandidates } from "./candidate-resolver.ts";
 import {
   getResourceByKeyPg,
   insertRuntimeResourceIfAbsentPg,
@@ -12,13 +16,19 @@ import {
 } from "../stores/postgres-runtime-store.ts";
 import { goalContractHash, storedGoalContract, type GoalContractV1 } from "./goal-contract.ts";
 import { validateGoalRequirementDraft, type GoalRequirementDraftIssue, type GoalRequirementDraftV1 } from "./goal-requirement-draft.ts";
-import { goalValidationResolutionReady } from "./goal-validation-resolver.ts";
+import { goalValidationResolutionReady, type GoalValidationProgressListener } from "./goal-validation-resolver.ts";
 import {
   buildGoalValidationImportRequest,
+  goalValidationProposalValidatorFromLibraryLlm,
   goalValidationResolverFromLibraryLlm,
+  rankGoalValidationCandidatesFromProposal,
   GoalValidationProviderNotConfiguredError,
   type GoalValidationResolver,
 } from "./goal-validation-llm-adapter.ts";
+import {
+  resolveGoalValidationWithCandidates,
+  type GoalValidationCandidateRecommendationV1,
+} from "./goal-validation-resolver.ts";
 
 type PlannerDraftResourceRow = {
   id: string;
@@ -205,6 +215,7 @@ export async function resolveAndPersistGoalValidationPg(
     libraryImportLlmProvider?: LibraryImportLlmProvider;
     libraryImportSourceFetcher?: LibraryImportSourceFetcher;
     actor?: string;
+    progress?: GoalValidationProgressListener;
   },
 ): Promise<GoalValidationLifecycleResult> {
   const snapshot = await loadGoalValidationSourcePg(db, input.draftId);
@@ -214,6 +225,7 @@ export async function resolveAndPersistGoalValidationPg(
     goalContract: snapshot.goalContract,
     requirementDraft: snapshot.requirementDraft,
     scope: snapshot.goalContract.domain,
+    progress: input.progress,
   });
   assertGoalValidationResolutionMatches(snapshot, resolution);
   let persisted = await persistGoalValidationResolutionPg(db, {
@@ -240,6 +252,17 @@ export async function resolveAndPersistGoalValidationPg(
     source: { kind: "paste", label: "Confirmed Goal validation gaps", content: JSON.stringify(request.payload) },
     scope: snapshot.goalContract.domain,
     requestPrompt: request.prompt,
+    coverageConstraints: request.coverageConstraints,
+    ...(input.resolver ? {} : {
+      proposalValidator: goalValidationProposalValidatorFromLibraryLlm({
+        db,
+        provider: input.libraryImportLlmProvider,
+        goalContract: snapshot.goalContract,
+        requirementDraft: snapshot.requirementDraft,
+        resolution,
+        scope: snapshot.goalContract.domain,
+      }),
+    }),
     llmProvider: input.libraryImportLlmProvider,
     sourceFetcher: input.libraryImportSourceFetcher,
     originGoalDraftId: input.draftId,
@@ -247,6 +270,7 @@ export async function resolveAndPersistGoalValidationPg(
     originGoalRequirementDraftHash: snapshot.requirementDraft.draftHash,
     originGoalValidationResolutionHash: resolution.resolutionHash,
     originGoalValidationGapHash: contentHashForPayload(resolution.gaps),
+    progress: input.progress,
   });
   persisted = await attachGoalValidationImportDraftPg(db, {
     draftId: input.draftId,
@@ -395,14 +419,22 @@ export async function resumeGoalValidationAfterLibraryImportPg(
     || source.phase !== "library_review") {
     throw new GoalValidationImportStaleError(input.libraryImportDraftId, "the Goal Contract, Requirement revision, or phase no longer matches the import origin");
   }
-  const result = await resolveAndPersistGoalValidationPg(db, {
-    draftId: originGoalDraftId,
-    expectedGoalContractHash: originGoalContractHash,
-    resolver: input.resolver,
-    libraryImportLlmProvider: input.libraryImportLlmProvider,
-    libraryImportSourceFetcher: input.libraryImportSourceFetcher,
-    actor: input.actor,
-  });
+  const result = input.resolver
+    ? await resolveAndPersistGoalValidationPg(db, {
+      draftId: originGoalDraftId,
+      expectedGoalContractHash: originGoalContractHash,
+      resolver: input.resolver,
+      libraryImportLlmProvider: input.libraryImportLlmProvider,
+      libraryImportSourceFetcher: input.libraryImportSourceFetcher,
+      actor: input.actor,
+    })
+    : await resolveInstalledGoalValidationPg({
+      db,
+      draftId: originGoalDraftId,
+      expectedGoalContractHash: originGoalContractHash,
+      importDraftId: input.libraryImportDraftId,
+      actor: input.actor,
+    });
   await insertRuntimeResourceIfAbsentPg(db, {
     resourceType: "goal_validation_resume",
     resourceKey: input.libraryImportDraftId,
@@ -421,6 +453,70 @@ export async function resumeGoalValidationAfterLibraryImportPg(
     summary: { draftId: originGoalDraftId, resolutionHash: result.goalValidationResolution.resolutionHash, goalDesignPhase: result.phase },
   });
   return result;
+}
+
+/**
+ * A reviewed Library proposal has already been semantically ranked and then
+ * checked by the proposal validator before installation.  Re-running the
+ * full LLM ranker after the files are committed adds latency and can turn a
+ * successful install into a timeout.  Re-resolve against the now-approved
+ * graph using the proposal's explicit coverage targets, while preserving the
+ * bindings that were already valid before the import.
+ */
+async function resolveInstalledGoalValidationPg(input: {
+  db: SouthstarDb;
+  draftId: string;
+  expectedGoalContractHash: string;
+  importDraftId: string;
+  actor?: string;
+}): Promise<GoalValidationLifecycleResult> {
+  const source = await loadGoalValidationSourcePg(input.db, input.draftId);
+  if (source.goalContractHash !== input.expectedGoalContractHash) {
+    throw new Error(`goal_contract_stale: ${input.draftId}`);
+  }
+  const planner = await getResourceByKeyPg(input.db, "planner_draft", input.draftId);
+  const priorResolution = asRecord(asRecord(planner?.payload).goalValidationResolution) as unknown as GoalValidationResolutionV1;
+  if (!priorResolution || !Array.isArray(priorResolution.gaps) || !Array.isArray(priorResolution.bindings)) {
+    throw new Error(`goal_validation_resolution_missing: ${input.draftId}`);
+  }
+  const importDraft = await loadLibraryImportCandidateDraft(input.db, input.importDraftId, { allowInstalled: true });
+  const candidates = await resolveApprovedValidationCandidates(input.db, { scope: source.goalContract.domain });
+  const unresolvedRequirementIds = new Set(priorResolution.gaps.map((gap) => gap.requirementId));
+  const priorBindings = new Map(priorResolution.bindings.map((binding) => [binding.requirementId, binding]));
+
+  const resolution = await resolveGoalValidationWithCandidates({
+    goalContract: source.goalContract,
+    requirementDraft: source.requirementDraft,
+    scope: source.goalContract.domain,
+    ranker: (rankInput) => {
+      if (unresolvedRequirementIds.has(rankInput.contractRequirement.id)) {
+        return rankGoalValidationCandidatesFromProposal({
+          rankInput,
+          coverageTargets: importDraft.candidateCoverageTargets,
+        });
+      }
+      const binding = priorBindings.get(rankInput.contractRequirement.id);
+      if (!binding || binding.artifactContractRefs.length === 0) return [];
+      const recommendation: GoalValidationCandidateRecommendationV1 = {
+        artifactRef: binding.artifactContractRefs[0]!,
+        evaluatorRef: binding.evaluatorProfileRef,
+        verificationMode: binding.verificationMode,
+        procedureRef: binding.criterionChecks[0]?.procedureRef ?? "",
+        expectedEvidenceKinds: binding.requiredEvidenceKinds,
+        artifactVersionRef: binding.artifactContractVersionRefs[0],
+        evaluatorVersionRef: binding.evaluatorProfileVersionRef,
+        reason: "Previously validated binding retained after Library import.",
+      };
+      return recommendation;
+    },
+  }, candidates);
+  return await persistGoalValidationResolutionPg(input.db, {
+    draftId: input.draftId,
+    expectedGoalContractHash: input.expectedGoalContractHash,
+    expectedGoalRequirementDraftHash: source.requirementDraft.draftHash,
+    resolution,
+    actor: input.actor,
+  });
 }
 
 type GoalValidationSource = {

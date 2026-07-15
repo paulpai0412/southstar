@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { resolve } from "node:path";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { upsertLibraryEdge, upsertLibraryObject } from "../../src/v2/design-library/library-graph-store.ts";
 import { findLibraryObjectByKey } from "../../src/v2/design-library/library-graph-store.ts";
 import {
@@ -45,6 +46,68 @@ test("resolver binds only approved artifact and evaluator versions", async () =>
     assert.equal(result.previews[0]!.status, "ready");
     assert.equal(result.ready, true);
     assert.doesNotThrow(() => assertGoalValidationResolutionReady(result));
+  });
+});
+
+test("resolver ranks independent requirements in parallel but preserves contract order", async () => {
+  await withDb(async (db) => {
+    await approvedArtifact(db, "artifact.article-html", "artifact.article-html@1");
+    await approvedEvaluator(db, "evaluator.offline-browser", "evaluator.offline-browser@2");
+    await validatesArtifactEdge(db, "evaluator.offline-browser", "artifact.article-html");
+    const firstDraft = confirmedRequirementDraft();
+    const firstRequirement = firstDraft.requirements[0]!;
+    const secondRequirement = {
+      ...firstRequirement,
+      id: "req-parallel-second",
+      title: "Second offline article",
+      statement: "A second article opens offline and remains readable",
+      acceptanceCriteria: firstRequirement.acceptanceCriteria.map((criterion) => ({
+        ...criterion,
+        id: "criterion-parallel-second",
+        statement: "The second rendered article opens offline and is readable",
+      })),
+    };
+    const requirementDraft: GoalRequirementDraftV1 = {
+      ...firstDraft,
+      requirements: [firstRequirement, secondRequirement],
+      draftHash: "parallel-requirement-draft",
+    };
+    const firstContract = confirmedContract();
+    const goalContract: GoalContractV1 = {
+      ...firstContract,
+      requirements: [
+        firstContract.requirements[0]!,
+        {
+          ...firstContract.requirements[0]!,
+          id: secondRequirement.id,
+          statement: secondRequirement.statement,
+          acceptanceCriteria: secondRequirement.acceptanceCriteria.map((criterion) => criterion.statement),
+        },
+      ],
+    };
+    let activeRanks = 0;
+    let maxActiveRanks = 0;
+    const result = await resolveGoalValidationPg(db, {
+      goalContract,
+      requirementDraft,
+      ranker: async () => {
+        activeRanks += 1;
+        maxActiveRanks = Math.max(maxActiveRanks, activeRanks);
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
+        activeRanks -= 1;
+        return [{
+          artifactRef: "artifact.article-html",
+          evaluatorRef: "evaluator.offline-browser",
+          verificationMode: "browser_interaction",
+          procedureRef: "procedure.offline-open",
+          expectedEvidenceKinds: ["screenshot"],
+        }];
+      },
+    });
+
+    assert.equal(maxActiveRanks, 2);
+    assert.deepEqual(result.previews.map((preview) => preview.requirementId), goalContract.requirements.map((requirement) => requirement.id));
+    assert.deepEqual(result.bindings.map((binding) => binding.requirementId), goalContract.requirements.map((requirement) => requirement.id));
   });
 });
 
@@ -115,6 +178,38 @@ test("resolver rejects ranker-invented evidence kinds", async () => {
     });
     assert.equal(result.bindings.length, 0);
     assert.equal(result.gaps.some((gap) => gap.kind === "evidence" && gap.message.includes("invented")), true);
+  });
+});
+
+test("resolver discards rejected alternative gaps when a later ranked recommendation binds", async () => {
+  await withDb(async (db) => {
+    await approvedArtifact(db, "artifact.article-html", "artifact.article-html@1", ["screenshot"]);
+    await approvedEvaluator(db, "evaluator.offline-browser", "evaluator.offline-browser@2", ["screenshot"]);
+    await validatesArtifactEdge(db, "evaluator.offline-browser", "artifact.article-html");
+
+    const result = await resolveGoalValidationPg(db, {
+      goalContract: confirmedContract(),
+      requirementDraft: confirmedRequirementDraft(),
+      ranker: {
+        rank: async () => [{
+          artifactRef: "artifact.article-html",
+          evaluatorRef: "evaluator.offline-browser",
+          verificationMode: "browser_interaction",
+          procedureRef: "procedure.offline-open",
+          expectedEvidenceKinds: ["policy-decision"],
+        }, {
+          artifactRef: "artifact.article-html",
+          evaluatorRef: "evaluator.offline-browser",
+          verificationMode: "browser_interaction",
+          procedureRef: "procedure.offline-open",
+          expectedEvidenceKinds: ["screenshot"],
+        }],
+      },
+    });
+
+    assert.equal(result.bindings.length, 1);
+    assert.deepEqual(result.gaps, []);
+    assert.equal(result.ready, true);
   });
 });
 
@@ -367,12 +462,35 @@ test("real approved flashcard files sync versioned edges and produce a ready bin
 
 test("legacy approved files fail closed before resolver use when their executable contract is incomplete", async () => {
   await withDb(async (db) => {
-    const libraryRoot = resolve(process.cwd(), "library");
-    await assert.rejects(() => syncLibraryFileToGraph(db, {
-      root: libraryRoot,
-      relativePath: "artifacts/review-session-report.artifact.yaml",
-    }), /mediaTypes/);
-    assert.equal(await findLibraryObjectByKey(db, "artifact.review-session-report"), null);
+    const libraryRoot = await mkdtemp("/tmp/southstar-legacy-library-");
+    try {
+      await mkdir(join(libraryRoot, "artifacts"));
+      await writeFile(join(libraryRoot, "artifacts", "legacy-report.artifact.yaml"), [
+        "schemaVersion: southstar.library.artifact_contract_file.v1",
+        "id: artifact.legacy_report",
+        "title: Legacy report",
+        "scope: general",
+        "description: A legacy contract missing executable media types.",
+        "status: approved",
+        "artifactType: report",
+        "evidenceKinds:",
+        "  - artifact-ref",
+        "validationRules:",
+        "  - Report exists",
+        "schemaRef: southstar.legacy_report.v1",
+        "requiredFields:",
+        "  - summary",
+        "provenanceRequirements:",
+        "  - producer",
+      ].join("\n"), "utf8");
+      await assert.rejects(() => syncLibraryFileToGraph(db, {
+        root: libraryRoot,
+        relativePath: "artifacts/legacy-report.artifact.yaml",
+      }), /mediaTypes/);
+      assert.equal(await findLibraryObjectByKey(db, "artifact.legacy_report"), null);
+    } finally {
+      await rm(libraryRoot, { recursive: true, force: true });
+    }
   });
 });
 

@@ -10,6 +10,7 @@ import {
   approveLibraryImportDraft,
   createLibraryImportDraft,
   installLibraryImportCandidates,
+  loadLibraryImportCandidateDraft,
 } from "../design-library/importers/library-import-draft-store.ts";
 import {
   composeNodeProfileDraft,
@@ -38,6 +39,7 @@ import { buildLibraryWorkspaceReadModel } from "../read-models/library-workspace
 import { getResourceByKeyPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 import {
   assertGoalValidationImportCurrentPg,
+  resumeGoalValidationAfterLibraryImportPg,
   resumeInstalledLibraryImportGoalValidationPg,
 } from "../orchestration/goal-validation-lifecycle.ts";
 import { createLlmGoalSliceDesigner } from "../orchestration/goal-design.ts";
@@ -132,6 +134,19 @@ export async function handleLibraryRoute(
       sourceFetcher: context.libraryImportSourceFetcher,
       llmProvider: context.libraryImportLlmProvider,
     }));
+  }
+
+  const importDraftReadMatch = url.pathname.match(/^\/api\/v2\/library\/import-drafts\/([^/]+)$/);
+  if (request.method === "GET" && importDraftReadMatch) {
+    const draftId = decodeURIComponent(importDraftReadMatch[1]!);
+    const draft = await loadLibraryImportCandidateDraft(context.db, draftId);
+    return json("library-import-draft", {
+      draftId,
+      status: draft.status,
+      candidates: draft.candidates,
+      candidateCoverageTargets: draft.candidateCoverageTargets,
+      proposedEdges: draft.proposedEdges,
+    });
   }
 
   const importDraftApproveMatch = url.pathname.match(/^\/api\/v2\/library\/import-drafts\/([^/]+)\/approve$/);
@@ -1057,6 +1072,36 @@ function libraryImportInstallEventStream(
           selectedCandidateCount: input.selectedCandidateIds.length,
         });
         await assertGoalValidationImportCurrentPg(context.db, input.draftId);
+        const existingDraft = await loadLibraryImportCandidateDraft(context.db, input.draftId, { allowInstalled: true });
+        if (existingDraft.status === "installed") {
+          // A browser reload can restore the persisted candidate message after
+          // the original install has already committed. Treat a second click
+          // as a resume, not a second install or ontology/ranker pass.
+          const resumed = await resumeGoalValidationAfterLibraryImportPg(context.db, {
+            libraryImportDraftId: input.draftId,
+            libraryImportLlmProvider: context.libraryImportLlmProvider,
+            libraryImportSourceFetcher: context.libraryImportSourceFetcher,
+            actor: input.actor,
+          });
+          const continued = resumed.status === "validation_ready"
+            ? await goalSliceContinuation(context)?.(resumed)
+            : undefined;
+          emit("goal_validation_resumed", {
+            ok: true,
+            recoverable: false,
+            draftId: resumed.draftId,
+            status: continued?.status ?? resumed.status,
+            goalDesignPhase: continued?.phase ?? resumed.phase,
+            resolutionHash: resumed.goalValidationResolution.resolutionHash,
+            ...(continued ? { continued } : {}),
+          });
+          emit("library.command.completed", {
+            draftId: input.draftId,
+            status: "installed",
+            resumed: true,
+          });
+          return;
+        }
         const installed = await installLibraryImportCandidates(context.db, {
           root: libraryRoot(context),
           draftId: input.draftId,

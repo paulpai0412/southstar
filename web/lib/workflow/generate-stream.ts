@@ -33,6 +33,15 @@ export type WorkflowGenerateHeartbeatEvent = Record<string, unknown> & {
   elapsedMs?: number;
 };
 
+export type GoalValidationProgressEvent = Record<string, unknown> & {
+  event: string;
+  requirementId?: string;
+  requirementNumber?: number;
+  requirementCount?: number;
+  status?: string;
+  gapCount?: number;
+};
+
 export type WorkflowGenerateIdentity = {
   draftId: string;
   draftStatus?: string;
@@ -49,6 +58,7 @@ export type WorkflowGenerateStreamHandlers = {
   onMessage?: (text: string, event: WorkflowGenerateMessageEvent) => void;
   onStage?: (stage: WorkflowGenerateStageEvent) => void;
   onHeartbeat?: (heartbeat: WorkflowGenerateHeartbeatEvent) => void;
+  onGoalValidationProgress?: (progress: GoalValidationProgressEvent) => void;
   onDraft?: (draft: WorkflowGenerateDraftEvent) => void;
   onGoalDesign?: (goalDesign: Record<string, unknown>) => void;
   onGoalRequirements?: (goalRequirements: Record<string, unknown>) => void;
@@ -60,7 +70,7 @@ export type WorkflowGenerateStreamHandlers = {
   onApproval?: (approval: { mission?: GoalMissionReadModel; command?: WorkflowCommandDescriptor }) => void;
   onRecoverable?: (recoverable: WorkflowGenerateRecoverableEvent) => void;
   onError?: (message: string) => void;
-  onDone?: () => void;
+  onDone?: (result?: Record<string, unknown>) => void;
 };
 
 export class WorkflowGenerateHttpError extends Error {
@@ -188,6 +198,25 @@ export async function confirmGoalDesignStream(input: {
   await readWorkflowEventStream(response.body, input);
 }
 
+export async function confirmGoalRequirementsStream(input: {
+  draftId: string;
+  expectedDraftHash: string;
+  signal?: AbortSignal;
+} & WorkflowGenerateStreamHandlers): Promise<void> {
+  const response = await fetch(`/api/workflow/planner-drafts/${encodeURIComponent(input.draftId)}/confirm-requirements/stream`, {
+    method: "POST",
+    signal: input.signal,
+    headers: { "content-type": "application/json", accept: "text/event-stream" },
+    body: JSON.stringify({ expectedDraftHash: input.expectedDraftHash }),
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(text || `Requirement confirmation failed with HTTP ${response.status}`);
+  }
+  if (!response.body) throw new Error("Requirement confirmation response is missing a stream body");
+  await readWorkflowEventStream(response.body, input);
+}
+
 async function readWorkflowEventStream(
   body: ReadableStream<Uint8Array>,
   handlers: WorkflowGenerateStreamHandlers,
@@ -250,6 +279,10 @@ function dispatchFrame(frame: string, handlers: WorkflowGenerateStreamHandlers):
     handlers.onHeartbeat?.(data as WorkflowGenerateHeartbeatEvent);
     return;
   }
+  if (event.startsWith("goal.validation.") || event.startsWith("library.import.")) {
+    handlers.onGoalValidationProgress?.({ ...data, event });
+    return;
+  }
   if (event === "draft") {
     const draft = data.draft && typeof data.draft === "object" ? data.draft : data;
     handlers.onDraft?.(draft as WorkflowGenerateDraftEvent);
@@ -300,6 +333,6 @@ function dispatchFrame(frame: string, handlers: WorkflowGenerateStreamHandlers):
     throw new Error(message);
   }
   if (event === "done") {
-    handlers.onDone?.();
+    handlers.onDone?.(data);
   }
 }

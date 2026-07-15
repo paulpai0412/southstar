@@ -1,0 +1,2131 @@
+- button "Southstar":
+  - generic: Southstar
+- button "New":
+  - text: New
+- button "Refresh":
+- button ".../apps/southstar-vocab"
+- generic: Library LLM Sessions
+- generic: "Classify the requested repository/library source into Southstar library candidates. Return exactly one JSON object. No markdown, comments, or prose outside JSON. Use this shape: {\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 2h ago
+- generic: "Rank only the supplied approved artifact contracts and evaluator profiles for one confirmed Goal Requirement. Return exactly one JSON object and no markdown: {\"recommendations\":[{\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 2h ago
+- generic: "Rank only the supplied approved artifact contracts and evaluator profiles for one confirmed Goal Requirement. Return exactly one JSON object and no markdown: {\"recommendations\":[{\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 2h ago
+- generic: "Rank only the supplied approved artifact contracts and evaluator profiles for one confirmed Goal Requirement. Return exactly one JSON object and no markdown: {\"recommendations\":[{\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 2h ago
+- generic: "Rank only the supplied approved artifact contracts and evaluator profiles for one confirmed Goal Requirement. Return exactly one JSON object and no markdown: {\"recommendations\":[{\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 2h ago
+- generic: "Rank only the supplied approved artifact contracts and evaluator profiles for one confirmed Goal Requirement. Return exactly one JSON object and no markdown: {\"recommendations\":[{\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 2h ago
+- generic: "Classify the requested repository/library source into Southstar library candidates. Return exactly one JSON object. No markdown, comments, or prose outside JSON. Use this shape: {\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 2h ago
+- generic: "Rank only the supplied approved artifact contracts and evaluator profiles for one confirmed Goal Requirement. Return exactly one JSON object and no markdown: {\"recommendations\":[{\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 2h ago
+- generic: "Rank only the supplied approved artifact contracts and evaluator profiles for one confirmed Goal Requirement. Return exactly one JSON object and no markdown: {\"recommendations\":[{\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 2h ago
+- generic: "Rank only the supplied approved artifact contracts and evaluator profiles for one confirmed Goal Requirement. Return exactly one JSON object and no markdown: {\"recommendations\":[{\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 2h ago
+- generic: "Rank only the supplied approved artifact contracts and evaluator profiles for one confirmed Goal Requirement. Return exactly one JSON object and no markdown: {\"recommendations\":[{\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 2h ago
+- generic: "Rank only the supplied approved artifact contracts and evaluator profiles for one confirmed Goal Requirement. Return exactly one JSON object and no markdown: {\"recommendations\":[{\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 2h ago
+- generic: "Rank only the supplied approved artifact contracts and evaluator profiles for one confirmed Goal Requirement. Return exactly one JSON object and no markdown: {\"recommendations\":[{\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 2h ago
+- generic: "Rank only the supplied approved artifact contracts and evaluator profiles for one confirmed Goal Requirement. Return exactly one JSON object and no markdown: {\"recommendations\":[{\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 2h ago
+- generic: "Rank only the supplied approved artifact contracts and evaluator profiles for one confirmed Goal Requirement. Return exactly one JSON object and no markdown: {\"recommendations\":[{\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 3h ago
+- generic: "Rank only the supplied approved artifact contracts and evaluator profiles for one confirmed Goal Requirement. Return exactly one JSON object and no markdown: {\"recommendations\":[{\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 3h ago
+- generic: "Rank only the supplied approved artifact contracts and evaluator profiles for one confirmed Goal Requirement. Return exactly one JSON object and no markdown: {\"recommendations\":[{\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 3h ago
+- generic: "Rank only the supplied approved artifact contracts and evaluator profiles for one confirmed Goal Requirement. Return exactly one JSON object and no markdown: {\"recommendations\":[{\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 3h ago
+- generic: "Classify the requested repository/library source into Southstar library candidates. Return exactly one JSON object. No markdown, comments, or prose outside JSON. Use this shape: {\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 3h ago
+- generic: "Rank only the supplied approved artifact contracts and evaluator profiles for one confirmed Goal Requirement. Return exactly one JSON object and no markdown: {\"recommendations\":[{\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 3h ago
+- generic: "Rank only the supplied approved artifact contracts and evaluator profiles for one confirmed Goal Requirement. Return exactly one JSON object and no markdown: {\"recommendations\":[{\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 3h ago
+- generic: "Rank only the supplied approved artifact contracts and evaluator profiles for one confirmed Goal Requirement. Return exactly one JSON object and no markdown: {\"recommendations\":[{\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 3h ago
+- generic: "Rank only the supplied approved artifact contracts and evaluator profiles for one confirmed Goal Requirement. Return exactly one JSON object and no markdown: {\"recommendations\":[{\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 3h ago
+- generic: "Rank only the supplied approved artifact contracts and evaluator profiles for one confirmed Goal Requirement. Return exactly one JSON object and no markdown: {\"recommendations\":[{\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 3h ago
+- generic: "Rank only the supplied approved artifact contracts and evaluator profiles for one confirmed Goal Requirement. Return exactly one JSON object and no markdown: {\"recommendations\":[{\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 3h ago
+- generic: "Rank only the supplied approved artifact contracts and evaluator profiles for one confirmed Goal Requirement. Return exactly one JSON object and no markdown: {\"recommendations\":[{\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 3h ago
+- generic: "Rank only the supplied approved artifact contracts and evaluator profiles for one confirmed Goal Requirement. Return exactly one JSON object and no markdown: {\"recommendations\":[{\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 3h ago
+- generic: "Rank only the supplied approved artifact contracts and evaluator profiles for one confirmed Goal Requirement. Return exactly one JSON object and no markdown: {\"recommendations\":[{\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 3h ago
+- generic: "Rank only the supplied approved artifact contracts and evaluator profiles for one confirmed Goal Requirement. Return exactly one JSON object and no markdown: {\"recommendations\":[{\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 3h ago
+- generic: "Rank only the supplied approved artifact contracts and evaluator profiles for one confirmed Goal Requirement. Return exactly one JSON object and no markdown: {\"recommendations\":[{\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 3h ago
+- generic: "Rank only the supplied approved artifact contracts and evaluator profiles for one confirmed Goal Requirement. Return exactly one JSON object and no markdown: {\"recommendations\":[{\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 3h ago
+- generic: Generate ontology edges for the selected Southstar library candidates and the existing approved Southstar library graph. Return exactly one JSON object. No markdown, comments, or p...
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 3h ago
+- generic: "Rank only the supplied approved artifact contracts and evaluator profiles for one confirmed Goal Requirement. Return exactly one JSON object and no markdown: {\"recommendations\":[{\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 3h ago
+- generic: "Rank only the supplied approved artifact contracts and evaluator profiles for one confirmed Goal Requirement. Return exactly one JSON object and no markdown: {\"recommendations\":[{\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 3h ago
+- generic: "Rank only the supplied approved artifact contracts and evaluator profiles for one confirmed Goal Requirement. Return exactly one JSON object and no markdown: {\"recommendations\":[{\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 3h ago
+- generic: "Rank only the supplied approved artifact contracts and evaluator profiles for one confirmed Goal Requirement. Return exactly one JSON object and no markdown: {\"recommendations\":[{\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 3h ago
+- generic: "Rank only the supplied approved artifact contracts and evaluator profiles for one confirmed Goal Requirement. Return exactly one JSON object and no markdown: {\"recommendations\":[{\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 3h ago
+- generic: "Rank only the supplied approved artifact contracts and evaluator profiles for one confirmed Goal Requirement. Return exactly one JSON object and no markdown: {\"recommendations\":[{\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 3h ago
+- generic: "Classify the requested repository/library source into Southstar library candidates. Return exactly one JSON object. No markdown, comments, or prose outside JSON. Use this shape: {\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 3h ago
+- generic: "Rank only the supplied approved artifact contracts and evaluator profiles for one confirmed Goal Requirement. Return exactly one JSON object and no markdown: {\"recommendations\":[{\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 3h ago
+- generic: "Rank only the supplied approved artifact contracts and evaluator profiles for one confirmed Goal Requirement. Return exactly one JSON object and no markdown: {\"recommendations\":[{\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 3h ago
+- generic: "Rank only the supplied approved artifact contracts and evaluator profiles for one confirmed Goal Requirement. Return exactly one JSON object and no markdown: {\"recommendations\":[{\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 3h ago
+- generic: "Rank only the supplied approved artifact contracts and evaluator profiles for one confirmed Goal Requirement. Return exactly one JSON object and no markdown: {\"recommendations\":[{\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 3h ago
+- generic: "Rank only the supplied approved artifact contracts and evaluator profiles for one confirmed Goal Requirement. Return exactly one JSON object and no markdown: {\"recommendations\":[{\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 3h ago
+- generic: "Rank only the supplied approved artifact contracts and evaluator profiles for one confirmed Goal Requirement. Return exactly one JSON object and no markdown: {\"recommendations\":[{\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 3h ago
+- generic: "Classify the requested repository/library source into Southstar library candidates. Return exactly one JSON object. No markdown, comments, or prose outside JSON. Use this shape: {\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 3h ago
+- generic: "Rank only the supplied approved artifact contracts and evaluator profiles for one confirmed Goal Requirement. Return exactly one JSON object and no markdown: {\"recommendations\":[{\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 3h ago
+- generic: "Rank only the supplied approved artifact contracts and evaluator profiles for one confirmed Goal Requirement. Return exactly one JSON object and no markdown: {\"recommendations\":[{\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 3h ago
+- generic: "Rank only the supplied approved artifact contracts and evaluator profiles for one confirmed Goal Requirement. Return exactly one JSON object and no markdown: {\"recommendations\":[{\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 3h ago
+- generic: "Rank only the supplied approved artifact contracts and evaluator profiles for one confirmed Goal Requirement. Return exactly one JSON object and no markdown: {\"recommendations\":[{\"..."
+- button "Rename":
+- button "Delete":
+- generic: library
+- generic: 3h ago
+- button "Library Domain Tree":
+  - text: Library Domain Tree
+- button "Refresh Library Domain Tree" [active]:
+- tree "Library Domain Tree":
+  - treeitem "academic 7" [expanded] [level=1]:
+    - button "Toggle academic" [expanded]:
+    - button "academic":
+      - generic: academic
+    - generic: "7"
+    - treeitem "agents 6" [expanded] [level=2]:
+      - button "agents 6":
+        - generic: agents
+        - generic: "6"
+      - treeitem "人类学家 agent.academic-anthropologist approved" [level=3]:
+        - button "人类学家 agent.academic-anthropologist approved":
+          - generic: 人类学家
+          - generic: agent.academic-anthropologist
+          - generic: approved
+      - treeitem "地理学家 agent.academic-geographer approved" [level=3]:
+        - button "地理学家 agent.academic-geographer approved":
+          - generic: 地理学家
+          - generic: agent.academic-geographer
+          - generic: approved
+      - treeitem "历史学家 agent.academic-historian approved" [level=3]:
+        - button "历史学家 agent.academic-historian approved":
+          - generic: 历史学家
+          - generic: agent.academic-historian
+          - generic: approved
+      - treeitem "叙事学家 agent.academic-narratologist approved" [level=3]:
+        - button "叙事学家 agent.academic-narratologist approved":
+          - generic: 叙事学家
+          - generic: agent.academic-narratologist
+          - generic: approved
+      - treeitem "心理学家 agent.academic-psychologist approved" [level=3]:
+        - button "心理学家 agent.academic-psychologist approved":
+          - generic: 心理学家
+          - generic: agent.academic-psychologist
+          - generic: approved
+      - treeitem "学习规划师 agent.academic-study-planner approved" [level=3]:
+        - button "学习规划师 agent.academic-study-planner approved":
+          - generic: 学习规划师
+          - generic: agent.academic-study-planner
+          - generic: approved
+    - treeitem "skills 1" [expanded] [level=2]:
+      - button "skills 1":
+        - generic: skills
+        - generic: "1"
+      - treeitem "Teach skill.mattpocock.teach approved" [level=3]:
+        - button "Teach skill.mattpocock.teach approved":
+          - generic: Teach
+          - generic: skill.mattpocock.teach
+          - generic: approved
+  - treeitem "design 13" [expanded] [level=1]:
+    - button "Toggle design" [expanded]:
+    - button "design":
+      - generic: design
+    - generic: "13"
+    - treeitem "agents 9" [expanded] [level=2]:
+      - button "agents 9":
+        - generic: agents
+        - generic: "9"
+      - treeitem "品牌守护者 agent.design-brand-guardian approved" [level=3]:
+        - button "品牌守护者 agent.design-brand-guardian approved":
+          - generic: 品牌守护者
+          - generic: agent.design-brand-guardian
+          - generic: approved
+      - treeitem "图像提示词工程师 agent.design-image-prompt-engineer approved" [level=3]:
+        - button "图像提示词工程师 agent.design-image-prompt-engineer approved":
+          - generic: 图像提示词工程师
+          - generic: agent.design-image-prompt-engineer
+          - generic: approved
+      - treeitem "包容性视觉专家 agent.design-inclusive-visuals-specialist approved" [level=3]:
+        - button "包容性视觉专家 agent.design-inclusive-visuals-specialist approved":
+          - generic: 包容性视觉专家
+          - generic: agent.design-inclusive-visuals-specialist
+          - generic: approved
+      - treeitem "Persona 走查专家 agent.design-persona-walkthrough approved" [level=3]:
+        - button "Persona 走查专家 agent.design-persona-walkthrough approved":
+          - generic: Persona 走查专家
+          - generic: agent.design-persona-walkthrough
+          - generic: approved
+      - treeitem "UI 设计师 agent.design-ui-designer approved" [level=3]:
+        - button "UI 设计师 agent.design-ui-designer approved":
+          - generic: UI 设计师
+          - generic: agent.design-ui-designer
+          - generic: approved
+      - treeitem "UX 架构师 agent.design-ux-architect approved" [level=3]:
+        - button "UX 架构师 agent.design-ux-architect approved":
+          - generic: UX 架构师
+          - generic: agent.design-ux-architect
+          - generic: approved
+      - treeitem "UX 研究员 agent.design-ux-researcher approved" [level=3]:
+        - button "UX 研究员 agent.design-ux-researcher approved":
+          - generic: UX 研究员
+          - generic: agent.design-ux-researcher
+          - generic: approved
+      - treeitem "视觉叙事师 agent.design-visual-storyteller approved" [level=3]:
+        - button "视觉叙事师 agent.design-visual-storyteller approved":
+          - generic: 视觉叙事师
+          - generic: agent.design-visual-storyteller
+          - generic: approved
+      - treeitem "趣味注入师 agent.design-whimsy-injector approved" [level=3]:
+        - button "趣味注入师 agent.design-whimsy-injector approved":
+          - generic: 趣味注入师
+          - generic: agent.design-whimsy-injector
+          - generic: approved
+    - treeitem "skills 4" [expanded] [level=2]:
+      - button "skills 4":
+        - generic: skills
+        - generic: "4"
+      - treeitem "Beautiful Article skill.beautiful-article approved" [level=3]:
+        - button "Beautiful Article skill.beautiful-article approved":
+          - generic: Beautiful Article
+          - generic: skill.beautiful-article
+          - generic: approved
+      - treeitem "GPT Image 2 skill.gpt-image-2 approved" [level=3]:
+        - button "GPT Image 2 skill.gpt-image-2 approved":
+          - generic: GPT Image 2
+          - generic: skill.gpt-image-2
+          - generic: approved
+      - treeitem "Web Design Engineer skill.web-design-engineer approved" [level=3]:
+        - button "Web Design Engineer skill.web-design-engineer approved":
+          - generic: Web Design Engineer
+          - generic: skill.web-design-engineer
+          - generic: approved
+      - treeitem "Web Video Presentation skill.web-video-presentation approved" [level=3]:
+        - button "Web Video Presentation skill.web-video-presentation approved":
+          - generic: Web Video Presentation
+          - generic: skill.web-video-presentation
+          - generic: approved
+  - treeitem "engineering 78" [expanded] [level=1]:
+    - button "Toggle engineering" [expanded]:
+    - button "engineering":
+      - generic: engineering
+    - generic: "78"
+    - treeitem "agents 41" [expanded] [level=2]:
+      - button "agents 41":
+        - generic: agents
+        - generic: "41"
+      - treeitem "AI 数据修复工程师 agent.engineering-ai-data-remediation-engineer approved" [level=3]:
+        - button "AI 数据修复工程师 agent.engineering-ai-data-remediation-engineer approved":
+          - generic: AI 数据修复工程师
+          - generic: agent.engineering-ai-data-remediation-engineer
+          - generic: approved
+      - treeitem "AI 工程师 agent.engineering-ai-engineer approved" [level=3]:
+        - button "AI 工程师 agent.engineering-ai-engineer approved":
+          - generic: AI 工程师
+          - generic: agent.engineering-ai-engineer
+          - generic: approved
+      - treeitem "自主优化架构师 agent.engineering-autonomous-optimization-architect approved" [level=3]:
+        - button "自主优化架构师 agent.engineering-autonomous-optimization-architect approved":
+          - generic: 自主优化架构师
+          - generic: agent.engineering-autonomous-optimization-architect
+          - generic: approved
+      - treeitem "后端架构师 agent.engineering-backend-architect approved" [level=3]:
+        - button "后端架构师 agent.engineering-backend-architect approved":
+          - generic: 后端架构师
+          - generic: agent.engineering-backend-architect
+          - generic: approved
+      - treeitem "CMS 开发者 agent.engineering-cms-developer approved" [level=3]:
+        - button "CMS 开发者 agent.engineering-cms-developer approved":
+          - generic: CMS 开发者
+          - generic: agent.engineering-cms-developer
+          - generic: approved
+      - treeitem "代码库入职引导工程师 agent.engineering-codebase-onboarding-engineer approved" [level=3]:
+        - button "代码库入职引导工程师 agent.engineering-codebase-onboarding-engineer approved":
+          - generic: 代码库入职引导工程师
+          - generic: agent.engineering-codebase-onboarding-engineer
+          - generic: approved
+      - treeitem "代码审查员 agent.engineering-code-reviewer approved" [level=3]:
+        - button "代码审查员 agent.engineering-code-reviewer approved":
+          - generic: 代码审查员
+          - generic: agent.engineering-code-reviewer
+          - generic: approved
+      - treeitem "数据库优化师 agent.engineering-database-optimizer approved" [level=3]:
+        - button "数据库优化师 agent.engineering-database-optimizer approved":
+          - generic: 数据库优化师
+          - generic: agent.engineering-database-optimizer
+          - generic: approved
+      - treeitem "数据工程师 agent.engineering-data-engineer approved" [level=3]:
+        - button "数据工程师 agent.engineering-data-engineer approved":
+          - generic: 数据工程师
+          - generic: agent.engineering-data-engineer
+          - generic: approved
+      - treeitem "DevOps 自动化师 agent.engineering-devops-automator approved" [level=3]:
+        - button "DevOps 自动化师 agent.engineering-devops-automator approved":
+          - generic: DevOps 自动化师
+          - generic: agent.engineering-devops-automator
+          - generic: approved
+      - treeitem "钉钉集成开发工程师 agent.engineering-dingtalk-integration-developer approved" [level=3]:
+        - button "钉钉集成开发工程师 agent.engineering-dingtalk-integration-developer approved":
+          - generic: 钉钉集成开发工程师
+          - generic: agent.engineering-dingtalk-integration-developer
+          - generic: approved
+      - treeitem "Drupal 购物车工程师 agent.engineering-drupal-shopping-cart approved" [level=3]:
+        - button "Drupal 购物车工程师 agent.engineering-drupal-shopping-cart approved":
+          - generic: Drupal 购物车工程师
+          - generic: agent.engineering-drupal-shopping-cart
+          - generic: approved
+      - treeitem "邮件智能工程师 agent.engineering-email-intelligence-engineer approved" [level=3]:
+        - button "邮件智能工程师 agent.engineering-email-intelligence-engineer approved":
+          - generic: 邮件智能工程师
+          - generic: agent.engineering-email-intelligence-engineer
+          - generic: approved
+      - treeitem "嵌入式固件工程师 agent.engineering-embedded-firmware-engineer approved" [level=3]:
+        - button "嵌入式固件工程师 agent.engineering-embedded-firmware-engineer approved":
+          - generic: 嵌入式固件工程师
+          - generic: agent.engineering-embedded-firmware-engineer
+          - generic: approved
+      - treeitem "嵌入式 Linux 驱动工程师 agent.engineering-embedded-linux-driver-engineer approved" [level=3]:
+        - button "嵌入式 Linux 驱动工程师 agent.engineering-embedded-linux-driver-engineer approved":
+          - generic: 嵌入式 Linux 驱动工程师
+          - generic: agent.engineering-embedded-linux-driver-engineer
+          - generic: approved
+      - treeitem "飞书集成开发工程师 agent.engineering-feishu-integration-developer approved" [level=3]:
+        - button "飞书集成开发工程师 agent.engineering-feishu-integration-developer approved":
+          - generic: 飞书集成开发工程师
+          - generic: agent.engineering-feishu-integration-developer
+          - generic: approved
+      - treeitem "Filament 优化专家 agent.engineering-filament-optimization-specialist approved" [level=3]:
+        - button "Filament 优化专家 agent.engineering-filament-optimization-specialist approved":
+          - generic: Filament 优化专家
+          - generic: agent.engineering-filament-optimization-specialist
+          - generic: approved
+      - treeitem "FPGA/ASIC 数字设计工程师 agent.engineering-fpga-digital-design-engineer approved" [level=3]:
+        - button "FPGA/ASIC 数字设计工程师 agent.engineering-fpga-digital-design-engineer approved":
+          - generic: FPGA/ASIC 数字设计工程师
+          - generic: agent.engineering-fpga-digital-design-engineer
+          - generic: approved
+      - treeitem "前端开发者 agent.engineering-frontend-developer approved" [level=3]:
+        - button "前端开发者 agent.engineering-frontend-developer approved":
+          - generic: 前端开发者
+          - generic: agent.engineering-frontend-developer
+          - generic: approved
+      - treeitem "Git 工作流大师 agent.engineering-git-workflow-master approved" [level=3]:
+        - button "Git 工作流大师 agent.engineering-git-workflow-master approved":
+          - generic: Git 工作流大师
+          - generic: agent.engineering-git-workflow-master
+          - generic: approved
+      - treeitem "故障响应指挥官 agent.engineering-incident-response-commander approved" [level=3]:
+        - button "故障响应指挥官 agent.engineering-incident-response-commander approved":
+          - generic: 故障响应指挥官
+          - generic: agent.engineering-incident-response-commander
+          - generic: approved
+      - treeitem "IoT 方案架构师 agent.engineering-iot-solution-architect approved" [level=3]:
+        - button "IoT 方案架构师 agent.engineering-iot-solution-architect approved":
+          - generic: IoT 方案架构师
+          - generic: agent.engineering-iot-solution-architect
+          - generic: approved
+      - treeitem "IT 服务经理 agent.engineering-it-service-manager approved" [level=3]:
+        - button "IT 服务经理 agent.engineering-it-service-manager approved":
+          - generic: IT 服务经理
+          - generic: agent.engineering-it-service-manager
+          - generic: approved
+      - treeitem "机械设计工程师 agent.engineering-mechanical-design-engineer approved" [level=3]:
+        - button "机械设计工程师 agent.engineering-mechanical-design-engineer approved":
+          - generic: 机械设计工程师
+          - generic: agent.engineering-mechanical-design-engineer
+          - generic: approved
+      - treeitem "最小变更工程师 agent.engineering-minimal-change-engineer approved" [level=3]:
+        - button "最小变更工程师 agent.engineering-minimal-change-engineer approved":
+          - generic: 最小变更工程师
+          - generic: agent.engineering-minimal-change-engineer
+          - generic: approved
+      - treeitem "移动应用开发者 agent.engineering-mobile-app-builder approved" [level=3]:
+        - button "移动应用开发者 agent.engineering-mobile-app-builder approved":
+          - generic: 移动应用开发者
+          - generic: agent.engineering-mobile-app-builder
+          - generic: approved
+      - treeitem "多智能体系统架构师 agent.engineering-multi-agent-systems-architect approved" [level=3]:
+        - button "多智能体系统架构师 agent.engineering-multi-agent-systems-architect approved":
+          - generic: 多智能体系统架构师
+          - generic: agent.engineering-multi-agent-systems-architect
+          - generic: approved
+      - treeitem "OrgScript 工程师 agent.engineering-orgscript-engineer approved" [level=3]:
+        - button "OrgScript 工程师 agent.engineering-orgscript-engineer approved":
+          - generic: OrgScript 工程师
+          - generic: agent.engineering-orgscript-engineer
+          - generic: approved
+      - treeitem "上位机工程师 agent.engineering-pc-host-engineer approved" [level=3]:
+        - button "上位机工程师 agent.engineering-pc-host-engineer approved":
+          - generic: 上位机工程师
+          - generic: agent.engineering-pc-host-engineer
+          - generic: approved
+      - treeitem "Prompt 工程师 agent.engineering-prompt-engineer approved" [level=3]:
+        - button "Prompt 工程师 agent.engineering-prompt-engineer approved":
+          - generic: Prompt 工程师
+          - generic: agent.engineering-prompt-engineer
+          - generic: approved
+      - treeitem "快速原型师 agent.engineering-rapid-prototyper approved" [level=3]:
+        - button "快速原型师 agent.engineering-rapid-prototyper approved":
+          - generic: 快速原型师
+          - generic: agent.engineering-rapid-prototyper
+          - generic: approved
+      - treeitem "安全工程师 agent.engineering-security-engineer approved" [level=3]:
+        - button "安全工程师 agent.engineering-security-engineer approved":
+          - generic: 安全工程师
+          - generic: agent.engineering-security-engineer
+          - generic: approved
+      - treeitem "高级开发者 agent.engineering-senior-developer approved" [level=3]:
+        - button "高级开发者 agent.engineering-senior-developer approved":
+          - generic: 高级开发者
+          - generic: agent.engineering-senior-developer
+          - generic: approved
+      - treeitem "软件架构师 agent.engineering-software-architect approved" [level=3]:
+        - button "软件架构师 agent.engineering-software-architect approved":
+          - generic: 软件架构师
+          - generic: agent.engineering-software-architect
+          - generic: approved
+      - treeitem "Solidity 智能合约工程师 agent.engineering-solidity-smart-contract-engineer approved" [level=3]:
+        - button "Solidity 智能合约工程师 agent.engineering-solidity-smart-contract-engineer approved":
+          - generic: Solidity 智能合约工程师
+          - generic: agent.engineering-solidity-smart-contract-engineer
+          - generic: approved
+      - treeitem "SRE (站点可靠性工程师) agent.engineering-sre approved" [level=3]:
+        - button "SRE (站点可靠性工程师) agent.engineering-sre approved":
+          - generic: SRE (站点可靠性工程师)
+          - generic: agent.engineering-sre
+          - generic: approved
+      - treeitem "技术文档工程师 agent.engineering-technical-writer approved" [level=3]:
+        - button "技术文档工程师 agent.engineering-technical-writer approved":
+          - generic: 技术文档工程师
+          - generic: agent.engineering-technical-writer
+          - generic: approved
+      - treeitem "威胁检测工程师 agent.engineering-threat-detection-engineer approved" [level=3]:
+        - button "威胁检测工程师 agent.engineering-threat-detection-engineer approved":
+          - generic: 威胁检测工程师
+          - generic: agent.engineering-threat-detection-engineer
+          - generic: approved
+      - treeitem "语音 AI 集成工程师 agent.engineering-voice-ai-integration-engineer approved" [level=3]:
+        - button "语音 AI 集成工程师 agent.engineering-voice-ai-integration-engineer approved":
+          - generic: 语音 AI 集成工程师
+          - generic: agent.engineering-voice-ai-integration-engineer
+          - generic: approved
+      - treeitem "微信小程序开发者 agent.engineering-wechat-mini-program-developer approved" [level=3]:
+        - button "微信小程序开发者 agent.engineering-wechat-mini-program-developer approved":
+          - generic: 微信小程序开发者
+          - generic: agent.engineering-wechat-mini-program-developer
+          - generic: approved
+      - treeitem "WordPress 购物车工程师 agent.engineering-wordpress-shopping-cart approved" [level=3]:
+        - button "WordPress 购物车工程师 agent.engineering-wordpress-shopping-cart approved":
+          - generic: WordPress 购物车工程师
+          - generic: agent.engineering-wordpress-shopping-cart
+          - generic: approved
+    - treeitem "skills 33" [expanded] [level=2]:
+      - button "skills 33":
+        - generic: skills
+        - generic: "33"
+      - treeitem "Brainstorming skill.brainstorming approved" [level=3]:
+        - button "Brainstorming skill.brainstorming approved":
+          - generic: Brainstorming
+          - generic: skill.brainstorming
+          - generic: approved
+      - treeitem "Karpathy Guidelines skill.karpathy-guidelines approved" [level=3]:
+        - button "Karpathy Guidelines skill.karpathy-guidelines approved":
+          - generic: Karpathy Guidelines
+          - generic: skill.karpathy-guidelines
+          - generic: approved
+      - treeitem "KB Retriever skill.kb-retriever approved" [level=3]:
+        - button "KB Retriever skill.kb-retriever approved":
+          - generic: KB Retriever
+          - generic: skill.kb-retriever
+          - generic: approved
+      - treeitem "Ask Matt skill.mattpocock.ask-matt approved" [level=3]:
+        - button "Ask Matt skill.mattpocock.ask-matt approved":
+          - generic: Ask Matt
+          - generic: skill.mattpocock.ask-matt
+          - generic: approved
+      - treeitem "Codebase Design skill.mattpocock.codebase-design approved" [level=3]:
+        - button "Codebase Design skill.mattpocock.codebase-design approved":
+          - generic: Codebase Design
+          - generic: skill.mattpocock.codebase-design
+          - generic: approved
+      - treeitem "Code Review skill.mattpocock.code-review approved" [level=3]:
+        - button "Code Review skill.mattpocock.code-review approved":
+          - generic: Code Review
+          - generic: skill.mattpocock.code-review
+          - generic: approved
+      - treeitem "Diagnosing Bugs skill.mattpocock.diagnosing-bugs approved" [level=3]:
+        - button "Diagnosing Bugs skill.mattpocock.diagnosing-bugs approved":
+          - generic: Diagnosing Bugs
+          - generic: skill.mattpocock.diagnosing-bugs
+          - generic: approved
+      - treeitem "Domain Modeling skill.mattpocock.domain-modeling approved" [level=3]:
+        - button "Domain Modeling skill.mattpocock.domain-modeling approved":
+          - generic: Domain Modeling
+          - generic: skill.mattpocock.domain-modeling
+          - generic: approved
+      - treeitem "Grill With Docs skill.mattpocock.grill-with-docs approved" [level=3]:
+        - button "Grill With Docs skill.mattpocock.grill-with-docs approved":
+          - generic: Grill With Docs
+          - generic: skill.mattpocock.grill-with-docs
+          - generic: approved
+      - treeitem "Implement skill.mattpocock.implement approved" [level=3]:
+        - button "Implement skill.mattpocock.implement approved":
+          - generic: Implement
+          - generic: skill.mattpocock.implement
+          - generic: approved
+      - treeitem "Improve Codebase Architecture skill.mattpocock.improve-codebase-architecture approved" [level=3]:
+        - button "Improve Codebase Architecture skill.mattpocock.improve-codebase-architecture approved":
+          - generic: Improve Codebase Architecture
+          - generic: skill.mattpocock.improve-codebase-architecture
+          - generic: approved
+      - treeitem "Prototype skill.mattpocock.prototype approved" [level=3]:
+        - button "Prototype skill.mattpocock.prototype approved":
+          - generic: Prototype
+          - generic: skill.mattpocock.prototype
+          - generic: approved
+      - treeitem "Research skill.mattpocock.research approved" [level=3]:
+        - button "Research skill.mattpocock.research approved":
+          - generic: Research
+          - generic: skill.mattpocock.research
+          - generic: approved
+      - treeitem "Setup Matt Pocock Skills skill.mattpocock.setup-matt-pocock-skills approved" [level=3]:
+        - button "Setup Matt Pocock Skills skill.mattpocock.setup-matt-pocock-skills approved":
+          - generic: Setup Matt Pocock Skills
+          - generic: skill.mattpocock.setup-matt-pocock-skills
+          - generic: approved
+      - treeitem "Test-Driven Development skill.mattpocock.tdd approved" [level=3]:
+        - button "Test-Driven Development skill.mattpocock.tdd approved":
+          - generic: Test-Driven Development
+          - generic: skill.mattpocock.tdd
+          - generic: approved
+      - treeitem "To Issues skill.mattpocock.to-issues approved" [level=3]:
+        - button "To Issues skill.mattpocock.to-issues approved":
+          - generic: To Issues
+          - generic: skill.mattpocock.to-issues
+          - generic: approved
+      - treeitem "To PRD skill.mattpocock.to-prd approved" [level=3]:
+        - button "To PRD skill.mattpocock.to-prd approved":
+          - generic: To PRD
+          - generic: skill.mattpocock.to-prd
+          - generic: approved
+      - treeitem "Triage skill.mattpocock.triage approved" [level=3]:
+        - button "Triage skill.mattpocock.triage approved":
+          - generic: Triage
+          - generic: skill.mattpocock.triage
+          - generic: approved
+      - treeitem "Brainstorming skill.SKILL approved" [level=3]:
+        - button "Brainstorming skill.SKILL approved":
+          - generic: Brainstorming
+          - generic: skill.SKILL
+          - generic: approved
+      - treeitem "Brainstorming Ideas Into Designs skill.superpowers.brainstorming approved" [level=3]:
+        - button "Brainstorming Ideas Into Designs skill.superpowers.brainstorming approved":
+          - generic: Brainstorming Ideas Into Designs
+          - generic: skill.superpowers.brainstorming
+          - generic: approved
+      - treeitem "Dispatching Parallel Agents skill.superpowers.dispatching-parallel-agents approved" [level=3]:
+        - button "Dispatching Parallel Agents skill.superpowers.dispatching-parallel-agents approved":
+          - generic: Dispatching Parallel Agents
+          - generic: skill.superpowers.dispatching-parallel-agents
+          - generic: approved
+      - treeitem "Executing Plans skill.superpowers.executing-plans approved" [level=3]:
+        - button "Executing Plans skill.superpowers.executing-plans approved":
+          - generic: Executing Plans
+          - generic: skill.superpowers.executing-plans
+          - generic: approved
+      - treeitem "Finishing a Development Branch skill.superpowers.finishing-a-development-branch approved" [level=3]:
+        - button "Finishing a Development Branch skill.superpowers.finishing-a-development-branch approved":
+          - generic: Finishing a Development Branch
+          - generic: skill.superpowers.finishing-a-development-branch
+          - generic: approved
+      - treeitem "Code Review Reception skill.superpowers.receiving-code-review approved" [level=3]:
+        - button "Code Review Reception skill.superpowers.receiving-code-review approved":
+          - generic: Code Review Reception
+          - generic: skill.superpowers.receiving-code-review
+          - generic: approved
+      - treeitem "Requesting Code Review skill.superpowers.requesting-code-review approved" [level=3]:
+        - button "Requesting Code Review skill.superpowers.requesting-code-review approved":
+          - generic: Requesting Code Review
+          - generic: skill.superpowers.requesting-code-review
+          - generic: approved
+      - treeitem "Subagent-Driven Development skill.superpowers.subagent-driven-development approved" [level=3]:
+        - button "Subagent-Driven Development skill.superpowers.subagent-driven-development approved":
+          - generic: Subagent-Driven Development
+          - generic: skill.superpowers.subagent-driven-development
+          - generic: approved
+      - treeitem "Systematic Debugging skill.superpowers.systematic-debugging approved" [level=3]:
+        - button "Systematic Debugging skill.superpowers.systematic-debugging approved":
+          - generic: Systematic Debugging
+          - generic: skill.superpowers.systematic-debugging
+          - generic: approved
+      - treeitem "Test-Driven Development (TDD) skill.superpowers.test-driven-development approved" [level=3]:
+        - button "Test-Driven Development (TDD) skill.superpowers.test-driven-development approved":
+          - generic: Test-Driven Development (TDD)
+          - generic: skill.superpowers.test-driven-development
+          - generic: approved
+      - treeitem "Using Git Worktrees skill.superpowers.using-git-worktrees approved" [level=3]:
+        - button "Using Git Worktrees skill.superpowers.using-git-worktrees approved":
+          - generic: Using Git Worktrees
+          - generic: skill.superpowers.using-git-worktrees
+          - generic: approved
+      - treeitem "Using Superpowers skill.superpowers.using-superpowers approved" [level=3]:
+        - button "Using Superpowers skill.superpowers.using-superpowers approved":
+          - generic: Using Superpowers
+          - generic: skill.superpowers.using-superpowers
+          - generic: approved
+      - treeitem "Verification Before Completion skill.superpowers.verification-before-completion approved" [level=3]:
+        - button "Verification Before Completion skill.superpowers.verification-before-completion approved":
+          - generic: Verification Before Completion
+          - generic: skill.superpowers.verification-before-completion
+          - generic: approved
+      - treeitem "Writing Plans skill.superpowers.writing-plans approved" [level=3]:
+        - button "Writing Plans skill.superpowers.writing-plans approved":
+          - generic: Writing Plans
+          - generic: skill.superpowers.writing-plans
+          - generic: approved
+      - treeitem "Writing Skills skill.superpowers.writing-skills approved" [level=3]:
+        - button "Writing Skills skill.superpowers.writing-skills approved":
+          - generic: Writing Skills
+          - generic: skill.superpowers.writing-skills
+          - generic: approved
+    - treeitem "mcp 4" [expanded] [level=2]:
+      - button "mcp 4":
+        - generic: mcp
+        - generic: "4"
+      - treeitem "Browser Playwright MCP mcp.browser-playwright approved" [level=3]:
+        - button "Browser Playwright MCP mcp.browser-playwright approved":
+          - generic: Browser Playwright MCP
+          - generic: mcp.browser-playwright
+          - generic: approved
+      - treeitem "Filesystem Workspace MCP mcp.filesystem-workspace deprecated" [level=3]:
+        - button "Filesystem Workspace MCP mcp.filesystem-workspace deprecated":
+          - generic: Filesystem Workspace MCP
+          - generic: mcp.filesystem-workspace
+          - generic: deprecated
+      - treeitem "GitHub MCP mcp.github approved" [level=3]:
+        - button "GitHub MCP mcp.github approved":
+          - generic: GitHub MCP
+          - generic: mcp.github
+          - generic: approved
+      - treeitem "Postgres Readonly MCP mcp.postgres-readonly approved" [level=3]:
+        - button "Postgres Readonly MCP mcp.postgres-readonly approved":
+          - generic: Postgres Readonly MCP
+          - generic: mcp.postgres-readonly
+          - generic: approved
+  - treeitem "finance 8" [expanded] [level=1]:
+    - button "Toggle finance" [expanded]:
+    - button "finance":
+      - generic: finance
+    - generic: "8"
+    - treeitem "agents 8" [expanded] [level=2]:
+      - button "agents 8":
+        - generic: agents
+        - generic: "8"
+      - treeitem "簿记与财务总监 agent.finance-bookkeeper-controller approved" [level=3]:
+        - button "簿记与财务总监 agent.finance-bookkeeper-controller approved":
+          - generic: 簿记与财务总监
+          - generic: agent.finance-bookkeeper-controller
+          - generic: approved
+      - treeitem "财务分析师 agent.finance-financial-analyst approved" [level=3]:
+        - button "财务分析师 agent.finance-financial-analyst approved":
+          - generic: 财务分析师
+          - generic: agent.finance-financial-analyst
+          - generic: approved
+      - treeitem "财务预测分析师 agent.finance-financial-forecaster approved" [level=3]:
+        - button "财务预测分析师 agent.finance-financial-forecaster approved":
+          - generic: 财务预测分析师
+          - generic: agent.finance-financial-forecaster
+          - generic: approved
+      - treeitem "FP&A 分析师 agent.finance-fpa-analyst approved" [level=3]:
+        - button "FP&A 分析师 agent.finance-fpa-analyst approved":
+          - generic: FP&A 分析师
+          - generic: agent.finance-fpa-analyst
+          - generic: approved
+      - treeitem "金融风控分析师 agent.finance-fraud-detector approved" [level=3]:
+        - button "金融风控分析师 agent.finance-fraud-detector approved":
+          - generic: 金融风控分析师
+          - generic: agent.finance-fraud-detector
+          - generic: approved
+      - treeitem "投资研究员 agent.finance-investment-researcher approved" [level=3]:
+        - button "投资研究员 agent.finance-investment-researcher approved":
+          - generic: 投资研究员
+          - generic: agent.finance-investment-researcher
+          - generic: approved
+      - treeitem "发票管理专家 agent.finance-invoice-manager approved" [level=3]:
+        - button "发票管理专家 agent.finance-invoice-manager approved":
+          - generic: 发票管理专家
+          - generic: agent.finance-invoice-manager
+          - generic: approved
+      - treeitem "税务策略师 agent.finance-tax-strategist approved" [level=3]:
+        - button "税务策略师 agent.finance-tax-strategist approved":
+          - generic: 税务策略师
+          - generic: agent.finance-tax-strategist
+          - generic: approved
+  - treeitem "game-development 20" [expanded] [level=1]:
+    - button "Toggle game-development" [expanded]:
+    - button "game-development":
+      - generic: game-development
+    - generic: "20"
+    - treeitem "agents 20" [expanded] [level=2]:
+      - button "agents 20":
+        - generic: agents
+        - generic: "20"
+      - treeitem "Blender 插件工程师 agent.blender-addon-engineer approved" [level=3]:
+        - button "Blender 插件工程师 agent.blender-addon-engineer approved":
+          - generic: Blender 插件工程师
+          - generic: agent.blender-addon-engineer
+          - generic: approved
+      - treeitem "游戏音频工程师 agent.game-audio-engineer approved" [level=3]:
+        - button "游戏音频工程师 agent.game-audio-engineer approved":
+          - generic: 游戏音频工程师
+          - generic: agent.game-audio-engineer
+          - generic: approved
+      - treeitem "游戏设计师 agent.game-designer approved" [level=3]:
+        - button "游戏设计师 agent.game-designer approved":
+          - generic: 游戏设计师
+          - generic: agent.game-designer
+          - generic: approved
+      - treeitem "Godot 游戏脚本开发者 agent.godot-gameplay-scripter approved" [level=3]:
+        - button "Godot 游戏脚本开发者 agent.godot-gameplay-scripter approved":
+          - generic: Godot 游戏脚本开发者
+          - generic: agent.godot-gameplay-scripter
+          - generic: approved
+      - treeitem "Godot 多人游戏工程师 agent.godot-multiplayer-engineer approved" [level=3]:
+        - button "Godot 多人游戏工程师 agent.godot-multiplayer-engineer approved":
+          - generic: Godot 多人游戏工程师
+          - generic: agent.godot-multiplayer-engineer
+          - generic: approved
+      - treeitem "Godot Shader 开发者 agent.godot-shader-developer approved" [level=3]:
+        - button "Godot Shader 开发者 agent.godot-shader-developer approved":
+          - generic: Godot Shader 开发者
+          - generic: agent.godot-shader-developer
+          - generic: approved
+      - treeitem "关卡设计师 agent.level-designer approved" [level=3]:
+        - button "关卡设计师 agent.level-designer approved":
+          - generic: 关卡设计师
+          - generic: agent.level-designer
+          - generic: approved
+      - treeitem "叙事设计师 agent.narrative-designer approved" [level=3]:
+        - button "叙事设计师 agent.narrative-designer approved":
+          - generic: 叙事设计师
+          - generic: agent.narrative-designer
+          - generic: approved
+      - treeitem "Roblox 虚拟形象创作者 agent.roblox-avatar-creator approved" [level=3]:
+        - button "Roblox 虚拟形象创作者 agent.roblox-avatar-creator approved":
+          - generic: Roblox 虚拟形象创作者
+          - generic: agent.roblox-avatar-creator
+          - generic: approved
+      - treeitem "Roblox 体验设计师 agent.roblox-experience-designer approved" [level=3]:
+        - button "Roblox 体验设计师 agent.roblox-experience-designer approved":
+          - generic: Roblox 体验设计师
+          - generic: agent.roblox-experience-designer
+          - generic: approved
+      - treeitem "Roblox 系统脚本工程师 agent.roblox-systems-scripter approved" [level=3]:
+        - button "Roblox 系统脚本工程师 agent.roblox-systems-scripter approved":
+          - generic: Roblox 系统脚本工程师
+          - generic: agent.roblox-systems-scripter
+          - generic: approved
+      - treeitem "技术美术 agent.technical-artist approved" [level=3]:
+        - button "技术美术 agent.technical-artist approved":
+          - generic: 技术美术
+          - generic: agent.technical-artist
+          - generic: approved
+      - treeitem "Unity 架构师 agent.unity-architect approved" [level=3]:
+        - button "Unity 架构师 agent.unity-architect approved":
+          - generic: Unity 架构师
+          - generic: agent.unity-architect
+          - generic: approved
+      - treeitem "Unity 编辑器工具开发者 agent.unity-editor-tool-developer approved" [level=3]:
+        - button "Unity 编辑器工具开发者 agent.unity-editor-tool-developer approved":
+          - generic: Unity 编辑器工具开发者
+          - generic: agent.unity-editor-tool-developer
+          - generic: approved
+      - treeitem "Unity 多人游戏工程师 agent.unity-multiplayer-engineer approved" [level=3]:
+        - button "Unity 多人游戏工程师 agent.unity-multiplayer-engineer approved":
+          - generic: Unity 多人游戏工程师
+          - generic: agent.unity-multiplayer-engineer
+          - generic: approved
+      - treeitem "Unity Shader Graph 美术师 agent.unity-shader-graph-artist approved" [level=3]:
+        - button "Unity Shader Graph 美术师 agent.unity-shader-graph-artist approved":
+          - generic: Unity Shader Graph 美术师
+          - generic: agent.unity-shader-graph-artist
+          - generic: approved
+      - treeitem "Unreal 多人游戏架构师 agent.unreal-multiplayer-architect approved" [level=3]:
+        - button "Unreal 多人游戏架构师 agent.unreal-multiplayer-architect approved":
+          - generic: Unreal 多人游戏架构师
+          - generic: agent.unreal-multiplayer-architect
+          - generic: approved
+      - treeitem "Unreal 系统工程师 agent.unreal-systems-engineer approved" [level=3]:
+        - button "Unreal 系统工程师 agent.unreal-systems-engineer approved":
+          - generic: Unreal 系统工程师
+          - generic: agent.unreal-systems-engineer
+          - generic: approved
+      - treeitem "Unreal 技术美术 agent.unreal-technical-artist approved" [level=3]:
+        - button "Unreal 技术美术 agent.unreal-technical-artist approved":
+          - generic: Unreal 技术美术
+          - generic: agent.unreal-technical-artist
+          - generic: approved
+      - treeitem "Unreal 世界构建师 agent.unreal-world-builder approved" [level=3]:
+        - button "Unreal 世界构建师 agent.unreal-world-builder approved":
+          - generic: Unreal 世界构建师
+          - generic: agent.unreal-world-builder
+          - generic: approved
+  - treeitem "gis 13" [expanded] [level=1]:
+    - button "Toggle gis" [expanded]:
+    - button "gis":
+      - generic: gis
+    - generic: "13"
+    - treeitem "agents 13" [expanded] [level=2]:
+      - button "agents 13":
+        - generic: agents
+        - generic: "13"
+      - treeitem "三维场景开发者 agent.gis-3d-scene-developer approved" [level=3]:
+        - button "三维场景开发者 agent.gis-3d-scene-developer approved":
+          - generic: 三维场景开发者
+          - generic: agent.gis-3d-scene-developer
+          - generic: approved
+      - treeitem "GIS 分析师 agent.gis-analyst approved" [level=3]:
+        - button "GIS 分析师 agent.gis-analyst approved":
+          - generic: GIS 分析师
+          - generic: agent.gis-analyst
+          - generic: approved
+      - treeitem "BIM/GIS 专家 agent.gis-bim-specialist approved" [level=3]:
+        - button "BIM/GIS 专家 agent.gis-bim-specialist approved":
+          - generic: BIM/GIS 专家
+          - generic: agent.gis-bim-specialist
+          - generic: approved
+      - treeitem "地图制图设计师 agent.gis-cartography-designer approved" [level=3]:
+        - button "地图制图设计师 agent.gis-cartography-designer approved":
+          - generic: 地图制图设计师
+          - generic: agent.gis-cartography-designer
+          - generic: approved
+      - treeitem "无人机实景测绘专家 agent.gis-drone-reality-mapping approved" [level=3]:
+        - button "无人机实景测绘专家 agent.gis-drone-reality-mapping approved":
+          - generic: 无人机实景测绘专家
+          - generic: agent.gis-drone-reality-mapping
+          - generic: approved
+      - treeitem "GeoAI/ML 工程师 agent.gis-geoai-ml-engineer approved" [level=3]:
+        - button "GeoAI/ML 工程师 agent.gis-geoai-ml-engineer approved":
+          - generic: GeoAI/ML 工程师
+          - generic: agent.gis-geoai-ml-engineer
+          - generic: approved
+      - treeitem "地理处理专家 agent.gis-geoprocessing-specialist approved" [level=3]:
+        - button "地理处理专家 agent.gis-geoprocessing-specialist approved":
+          - generic: 地理处理专家
+          - generic: agent.gis-geoprocessing-specialist
+          - generic: approved
+      - treeitem "GIS 质检工程师 agent.gis-qa-engineer approved" [level=3]:
+        - button "GIS 质检工程师 agent.gis-qa-engineer approved":
+          - generic: GIS 质检工程师
+          - generic: agent.gis-qa-engineer
+          - generic: approved
+      - treeitem "解决方案工程师 agent.gis-solution-engineer approved" [level=3]:
+        - button "解决方案工程师 agent.gis-solution-engineer approved":
+          - generic: 解决方案工程师
+          - generic: agent.gis-solution-engineer
+          - generic: approved
+      - treeitem "空间数据工程师 agent.gis-spatial-data-engineer approved" [level=3]:
+        - button "空间数据工程师 agent.gis-spatial-data-engineer approved":
+          - generic: 空间数据工程师
+          - generic: agent.gis-spatial-data-engineer
+          - generic: approved
+      - treeitem "空间数据科学家 agent.gis-spatial-data-scientist approved" [level=3]:
+        - button "空间数据科学家 agent.gis-spatial-data-scientist approved":
+          - generic: 空间数据科学家
+          - generic: agent.gis-spatial-data-scientist
+          - generic: approved
+      - treeitem "技术顾问 agent.gis-technical-consultant approved" [level=3]:
+        - button "技术顾问 agent.gis-technical-consultant approved":
+          - generic: 技术顾问
+          - generic: agent.gis-technical-consultant
+          - generic: approved
+      - treeitem "Web GIS 开发工程师 agent.gis-web-gis-developer approved" [level=3]:
+        - button "Web GIS 开发工程师 agent.gis-web-gis-developer approved":
+          - generic: Web GIS 开发工程师
+          - generic: agent.gis-web-gis-developer
+          - generic: approved
+  - treeitem "global 2" [expanded] [level=1]:
+    - button "Toggle global" [expanded]:
+    - button "global":
+      - generic: global
+    - generic: "2"
+    - treeitem "skills 2" [expanded] [level=2]:
+      - button "skills 2":
+        - generic: skills
+        - generic: "2"
+      - treeitem "Southstar Goal Design skill.southstar-goal-design approved" [level=3]:
+        - button "Southstar Goal Design skill.southstar-goal-design approved":
+          - generic: Southstar Goal Design
+          - generic: skill.southstar-goal-design
+          - generic: approved
+      - treeitem "Southstar Slice to DAG Composer skill.southstar-slice-to-dag-composer approved" [level=3]:
+        - button "Southstar Slice to DAG Composer skill.southstar-slice-to-dag-composer approved":
+          - generic: Southstar Slice to DAG Composer
+          - generic: skill.southstar-slice-to-dag-composer
+          - generic: approved
+  - treeitem "hr 2" [expanded] [level=1]:
+    - button "Toggle hr" [expanded]:
+    - button "hr":
+      - generic: hr
+    - generic: "2"
+    - treeitem "agents 2" [expanded] [level=2]:
+      - button "agents 2":
+        - generic: agents
+        - generic: "2"
+      - treeitem "绩效管理专家 agent.hr-performance-reviewer approved" [level=3]:
+        - button "绩效管理专家 agent.hr-performance-reviewer approved":
+          - generic: 绩效管理专家
+          - generic: agent.hr-performance-reviewer
+          - generic: approved
+      - treeitem "招聘专家 agent.hr-recruiter approved" [level=3]:
+        - button "招聘专家 agent.hr-recruiter approved":
+          - generic: 招聘专家
+          - generic: agent.hr-recruiter
+          - generic: approved
+  - treeitem "legal 2" [expanded] [level=1]:
+    - button "Toggle legal" [expanded]:
+    - button "legal":
+      - generic: legal
+    - generic: "2"
+    - treeitem "agents 2" [expanded] [level=2]:
+      - button "agents 2":
+        - generic: agents
+        - generic: "2"
+      - treeitem "合同审查专家 agent.legal-contract-reviewer approved" [level=3]:
+        - button "合同审查专家 agent.legal-contract-reviewer approved":
+          - generic: 合同审查专家
+          - generic: agent.legal-contract-reviewer
+          - generic: approved
+      - treeitem "制度文件撰写专家 agent.legal-policy-writer approved" [level=3]:
+        - button "制度文件撰写专家 agent.legal-policy-writer approved":
+          - generic: 制度文件撰写专家
+          - generic: agent.legal-policy-writer
+          - generic: approved
+  - treeitem "marketing 42" [expanded] [level=1]:
+    - button "Toggle marketing" [expanded]:
+    - button "marketing":
+      - generic: marketing
+    - generic: "42"
+    - treeitem "agents 42" [expanded] [level=2]:
+      - button "agents 42":
+        - generic: agents
+        - generic: "42"
+      - treeitem "AEO 基础架构师 agent.marketing-aeo-foundations approved" [level=3]:
+        - button "AEO 基础架构师 agent.marketing-aeo-foundations approved":
+          - generic: AEO 基础架构师
+          - generic: agent.marketing-aeo-foundations
+          - generic: approved
+      - treeitem "智能搜索优化师 agent.marketing-agentic-search-optimizer approved" [level=3]:
+        - button "智能搜索优化师 agent.marketing-agentic-search-optimizer approved":
+          - generic: 智能搜索优化师
+          - generic: agent.marketing-agentic-search-optimizer
+          - generic: approved
+      - treeitem "AI 引文策略师 agent.marketing-ai-citation-strategist approved" [level=3]:
+        - button "AI 引文策略师 agent.marketing-ai-citation-strategist approved":
+          - generic: AI 引文策略师
+          - generic: agent.marketing-ai-citation-strategist
+          - generic: approved
+      - treeitem "应用商店优化师 agent.marketing-app-store-optimizer approved" [level=3]:
+        - button "应用商店优化师 agent.marketing-app-store-optimizer approved":
+          - generic: 应用商店优化师
+          - generic: agent.marketing-app-store-optimizer
+          - generic: approved
+      - treeitem "百度 SEO 专家 agent.marketing-baidu-seo-specialist approved" [level=3]:
+        - button "百度 SEO 专家 agent.marketing-baidu-seo-specialist approved":
+          - generic: 百度 SEO 专家
+          - generic: agent.marketing-baidu-seo-specialist
+          - generic: approved
+      - treeitem "B站内容策略师 agent.marketing-bilibili-strategist approved" [level=3]:
+        - button "B站内容策略师 agent.marketing-bilibili-strategist approved":
+          - generic: B站内容策略师
+          - generic: agent.marketing-bilibili-strategist
+          - generic: approved
+      - treeitem "图书联合作者 agent.marketing-book-co-author approved" [level=3]:
+        - button "图书联合作者 agent.marketing-book-co-author approved":
+          - generic: 图书联合作者
+          - generic: agent.marketing-book-co-author
+          - generic: approved
+      - treeitem "轮播图增长引擎 agent.marketing-carousel-growth-engine approved" [level=3]:
+        - button "轮播图增长引擎 agent.marketing-carousel-growth-engine approved":
+          - generic: 轮播图增长引擎
+          - generic: agent.marketing-carousel-growth-engine
+          - generic: approved
+      - treeitem "中国电商运营专家 agent.marketing-china-ecommerce-operator approved" [level=3]:
+        - button "中国电商运营专家 agent.marketing-china-ecommerce-operator approved":
+          - generic: 中国电商运营专家
+          - generic: agent.marketing-china-ecommerce-operator
+          - generic: approved
+      - treeitem "中国市场本地化策略师 agent.marketing-china-market-localization-strategist approved" [level=3]:
+        - button "中国市场本地化策略师 agent.marketing-china-market-localization-strategist approved":
+          - generic: 中国市场本地化策略师
+          - generic: agent.marketing-china-market-localization-strategist
+          - generic: approved
+      - treeitem "内容创作者 agent.marketing-content-creator approved" [level=3]:
+        - button "内容创作者 agent.marketing-content-creator approved":
+          - generic: 内容创作者
+          - generic: agent.marketing-content-creator
+          - generic: approved
+      - treeitem "跨境电商运营专家 agent.marketing-cross-border-ecommerce approved" [level=3]:
+        - button "跨境电商运营专家 agent.marketing-cross-border-ecommerce approved":
+          - generic: 跨境电商运营专家
+          - generic: agent.marketing-cross-border-ecommerce
+          - generic: approved
+      - treeitem "新闻情报官 agent.marketing-daily-news-briefing approved" [level=3]:
+        - button "新闻情报官 agent.marketing-daily-news-briefing approved":
+          - generic: 新闻情报官
+          - generic: agent.marketing-daily-news-briefing
+          - generic: approved
+      - treeitem "抖音策略师 agent.marketing-douyin-strategist approved" [level=3]:
+        - button "抖音策略师 agent.marketing-douyin-strategist approved":
+          - generic: 抖音策略师
+          - generic: agent.marketing-douyin-strategist
+          - generic: approved
+      - treeitem "电商运营师 agent.marketing-ecommerce-operator approved" [level=3]:
+        - button "电商运营师 agent.marketing-ecommerce-operator approved":
+          - generic: 电商运营师
+          - generic: agent.marketing-ecommerce-operator
+          - generic: approved
+      - treeitem "邮件营销策略师 agent.marketing-email-strategist approved" [level=3]:
+        - button "邮件营销策略师 agent.marketing-email-strategist approved":
+          - generic: 邮件营销策略师
+          - generic: agent.marketing-email-strategist
+          - generic: approved
+      - treeitem "全球播客策略师 agent.marketing-global-podcast-strategist approved" [level=3]:
+        - button "全球播客策略师 agent.marketing-global-podcast-strategist approved":
+          - generic: 全球播客策略师
+          - generic: agent.marketing-global-podcast-strategist
+          - generic: approved
+      - treeitem "增长黑客 agent.marketing-growth-hacker approved" [level=3]:
+        - button "增长黑客 agent.marketing-growth-hacker approved":
+          - generic: 增长黑客
+          - generic: agent.marketing-growth-hacker
+          - generic: approved
+      - treeitem "Instagram 策展师 agent.marketing-instagram-curator approved" [level=3]:
+        - button "Instagram 策展师 agent.marketing-instagram-curator approved":
+          - generic: Instagram 策展师
+          - generic: agent.marketing-instagram-curator
+          - generic: approved
+      - treeitem "知识付费产品策划师 agent.marketing-knowledge-commerce-strategist approved" [level=3]:
+        - button "知识付费产品策划师 agent.marketing-knowledge-commerce-strategist approved":
+          - generic: 知识付费产品策划师
+          - generic: agent.marketing-knowledge-commerce-strategist
+          - generic: approved
+      - treeitem "快手策略师 agent.marketing-kuaishou-strategist approved" [level=3]:
+        - button "快手策略师 agent.marketing-kuaishou-strategist approved":
+          - generic: 快手策略师
+          - generic: agent.marketing-kuaishou-strategist
+          - generic: approved
+      - treeitem "LinkedIn 内容创作专家 agent.marketing-linkedin-content-creator approved" [level=3]:
+        - button "LinkedIn 内容创作专家 agent.marketing-linkedin-content-creator approved":
+          - generic: LinkedIn 内容创作专家
+          - generic: agent.marketing-linkedin-content-creator
+          - generic: approved
+      - treeitem "直播电商主播教练 agent.marketing-livestream-commerce-coach approved" [level=3]:
+        - button "直播电商主播教练 agent.marketing-livestream-commerce-coach approved":
+          - generic: 直播电商主播教练
+          - generic: agent.marketing-livestream-commerce-coach
+          - generic: approved
+      - treeitem "多平台发布编排官 agent.marketing-multi-platform-publisher approved" [level=3]:
+        - button "多平台发布编排官 agent.marketing-multi-platform-publisher approved":
+          - generic: 多平台发布编排官
+          - generic: agent.marketing-multi-platform-publisher
+          - generic: approved
+      - treeitem "播客内容策略师 agent.marketing-podcast-strategist approved" [level=3]:
+        - button "播客内容策略师 agent.marketing-podcast-strategist approved":
+          - generic: 播客内容策略师
+          - generic: agent.marketing-podcast-strategist
+          - generic: approved
+      - treeitem "PR 与传播经理 agent.marketing-pr-communications-manager approved" [level=3]:
+        - button "PR 与传播经理 agent.marketing-pr-communications-manager approved":
+          - generic: PR 与传播经理
+          - generic: agent.marketing-pr-communications-manager
+          - generic: approved
+      - treeitem "私域流量运营师 agent.marketing-private-domain-operator approved" [level=3]:
+        - button "私域流量运营师 agent.marketing-private-domain-operator approved":
+          - generic: 私域流量运营师
+          - generic: agent.marketing-private-domain-operator
+          - generic: approved
+      - treeitem "Reddit 社区运营 agent.marketing-reddit-community-builder approved" [level=3]:
+        - button "Reddit 社区运营 agent.marketing-reddit-community-builder approved":
+          - generic: Reddit 社区运营
+          - generic: agent.marketing-reddit-community-builder
+          - generic: approved
+      - treeitem "SEO专家 agent.marketing-seo-specialist approved" [level=3]:
+        - button "SEO专家 agent.marketing-seo-specialist approved":
+          - generic: SEO专家
+          - generic: agent.marketing-seo-specialist
+          - generic: approved
+      - treeitem "短视频剪辑指导师 agent.marketing-short-video-editing-coach approved" [level=3]:
+        - button "短视频剪辑指导师 agent.marketing-short-video-editing-coach approved":
+          - generic: 短视频剪辑指导师
+          - generic: agent.marketing-short-video-editing-coach
+          - generic: approved
+      - treeitem "社交媒体策略师 agent.marketing-social-media-strategist approved" [level=3]:
+        - button "社交媒体策略师 agent.marketing-social-media-strategist approved":
+          - generic: 社交媒体策略师
+          - generic: agent.marketing-social-media-strategist
+          - generic: approved
+      - treeitem "TikTok 策略师 agent.marketing-tiktok-strategist approved" [level=3]:
+        - button "TikTok 策略师 agent.marketing-tiktok-strategist approved":
+          - generic: TikTok 策略师
+          - generic: agent.marketing-tiktok-strategist
+          - generic: approved
+      - treeitem "Twitter 互动官 agent.marketing-twitter-engager approved" [level=3]:
+        - button "Twitter 互动官 agent.marketing-twitter-engager approved":
+          - generic: Twitter 互动官
+          - generic: agent.marketing-twitter-engager
+          - generic: approved
+      - treeitem "视频优化专家 agent.marketing-video-optimization-specialist approved" [level=3]:
+        - button "视频优化专家 agent.marketing-video-optimization-specialist approved":
+          - generic: 视频优化专家
+          - generic: agent.marketing-video-optimization-specialist
+          - generic: approved
+      - treeitem "微信公众号管理 agent.marketing-wechat-official-account approved" [level=3]:
+        - button "微信公众号管理 agent.marketing-wechat-official-account approved":
+          - generic: 微信公众号管理
+          - generic: agent.marketing-wechat-official-account
+          - generic: approved
+      - treeitem "微信公众号运营 agent.marketing-wechat-operator approved" [level=3]:
+        - button "微信公众号运营 agent.marketing-wechat-operator approved":
+          - generic: 微信公众号运营
+          - generic: agent.marketing-wechat-operator
+          - generic: approved
+      - treeitem "微博运营策略师 agent.marketing-weibo-strategist approved" [level=3]:
+        - button "微博运营策略师 agent.marketing-weibo-strategist approved":
+          - generic: 微博运营策略师
+          - generic: agent.marketing-weibo-strategist
+          - generic: approved
+      - treeitem "微信视频号运营策略师 agent.marketing-weixin-channels-strategist approved" [level=3]:
+        - button "微信视频号运营策略师 agent.marketing-weixin-channels-strategist approved":
+          - generic: 微信视频号运营策略师
+          - generic: agent.marketing-weixin-channels-strategist
+          - generic: approved
+      - treeitem "小红书运营专家 agent.marketing-xiaohongshu-operator approved" [level=3]:
+        - button "小红书运营专家 agent.marketing-xiaohongshu-operator approved":
+          - generic: 小红书运营专家
+          - generic: agent.marketing-xiaohongshu-operator
+          - generic: approved
+      - treeitem "小红书专家 agent.marketing-xiaohongshu-specialist approved" [level=3]:
+        - button "小红书专家 agent.marketing-xiaohongshu-specialist approved":
+          - generic: 小红书专家
+          - generic: agent.marketing-xiaohongshu-specialist
+          - generic: approved
+      - treeitem "X/Twitter 情报分析师 agent.marketing-x-twitter-intelligence-analyst approved" [level=3]:
+        - button "X/Twitter 情报分析师 agent.marketing-x-twitter-intelligence-analyst approved":
+          - generic: X/Twitter 情报分析师
+          - generic: agent.marketing-x-twitter-intelligence-analyst
+          - generic: approved
+      - treeitem "知乎策略师 agent.marketing-zhihu-strategist approved" [level=3]:
+        - button "知乎策略师 agent.marketing-zhihu-strategist approved":
+          - generic: 知乎策略师
+          - generic: agent.marketing-zhihu-strategist
+          - generic: approved
+  - treeitem "paid-media 7" [expanded] [level=1]:
+    - button "Toggle paid-media" [expanded]:
+    - button "paid-media":
+      - generic: paid-media
+    - generic: "7"
+    - treeitem "agents 7" [expanded] [level=2]:
+      - button "agents 7":
+        - generic: agents
+        - generic: "7"
+      - treeitem "付费媒体审计师 agent.paid-media-auditor approved" [level=3]:
+        - button "付费媒体审计师 agent.paid-media-auditor approved":
+          - generic: 付费媒体审计师
+          - generic: agent.paid-media-auditor
+          - generic: approved
+      - treeitem "广告创意策略师 agent.paid-media-creative-strategist approved" [level=3]:
+        - button "广告创意策略师 agent.paid-media-creative-strategist approved":
+          - generic: 广告创意策略师
+          - generic: agent.paid-media-creative-strategist
+          - generic: approved
+      - treeitem "社交广告策略师 agent.paid-media-paid-social-strategist approved" [level=3]:
+        - button "社交广告策略师 agent.paid-media-paid-social-strategist approved":
+          - generic: 社交广告策略师
+          - generic: agent.paid-media-paid-social-strategist
+          - generic: approved
+      - treeitem "PPC 竞价策略师 agent.paid-media-ppc-strategist approved" [level=3]:
+        - button "PPC 竞价策略师 agent.paid-media-ppc-strategist approved":
+          - generic: PPC 竞价策略师
+          - generic: agent.paid-media-ppc-strategist
+          - generic: approved
+      - treeitem "程序化广告采买专家 agent.paid-media-programmatic-buyer approved" [level=3]:
+        - button "程序化广告采买专家 agent.paid-media-programmatic-buyer approved":
+          - generic: 程序化广告采买专家
+          - generic: agent.paid-media-programmatic-buyer
+          - generic: approved
+      - treeitem "搜索词分析师 agent.paid-media-search-query-analyst approved" [level=3]:
+        - button "搜索词分析师 agent.paid-media-search-query-analyst approved":
+          - generic: 搜索词分析师
+          - generic: agent.paid-media-search-query-analyst
+          - generic: approved
+      - treeitem "追踪与归因专家 agent.paid-media-tracking-specialist approved" [level=3]:
+        - button "追踪与归因专家 agent.paid-media-tracking-specialist approved":
+          - generic: 追踪与归因专家
+          - generic: agent.paid-media-tracking-specialist
+          - generic: approved
+  - treeitem "product 5" [expanded] [level=1]:
+    - button "Toggle product" [expanded]:
+    - button "product":
+      - generic: product
+    - generic: "5"
+    - treeitem "agents 5" [expanded] [level=2]:
+      - button "agents 5":
+        - generic: agents
+        - generic: "5"
+      - treeitem "行为助推引擎 agent.product-behavioral-nudge-engine approved" [level=3]:
+        - button "行为助推引擎 agent.product-behavioral-nudge-engine approved":
+          - generic: 行为助推引擎
+          - generic: agent.product-behavioral-nudge-engine
+          - generic: approved
+      - treeitem "反馈分析师 agent.product-feedback-synthesizer approved" [level=3]:
+        - button "反馈分析师 agent.product-feedback-synthesizer approved":
+          - generic: 反馈分析师
+          - generic: agent.product-feedback-synthesizer
+          - generic: approved
+      - treeitem "产品经理 agent.product-manager approved" [level=3]:
+        - button "产品经理 agent.product-manager approved":
+          - generic: 产品经理
+          - generic: agent.product-manager
+          - generic: approved
+      - treeitem "Sprint 排序师 agent.product-sprint-prioritizer approved" [level=3]:
+        - button "Sprint 排序师 agent.product-sprint-prioritizer approved":
+          - generic: Sprint 排序师
+          - generic: agent.product-sprint-prioritizer
+          - generic: approved
+      - treeitem "趋势研究员 agent.product-trend-researcher approved" [level=3]:
+        - button "趋势研究员 agent.product-trend-researcher approved":
+          - generic: 趋势研究员
+          - generic: agent.product-trend-researcher
+          - generic: approved
+  - treeitem "project-management 10" [expanded] [level=1]:
+    - button "Toggle project-management" [expanded]:
+    - button "project-management":
+      - generic: project-management
+    - generic: "10"
+    - treeitem "agents 7" [expanded] [level=2]:
+      - button "agents 7":
+        - generic: agents
+        - generic: "7"
+      - treeitem "实验追踪员 agent.project-management-experiment-tracker approved" [level=3]:
+        - button "实验追踪员 agent.project-management-experiment-tracker approved":
+          - generic: 实验追踪员
+          - generic: agent.project-management-experiment-tracker
+          - generic: approved
+      - treeitem "Jira工作流管家 agent.project-management-jira-workflow-steward approved" [level=3]:
+        - button "Jira工作流管家 agent.project-management-jira-workflow-steward approved":
+          - generic: Jira工作流管家
+          - generic: agent.project-management-jira-workflow-steward
+          - generic: approved
+      - treeitem "会议纪要专家 agent.project-management-meeting-notes-specialist approved" [level=3]:
+        - button "会议纪要专家 agent.project-management-meeting-notes-specialist approved":
+          - generic: 会议纪要专家
+          - generic: agent.project-management-meeting-notes-specialist
+          - generic: approved
+      - treeitem "项目牧羊人 agent.project-management-project-shepherd approved" [level=3]:
+        - button "项目牧羊人 agent.project-management-project-shepherd approved":
+          - generic: 项目牧羊人
+          - generic: agent.project-management-project-shepherd
+          - generic: approved
+      - treeitem "工作室运营 agent.project-management-studio-operations approved" [level=3]:
+        - button "工作室运营 agent.project-management-studio-operations approved":
+          - generic: 工作室运营
+          - generic: agent.project-management-studio-operations
+          - generic: approved
+      - treeitem "工作室制片人 agent.project-management-studio-producer approved" [level=3]:
+        - button "工作室制片人 agent.project-management-studio-producer approved":
+          - generic: 工作室制片人
+          - generic: agent.project-management-studio-producer
+          - generic: approved
+      - treeitem "高级项目经理 agent.project-manager-senior approved" [level=3]:
+        - button "高级项目经理 agent.project-manager-senior approved":
+          - generic: 高级项目经理
+          - generic: agent.project-manager-senior
+          - generic: approved
+    - treeitem "skills 3" [expanded] [level=2]:
+      - button "skills 3":
+        - generic: skills
+        - generic: "3"
+      - treeitem "Grilling skill.mattpocock.grilling approved" [level=3]:
+        - button "Grilling skill.mattpocock.grilling approved":
+          - generic: Grilling
+          - generic: skill.mattpocock.grilling
+          - generic: approved
+      - treeitem "Grill Me skill.mattpocock.grill-me approved" [level=3]:
+        - button "Grill Me skill.mattpocock.grill-me approved":
+          - generic: Grill Me
+          - generic: skill.mattpocock.grill-me
+          - generic: approved
+      - treeitem "Handoff skill.mattpocock.handoff approved" [level=3]:
+        - button "Handoff skill.mattpocock.handoff approved":
+          - generic: Handoff
+          - generic: skill.mattpocock.handoff
+          - generic: approved
+  - treeitem "sales 9" [expanded] [level=1]:
+    - button "Toggle sales" [expanded]:
+    - button "sales":
+      - generic: sales
+    - generic: "9"
+    - treeitem "agents 9" [expanded] [level=2]:
+      - button "agents 9":
+        - generic: agents
+        - generic: "9"
+      - treeitem "客户拓展策略师 agent.sales-account-strategist approved" [level=3]:
+        - button "客户拓展策略师 agent.sales-account-strategist approved":
+          - generic: 客户拓展策略师
+          - generic: agent.sales-account-strategist
+          - generic: approved
+      - treeitem "销售教练 agent.sales-coach approved" [level=3]:
+        - button "销售教练 agent.sales-coach approved":
+          - generic: 销售教练
+          - generic: agent.sales-coach
+          - generic: approved
+      - treeitem "赢单策略师 agent.sales-deal-strategist approved" [level=3]:
+        - button "赢单策略师 agent.sales-deal-strategist approved":
+          - generic: 赢单策略师
+          - generic: agent.sales-deal-strategist
+          - generic: approved
+      - treeitem "Discovery 教练 agent.sales-discovery-coach approved" [level=3]:
+        - button "Discovery 教练 agent.sales-discovery-coach approved":
+          - generic: Discovery 教练
+          - generic: agent.sales-discovery-coach
+          - generic: approved
+      - treeitem "售前工程师 agent.sales-engineer approved" [level=3]:
+        - button "售前工程师 agent.sales-engineer approved":
+          - generic: 售前工程师
+          - generic: agent.sales-engineer
+          - generic: approved
+      - treeitem "Offer 与 Lead Gen 策略师 agent.sales-offer-lead-gen-strategist approved" [level=3]:
+        - button "Offer 与 Lead Gen 策略师 agent.sales-offer-lead-gen-strategist approved":
+          - generic: Offer 与 Lead Gen 策略师
+          - generic: agent.sales-offer-lead-gen-strategist
+          - generic: approved
+      - treeitem "Outbound 策略师 agent.sales-outbound-strategist approved" [level=3]:
+        - button "Outbound 策略师 agent.sales-outbound-strategist approved":
+          - generic: Outbound 策略师
+          - generic: agent.sales-outbound-strategist
+          - generic: approved
+      - treeitem "Pipeline 分析师 agent.sales-pipeline-analyst approved" [level=3]:
+        - button "Pipeline 分析师 agent.sales-pipeline-analyst approved":
+          - generic: Pipeline 分析师
+          - generic: agent.sales-pipeline-analyst
+          - generic: approved
+      - treeitem "投标策略师 agent.sales-proposal-strategist approved" [level=3]:
+        - button "投标策略师 agent.sales-proposal-strategist approved":
+          - generic: 投标策略师
+          - generic: agent.sales-proposal-strategist
+          - generic: approved
+  - treeitem "security 10" [expanded] [level=1]:
+    - button "Toggle security" [expanded]:
+    - button "security":
+      - generic: security
+    - generic: "10"
+    - treeitem "agents 10" [expanded] [level=2]:
+      - button "agents 10":
+        - generic: agents
+        - generic: "10"
+      - treeitem "应用安全工程师 agent.security-appsec-engineer approved" [level=3]:
+        - button "应用安全工程师 agent.security-appsec-engineer approved":
+          - generic: 应用安全工程师
+          - generic: agent.security-appsec-engineer
+          - generic: approved
+      - treeitem "安全架构师 agent.security-architect approved" [level=3]:
+        - button "安全架构师 agent.security-architect approved":
+          - generic: 安全架构师
+          - generic: agent.security-architect
+          - generic: approved
+      - treeitem "区块链安全审计师 agent.security-blockchain-security-auditor approved" [level=3]:
+        - button "区块链安全审计师 agent.security-blockchain-security-auditor approved":
+          - generic: 区块链安全审计师
+          - generic: agent.security-blockchain-security-auditor
+          - generic: approved
+      - treeitem "云安全架构师 agent.security-cloud-security-architect approved" [level=3]:
+        - button "云安全架构师 agent.security-cloud-security-architect approved":
+          - generic: 云安全架构师
+          - generic: agent.security-cloud-security-architect
+          - generic: approved
+      - treeitem "合规审计师 agent.security-compliance-auditor approved" [level=3]:
+        - button "合规审计师 agent.security-compliance-auditor approved":
+          - generic: 合规审计师
+          - generic: agent.security-compliance-auditor
+          - generic: approved
+      - treeitem "事件响应专家 agent.security-incident-responder approved" [level=3]:
+        - button "事件响应专家 agent.security-incident-responder approved":
+          - generic: 事件响应专家
+          - generic: agent.security-incident-responder
+          - generic: approved
+      - treeitem "渗透测试员 agent.security-penetration-tester approved" [level=3]:
+        - button "渗透测试员 agent.security-penetration-tester approved":
+          - generic: 渗透测试员
+          - generic: agent.security-penetration-tester
+          - generic: approved
+      - treeitem "高级安全运营工程师 agent.security-senior-secops approved" [level=3]:
+        - button "高级安全运营工程师 agent.security-senior-secops approved":
+          - generic: 高级安全运营工程师
+          - generic: agent.security-senior-secops
+          - generic: approved
+      - treeitem "威胁检测工程师 agent.security-threat-detection-engineer approved" [level=3]:
+        - button "威胁检测工程师 agent.security-threat-detection-engineer approved":
+          - generic: 威胁检测工程师
+          - generic: agent.security-threat-detection-engineer
+          - generic: approved
+      - treeitem "威胁情报分析师 agent.security-threat-intelligence-analyst approved" [level=3]:
+        - button "威胁情报分析师 agent.security-threat-intelligence-analyst approved":
+          - generic: 威胁情报分析师
+          - generic: agent.security-threat-intelligence-analyst
+          - generic: approved
+  - treeitem "software 6" [expanded] [level=1]:
+    - button "Toggle software" [expanded]:
+    - button "software":
+      - generic: software
+    - generic: "6"
+    - treeitem "agents 1" [expanded] [level=2]:
+      - button "agents 1":
+        - generic: agents
+        - generic: "1"
+      - treeitem "Software Delivery Engineer agent.software-delivery-engineer deprecated" [level=3]:
+        - button "Software Delivery Engineer agent.software-delivery-engineer deprecated":
+          - generic: Software Delivery Engineer
+          - generic: agent.software-delivery-engineer
+          - generic: deprecated
+    - treeitem "skills 1" [expanded] [level=2]:
+      - button "skills 1":
+        - generic: skills
+        - generic: "1"
+      - treeitem "Software Delivery skill.software-delivery deprecated" [level=3]:
+        - button "Software Delivery skill.software-delivery deprecated":
+          - generic: Software Delivery
+          - generic: skill.software-delivery
+          - generic: deprecated
+    - treeitem "tools 4" [expanded] [level=2]:
+      - button "tools 4":
+        - generic: tools
+        - generic: "4"
+      - treeitem "tool.shell-command tool.shell-command approved" [level=3]:
+        - button "tool.shell-command tool.shell-command approved":
+          - generic: tool.shell-command
+          - generic: tool.shell-command
+          - generic: approved
+      - treeitem "Test Runner tool.test-runner approved" [level=3]:
+        - button "Test Runner tool.test-runner approved":
+          - generic: Test Runner
+          - generic: tool.test-runner
+          - generic: approved
+      - treeitem "Workspace Read tool.workspace-read approved" [level=3]:
+        - button "Workspace Read tool.workspace-read approved":
+          - generic: Workspace Read
+          - generic: tool.workspace-read
+          - generic: approved
+      - treeitem "Workspace Write tool.workspace-write approved" [level=3]:
+        - button "Workspace Write tool.workspace-write approved":
+          - generic: Workspace Write
+          - generic: tool.workspace-write
+          - generic: approved
+  - treeitem "spatial-computing 6" [expanded] [level=1]:
+    - button "Toggle spatial-computing" [expanded]:
+    - button "spatial-computing":
+      - generic: spatial-computing
+    - generic: "6"
+    - treeitem "agents 6" [expanded] [level=2]:
+      - button "agents 6":
+        - generic: agents
+        - generic: "6"
+      - treeitem "macOS Metal 空间工程师 agent.macos-spatial-metal-engineer approved" [level=3]:
+        - button "macOS Metal 空间工程师 agent.macos-spatial-metal-engineer approved":
+          - generic: macOS Metal 空间工程师
+          - generic: agent.macos-spatial-metal-engineer
+          - generic: approved
+      - treeitem "终端集成专家 agent.terminal-integration-specialist approved" [level=3]:
+        - button "终端集成专家 agent.terminal-integration-specialist approved":
+          - generic: 终端集成专家
+          - generic: agent.terminal-integration-specialist
+          - generic: approved
+      - treeitem "visionOS 空间工程师 agent.visionos-spatial-engineer approved" [level=3]:
+        - button "visionOS 空间工程师 agent.visionos-spatial-engineer approved":
+          - generic: visionOS 空间工程师
+          - generic: agent.visionos-spatial-engineer
+          - generic: approved
+      - treeitem "XR 座舱交互专家 agent.xr-cockpit-interaction-specialist approved" [level=3]:
+        - button "XR 座舱交互专家 agent.xr-cockpit-interaction-specialist approved":
+          - generic: XR 座舱交互专家
+          - generic: agent.xr-cockpit-interaction-specialist
+          - generic: approved
+      - treeitem "XR 沉浸式开发者 agent.xr-immersive-developer approved" [level=3]:
+        - button "XR 沉浸式开发者 agent.xr-immersive-developer approved":
+          - generic: XR 沉浸式开发者
+          - generic: agent.xr-immersive-developer
+          - generic: approved
+      - treeitem "XR 界面架构师 agent.xr-interface-architect approved" [level=3]:
+        - button "XR 界面架构师 agent.xr-interface-architect approved":
+          - generic: XR 界面架构师
+          - generic: agent.xr-interface-architect
+          - generic: approved
+  - treeitem "specialized 60" [expanded] [level=1]:
+    - button "Toggle specialized" [expanded]:
+    - button "specialized":
+      - generic: specialized
+    - generic: "60"
+    - treeitem "agents 58" [expanded] [level=2]:
+      - button "agents 58":
+        - generic: agents
+        - generic: "58"
+      - treeitem "应付账款智能体 agent.accounts-payable-agent approved" [level=3]:
+        - button "应付账款智能体 agent.accounts-payable-agent approved":
+          - generic: 应付账款智能体
+          - generic: agent.accounts-payable-agent
+          - generic: approved
+      - treeitem "身份信任架构师 agent.agentic-identity-trust approved" [level=3]:
+        - button "身份信任架构师 agent.agentic-identity-trust approved":
+          - generic: 身份信任架构师
+          - generic: agent.agentic-identity-trust
+          - generic: approved
+      - treeitem "智能体编排者 agent.agents-orchestrator approved" [level=3]:
+        - button "智能体编排者 agent.agents-orchestrator approved":
+          - generic: 智能体编排者
+          - generic: agent.agents-orchestrator
+          - generic: approved
+      - treeitem "自动化治理架构师 agent.automation-governance-architect approved" [level=3]:
+        - button "自动化治理架构师 agent.automation-governance-architect approved":
+          - generic: 自动化治理架构师
+          - generic: agent.automation-governance-architect
+          - generic: approved
+      - treeitem "商业战略家 agent.business-strategist approved" [level=3]:
+        - button "商业战略家 agent.business-strategist approved":
+          - generic: 商业战略家
+          - generic: agent.business-strategist
+          - generic: approved
+      - treeitem "变革管理顾问 agent.change-management-consultant approved" [level=3]:
+        - button "变革管理顾问 agent.change-management-consultant approved":
+          - generic: 变革管理顾问
+          - generic: agent.change-management-consultant
+          - generic: approved
+      - treeitem "首席财务官 agent.chief-financial-officer approved" [level=3]:
+        - button "首席财务官 agent.chief-financial-officer approved":
+          - generic: 首席财务官
+          - generic: agent.chief-financial-officer
+          - generic: approved
+      - treeitem "企业培训课程设计师 agent.corporate-training-designer approved" [level=3]:
+        - button "企业培训课程设计师 agent.corporate-training-designer approved":
+          - generic: 企业培训课程设计师
+          - generic: agent.corporate-training-designer
+          - generic: approved
+      - treeitem "客户成功经理 agent.customer-success-manager approved" [level=3]:
+        - button "客户成功经理 agent.customer-success-manager approved":
+          - generic: 客户成功经理
+          - generic: agent.customer-success-manager
+          - generic: approved
+      - treeitem "数据整合师 agent.data-consolidation-agent approved" [level=3]:
+        - button "数据整合师 agent.data-consolidation-agent approved":
+          - generic: 数据整合师
+          - generic: agent.data-consolidation-agent
+          - generic: approved
+      - treeitem "数据隐私官 agent.data-privacy-officer approved" [level=3]:
+        - button "数据隐私官 agent.data-privacy-officer approved":
+          - generic: 数据隐私官
+          - generic: agent.data-privacy-officer
+          - generic: approved
+      - treeitem "ESG 与可持续发展官 agent.esg-sustainability-officer approved" [level=3]:
+        - button "ESG 与可持续发展官 agent.esg-sustainability-officer approved":
+          - generic: ESG 与可持续发展官
+          - generic: agent.esg-sustainability-officer
+          - generic: approved
+      - treeitem "高考志愿填报顾问 agent.gaokao-college-advisor approved" [level=3]:
+        - button "高考志愿填报顾问 agent.gaokao-college-advisor approved":
+          - generic: 高考志愿填报顾问
+          - generic: agent.gaokao-college-advisor
+          - generic: approved
+      - treeitem "政务数字化售前顾问 agent.government-digital-presales-consultant approved" [level=3]:
+        - button "政务数字化售前顾问 agent.government-digital-presales-consultant approved":
+          - generic: 政务数字化售前顾问
+          - generic: agent.government-digital-presales-consultant
+          - generic: approved
+      - treeitem "资助申请撰稿人 agent.grant-writer approved" [level=3]:
+        - button "资助申请撰稿人 agent.grant-writer approved":
+          - generic: 资助申请撰稿人
+          - generic: agent.grant-writer
+          - generic: approved
+      - treeitem "医疗客服专家 agent.healthcare-customer-service approved" [level=3]:
+        - button "医疗客服专家 agent.healthcare-customer-service approved":
+          - generic: 医疗客服专家
+          - generic: agent.healthcare-customer-service
+          - generic: approved
+      - treeitem "医疗健康营销合规师 agent.healthcare-marketing-compliance approved" [level=3]:
+        - button "医疗健康营销合规师 agent.healthcare-marketing-compliance approved":
+          - generic: 医疗健康营销合规师
+          - generic: agent.healthcare-marketing-compliance
+          - generic: approved
+      - treeitem "酒店宾客服务专家 agent.hospitality-guest-services approved" [level=3]:
+        - button "酒店宾客服务专家 agent.hospitality-guest-services approved":
+          - generic: 酒店宾客服务专家
+          - generic: agent.hospitality-guest-services
+          - generic: approved
+      - treeitem "HR 入职管理专家 agent.hr-onboarding approved" [level=3]:
+        - button "HR 入职管理专家 agent.hr-onboarding approved":
+          - generic: HR 入职管理专家
+          - generic: agent.hr-onboarding
+          - generic: approved
+      - treeitem "身份图谱操作员 agent.identity-graph-operator approved" [level=3]:
+        - button "身份图谱操作员 agent.identity-graph-operator approved":
+          - generic: 身份图谱操作员
+          - generic: agent.identity-graph-operator
+          - generic: approved
+      - treeitem "语言翻译专家 agent.language-translator approved" [level=3]:
+        - button "语言翻译专家 agent.language-translator approved":
+          - generic: 语言翻译专家
+          - generic: agent.language-translator
+          - generic: approved
+      - treeitem "律所计费与工时专家 agent.legal-billing-time-tracking approved" [level=3]:
+        - button "律所计费与工时专家 agent.legal-billing-time-tracking approved":
+          - generic: 律所计费与工时专家
+          - generic: agent.legal-billing-time-tracking
+          - generic: approved
+      - treeitem "律所客户接案专家 agent.legal-client-intake approved" [level=3]:
+        - button "律所客户接案专家 agent.legal-client-intake approved":
+          - generic: 律所客户接案专家
+          - generic: agent.legal-client-intake
+          - generic: approved
+      - treeitem "法律文书审查专家 agent.legal-document-review approved" [level=3]:
+        - button "法律文书审查专家 agent.legal-document-review approved":
+          - generic: 法律文书审查专家
+          - generic: agent.legal-document-review
+          - generic: approved
+      - treeitem "养殖档案核对员 agent.livestock-archive-auditor approved" [level=3]:
+        - button "养殖档案核对员 agent.livestock-archive-auditor approved":
+          - generic: 养殖档案核对员
+          - generic: agent.livestock-archive-auditor
+          - generic: approved
+      - treeitem "信贷经理助手 agent.loan-officer-assistant approved" [level=3]:
+        - button "信贷经理助手 agent.loan-officer-assistant approved":
+          - generic: 信贷经理助手
+          - generic: agent.loan-officer-assistant
+          - generic: approved
+      - treeitem "LSP 索引工程师 agent.lsp-index-engineer approved" [level=3]:
+        - button "LSP 索引工程师 agent.lsp-index-engineer approved":
+          - generic: LSP 索引工程师
+          - generic: agent.lsp-index-engineer
+          - generic: approved
+      - treeitem "M&A 整合经理 agent.ma-integration-manager approved" [level=3]:
+        - button "M&A 整合经理 agent.ma-integration-manager approved":
+          - generic: M&A 整合经理
+          - generic: agent.ma-integration-manager
+          - generic: approved
+      - treeitem "医疗账单与编码专员 agent.medical-billing-coding-specialist approved" [level=3]:
+        - button "医疗账单与编码专员 agent.medical-billing-coding-specialist approved":
+          - generic: 医疗账单与编码专员
+          - generic: agent.medical-billing-coding-specialist
+          - generic: approved
+      - treeitem "运营经理 agent.operations-manager approved" [level=3]:
+        - button "运营经理 agent.operations-manager approved":
+          - generic: 运营经理
+          - generic: agent.operations-manager
+          - generic: approved
+      - treeitem "组织心理学家 agent.organizational-psychologist approved" [level=3]:
+        - button "组织心理学家 agent.organizational-psychologist approved":
+          - generic: 组织心理学家
+          - generic: agent.organizational-psychologist
+          - generic: approved
+      - treeitem "个人成长导师 agent.personal-growth-mentor approved" [level=3]:
+        - button "个人成长导师 agent.personal-growth-mentor approved":
+          - generic: 个人成长导师
+          - generic: agent.personal-growth-mentor
+          - generic: approved
+      - treeitem "提示词工程师 agent.prompt-engineer approved" [level=3]:
+        - button "提示词工程师 agent.prompt-engineer approved":
+          - generic: 提示词工程师
+          - generic: agent.prompt-engineer
+          - generic: approved
+      - treeitem "房地产经纪助手 agent.real-estate-buyer-seller approved" [level=3]:
+        - button "房地产经纪助手 agent.real-estate-buyer-seller approved":
+          - generic: 房地产经纪助手
+          - generic: agent.real-estate-buyer-seller
+          - generic: approved
+      - treeitem "招聘专家 agent.recruitment-specialist approved" [level=3]:
+        - button "招聘专家 agent.recruitment-specialist approved":
+          - generic: 招聘专家
+          - generic: agent.recruitment-specialist
+          - generic: approved
+      - treeitem "报告分发师 agent.report-distribution-agent approved" [level=3]:
+        - button "报告分发师 agent.report-distribution-agent approved":
+          - generic: 报告分发师
+          - generic: agent.report-distribution-agent
+          - generic: approved
+      - treeitem "零售退货专家 agent.retail-customer-returns approved" [level=3]:
+        - button "零售退货专家 agent.retail-customer-returns approved":
+          - generic: 零售退货专家
+          - generic: agent.retail-customer-returns
+          - generic: approved
+      - treeitem "销售数据提取师 agent.sales-data-extraction-agent approved" [level=3]:
+        - button "销售数据提取师 agent.sales-data-extraction-agent approved":
+          - generic: 销售数据提取师
+          - generic: agent.sales-data-extraction-agent
+          - generic: approved
+      - treeitem "AI 治理政策专家 agent.specialized-ai-policy-writer approved" [level=3]:
+        - button "AI 治理政策专家 agent.specialized-ai-policy-writer approved":
+          - generic: AI 治理政策专家
+          - generic: agent.specialized-ai-policy-writer
+          - generic: approved
+      - treeitem "幕僚长 agent.specialized-chief-of-staff approved" [level=3]:
+        - button "幕僚长 agent.specialized-chief-of-staff approved":
+          - generic: 幕僚长
+          - generic: agent.specialized-chief-of-staff
+          - generic: approved
+      - treeitem "土木工程师 agent.specialized-civil-engineer approved" [level=3]:
+        - button "土木工程师 agent.specialized-civil-engineer approved":
+          - generic: 土木工程师
+          - generic: agent.specialized-civil-engineer
+          - generic: approved
+      - treeitem "文化智能策略师 agent.specialized-cultural-intelligence-strategist approved" [level=3]:
+        - button "文化智能策略师 agent.specialized-cultural-intelligence-strategist approved":
+          - generic: 文化智能策略师
+          - generic: agent.specialized-cultural-intelligence-strategist
+          - generic: approved
+      - treeitem "开发者布道师 agent.specialized-developer-advocate approved" [level=3]:
+        - button "开发者布道师 agent.specialized-developer-advocate approved":
+          - generic: 开发者布道师
+          - generic: agent.specialized-developer-advocate
+          - generic: approved
+      - treeitem "文档生成器 agent.specialized-document-generator approved" [level=3]:
+        - button "文档生成器 agent.specialized-document-generator approved":
+          - generic: 文档生成器
+          - generic: agent.specialized-document-generator
+          - generic: approved
+      - treeitem "法国咨询市场专家 agent.specialized-french-consulting-market approved" [level=3]:
+        - button "法国咨询市场专家 agent.specialized-french-consulting-market approved":
+          - generic: 法国咨询市场专家
+          - generic: agent.specialized-french-consulting-market
+          - generic: approved
+      - treeitem "韩国商务专家 agent.specialized-korean-business-navigator approved" [level=3]:
+        - button "韩国商务专家 agent.specialized-korean-business-navigator approved":
+          - generic: 韩国商务专家
+          - generic: agent.specialized-korean-business-navigator
+          - generic: approved
+      - treeitem "MCP 构建器 agent.specialized-mcp-builder approved" [level=3]:
+        - button "MCP 构建器 agent.specialized-mcp-builder approved":
+          - generic: MCP 构建器
+          - generic: agent.specialized-mcp-builder
+          - generic: approved
+      - treeitem "会议效率专家 agent.specialized-meeting-assistant approved" [level=3]:
+        - button "会议效率专家 agent.specialized-meeting-assistant approved":
+          - generic: 会议效率专家
+          - generic: agent.specialized-meeting-assistant
+          - generic: approved
+      - treeitem "模型 QA 专家 agent.specialized-model-qa approved" [level=3]:
+        - button "模型 QA 专家 agent.specialized-model-qa approved":
+          - generic: 模型 QA 专家
+          - generic: agent.specialized-model-qa
+          - generic: approved
+      - treeitem "定价分析师 agent.specialized-pricing-analyst approved" [level=3]:
+        - button "定价分析师 agent.specialized-pricing-analyst approved":
+          - generic: 定价分析师
+          - generic: agent.specialized-pricing-analyst
+          - generic: approved
+      - treeitem "动态定价策略师 agent.specialized-pricing-optimizer approved" [level=3]:
+        - button "动态定价策略师 agent.specialized-pricing-optimizer approved":
+          - generic: 动态定价策略师
+          - generic: agent.specialized-pricing-optimizer
+          - generic: approved
+      - treeitem "企业风险评估师 agent.specialized-risk-assessor approved" [level=3]:
+        - button "企业风险评估师 agent.specialized-risk-assessor approved":
+          - generic: 企业风险评估师
+          - generic: agent.specialized-risk-assessor
+          - generic: approved
+      - treeitem "Salesforce 架构师 agent.specialized-salesforce-architect approved" [level=3]:
+        - button "Salesforce 架构师 agent.specialized-salesforce-architect approved":
+          - generic: Salesforce 架构师
+          - generic: agent.specialized-salesforce-architect
+          - generic: approved
+      - treeitem "策略对决推演师 agent.specialized-strategy-duel-agent approved" [level=3]:
+        - button "策略对决推演师 agent.specialized-strategy-duel-agent approved":
+          - generic: 策略对决推演师
+          - generic: agent.specialized-strategy-duel-agent
+          - generic: approved
+      - treeitem "工作流架构师 agent.specialized-workflow-architect approved" [level=3]:
+        - button "工作流架构师 agent.specialized-workflow-architect approved":
+          - generic: 工作流架构师
+          - generic: agent.specialized-workflow-architect
+          - generic: approved
+      - treeitem "留学规划顾问 agent.study-abroad-advisor approved" [level=3]:
+        - button "留学规划顾问 agent.study-abroad-advisor approved":
+          - generic: 留学规划顾问
+          - generic: agent.study-abroad-advisor
+          - generic: approved
+      - treeitem "技术翻译专家 agent.technical-translator-agent approved" [level=3]:
+        - button "技术翻译专家 agent.technical-translator-agent approved":
+          - generic: 技术翻译专家
+          - generic: agent.technical-translator-agent
+          - generic: approved
+      - treeitem "ZK 管家 agent.zk-steward approved" [level=3]:
+        - button "ZK 管家 agent.zk-steward approved":
+          - generic: ZK 管家
+          - generic: agent.zk-steward
+          - generic: approved
+    - treeitem "skills 2" [expanded] [level=2]:
+      - button "skills 2":
+        - generic: skills
+        - generic: "2"
+      - treeitem "Writing Great Skills skill.mattpocock.writing-great-skills approved" [level=3]:
+        - button "Writing Great Skills skill.mattpocock.writing-great-skills approved":
+          - generic: Writing Great Skills
+          - generic: skill.mattpocock.writing-great-skills
+          - generic: approved
+      - treeitem "writing-beats skill.writing-beats approved" [level=3]:
+        - button "writing-beats skill.writing-beats approved":
+          - generic: writing-beats
+          - generic: skill.writing-beats
+          - generic: approved
+  - treeitem "supply-chain 5" [expanded] [level=1]:
+    - button "Toggle supply-chain" [expanded]:
+    - button "supply-chain":
+      - generic: supply-chain
+    - generic: "5"
+    - treeitem "agents 5" [expanded] [level=2]:
+      - button "agents 5":
+        - generic: agents
+        - generic: "5"
+      - treeitem "服装工厂规划工程师 agent.supply-chain-garment-factory-planning-engineer approved" [level=3]:
+        - button "服装工厂规划工程师 agent.supply-chain-garment-factory-planning-engineer approved":
+          - generic: 服装工厂规划工程师
+          - generic: agent.supply-chain-garment-factory-planning-engineer
+          - generic: approved
+      - treeitem "库存预测专家 agent.supply-chain-inventory-forecaster approved" [level=3]:
+        - button "库存预测专家 agent.supply-chain-inventory-forecaster approved":
+          - generic: 库存预测专家
+          - generic: agent.supply-chain-inventory-forecaster
+          - generic: approved
+      - treeitem "物流路线优化师 agent.supply-chain-route-optimizer approved" [level=3]:
+        - button "物流路线优化师 agent.supply-chain-route-optimizer approved":
+          - generic: 物流路线优化师
+          - generic: agent.supply-chain-route-optimizer
+          - generic: approved
+      - treeitem "供应链采购策略师 agent.supply-chain-strategist approved" [level=3]:
+        - button "供应链采购策略师 agent.supply-chain-strategist approved":
+          - generic: 供应链采购策略师
+          - generic: agent.supply-chain-strategist
+          - generic: approved
+      - treeitem "供应商评估专家 agent.supply-chain-vendor-evaluator approved" [level=3]:
+        - button "供应商评估专家 agent.supply-chain-vendor-evaluator approved":
+          - generic: 供应商评估专家
+          - generic: agent.supply-chain-vendor-evaluator
+          - generic: approved
+  - treeitem "support 7" [expanded] [level=1]:
+    - button "Toggle support" [expanded]:
+    - button "support":
+      - generic: support
+    - generic: "7"
+    - treeitem "agents 7" [expanded] [level=2]:
+      - button "agents 7":
+        - generic: agents
+        - generic: "7"
+      - treeitem "数据分析师 agent.support-analytics-reporter approved" [level=3]:
+        - button "数据分析师 agent.support-analytics-reporter approved":
+          - generic: 数据分析师
+          - generic: agent.support-analytics-reporter
+          - generic: approved
+      - treeitem "高管摘要师 agent.support-executive-summary-generator approved" [level=3]:
+        - button "高管摘要师 agent.support-executive-summary-generator approved":
+          - generic: 高管摘要师
+          - generic: agent.support-executive-summary-generator
+          - generic: approved
+      - treeitem "财务追踪员 agent.support-finance-tracker approved" [level=3]:
+        - button "财务追踪员 agent.support-finance-tracker approved":
+          - generic: 财务追踪员
+          - generic: agent.support-finance-tracker
+          - generic: approved
+      - treeitem "基础设施运维师 agent.support-infrastructure-maintainer approved" [level=3]:
+        - button "基础设施运维师 agent.support-infrastructure-maintainer approved":
+          - generic: 基础设施运维师
+          - generic: agent.support-infrastructure-maintainer
+          - generic: approved
+      - treeitem "法务合规员 agent.support-legal-compliance-checker approved" [level=3]:
+        - button "法务合规员 agent.support-legal-compliance-checker approved":
+          - generic: 法务合规员
+          - generic: agent.support-legal-compliance-checker
+          - generic: approved
+      - treeitem "招聘运营专家 agent.support-recruitment-specialist approved" [level=3]:
+        - button "招聘运营专家 agent.support-recruitment-specialist approved":
+          - generic: 招聘运营专家
+          - generic: agent.support-recruitment-specialist
+          - generic: approved
+      - treeitem "客服响应者 agent.support-support-responder approved" [level=3]:
+        - button "客服响应者 agent.support-support-responder approved":
+          - generic: 客服响应者
+          - generic: agent.support-support-responder
+          - generic: approved
+  - treeitem "testing 9" [expanded] [level=1]:
+    - button "Toggle testing" [expanded]:
+    - button "testing":
+      - generic: testing
+    - generic: "9"
+    - treeitem "agents 9" [expanded] [level=2]:
+      - button "agents 9":
+        - generic: agents
+        - generic: "9"
+      - treeitem "无障碍审核员 agent.testing-accessibility-auditor approved" [level=3]:
+        - button "无障碍审核员 agent.testing-accessibility-auditor approved":
+          - generic: 无障碍审核员
+          - generic: agent.testing-accessibility-auditor
+          - generic: approved
+      - treeitem "API 测试员 agent.testing-api-tester approved" [level=3]:
+        - button "API 测试员 agent.testing-api-tester approved":
+          - generic: API 测试员
+          - generic: agent.testing-api-tester
+          - generic: approved
+      - treeitem "嵌入式测试工程师 agent.testing-embedded-qa-engineer approved" [level=3]:
+        - button "嵌入式测试工程师 agent.testing-embedded-qa-engineer approved":
+          - generic: 嵌入式测试工程师
+          - generic: agent.testing-embedded-qa-engineer
+          - generic: approved
+      - treeitem "证据收集者 agent.testing-evidence-collector approved" [level=3]:
+        - button "证据收集者 agent.testing-evidence-collector approved":
+          - generic: 证据收集者
+          - generic: agent.testing-evidence-collector
+          - generic: approved
+      - treeitem "性能基准师 agent.testing-performance-benchmarker approved" [level=3]:
+        - button "性能基准师 agent.testing-performance-benchmarker approved":
+          - generic: 性能基准师
+          - generic: agent.testing-performance-benchmarker
+          - generic: approved
+      - treeitem "现实检验者 agent.testing-reality-checker approved" [level=3]:
+        - button "现实检验者 agent.testing-reality-checker approved":
+          - generic: 现实检验者
+          - generic: agent.testing-reality-checker
+          - generic: approved
+      - treeitem "测试结果分析师 agent.testing-test-results-analyzer approved" [level=3]:
+        - button "测试结果分析师 agent.testing-test-results-analyzer approved":
+          - generic: 测试结果分析师
+          - generic: agent.testing-test-results-analyzer
+          - generic: approved
+      - treeitem "工具评估师 agent.testing-tool-evaluator approved" [level=3]:
+        - button "工具评估师 agent.testing-tool-evaluator approved":
+          - generic: 工具评估师
+          - generic: agent.testing-tool-evaluator
+          - generic: approved
+      - treeitem "工作流优化师 agent.testing-workflow-optimizer approved" [level=3]:
+        - button "工作流优化师 agent.testing-workflow-optimizer approved":
+          - generic: 工作流优化师
+          - generic: agent.testing-workflow-optimizer
+          - generic: approved
+- button "Models":
+  - text: Models
+- button "Skills":
+  - text: Skills
+- button "MCP":
+  - text: MCP
+- button "Hide sidebar":
+- button "Switch to dark mode":
+- button "Chat":
+  - text: Chat
+- button "Library" [pressed]:
+  - text: Library
+- button "Workflow":
+  - text: Workflow
+- button "Operator":
+  - text: Operator
+- main:
+  - strong: Library ready
+  - generic: 18a037a21356
+  - generic: 355 included · 15 excluded
+  - generic "15 excluded items · view diagnostics"
+  - generic: π
+  - generic: Southstar Mission Engine
+  - generic: fix▍
+  - text: web
+  - generic: v0.7.0
+  - text: pi
+  - generic: v0.80.2
+  - textbox "Message… Type / for commands"
+  - button "Send" [disabled]:
+    - text: Send
+  - button "Attach image":
+  - button "GPT-5.3 Codex":
+    - generic: GPT-5.3 Codex
+  - button "auto":
+    - generic: auto
+  - button "default":
+    - generic: default
+  - button "Compact":
+    - text: Compact
+  - button "关闭完成提示音":
+- button "Show sidecar":
+- button "Open Next.js Dev Tools":
+- alert

@@ -85,7 +85,7 @@ function knownRequirementDraft() {
       businessRules: [],
       acceptanceCriteria: [{
         statement: "Activating reveal changes the question state to the answer state.",
-        evidenceIntent: ["screen state", "interaction trace"],
+        evidenceIntent: ["screenshot", "url"],
       }],
       expectedOutcomeArtifacts: [{ description: "Review interaction" }],
       verificationIntent: ["Exercise the reveal action."],

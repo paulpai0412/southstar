@@ -1,0 +1,64 @@
+schemaVersion: southstar.library.evaluator_profile_file.v1
+id: evaluator.vocabulary-offline-runtime-verification
+title: "Vocabulary Offline Runtime Verification Evaluator"
+scope: "software"
+status: approved
+validatesArtifactRefs:
+  - "artifact.vocabulary-offline-runtime-evidence"
+requiredInputs:
+  - "goalValidationConstraints"
+  - "artifactPayload"
+  - "evidenceIndex"
+  - "requirementCriterionMapping"
+evidenceKinds:
+  - "artifact-ref"
+  - "command-output"
+  - "screenshot"
+  - "test-result"
+  - "workspace-snapshot"
+  - "url"
+verificationModes:
+  - "deterministic"
+  - "browser_interaction"
+  - "semantic_review"
+verificationProcedures:
+  - id: "deterministic-completeness-and-consistency"
+    checkKind: "deterministic"
+    instruction: "Validate artifact schema completeness, verify required evidence-kind presence, recompute correctness and accuracy metrics from recorded outcomes, confirm restart continuity links, and confirm startup/dependency checks and endpoint reachability traces."
+    allowedEvidenceKinds:
+      - "artifact-ref"
+      - "command-output"
+      - "screenshot"
+      - "test-result"
+      - "workspace-snapshot"
+      - "url"
+  - id: "browser-flow-observation-review"
+    checkKind: "browser_interaction"
+    instruction: "Verify observable flow transitions for assessment start, answer input, submission, and result-state visibility by correlating screenshots with command/url traces."
+    allowedEvidenceKinds:
+      - "screenshot"
+      - "command-output"
+      - "url"
+      - "workspace-snapshot"
+  - id: "cross-evidence-semantic-reconciliation"
+    checkKind: "semantic_review"
+    instruction: "Cross-check that reported metrics and persistence claims are semantically consistent across artifact-ref tables, test outputs, command outputs, and stored workspace snapshots."
+    allowedEvidenceKinds:
+      - "artifact-ref"
+      - "test-result"
+      - "command-output"
+      - "workspace-snapshot"
+independencePolicy: "independent"
+resultSchemaRef: "southstar.requirement_evaluator_result.v2"
+failureClassifications:
+  - "missing-required-evidence-kind"
+  - "artifact-schema-noncompliance"
+  - "assessment-flow-not-demonstrated"
+  - "per-item-correctness-not-verifiable"
+  - "accuracy-recomputation-mismatch"
+  - "persistence-restart-continuity-failure"
+  - "offline-operability-not-proven"
+  - "startup-or-dependency-check-failure"
+importDraftId: "library-import-goal-906fff0baee16a36879cff4d6fb19945"
+importCandidateKey: "evaluator.vocabulary-offline-runtime-verification"
+importSourcePath: "Confirmed-Goal-validation-gaps.md"

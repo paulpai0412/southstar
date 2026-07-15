@@ -380,14 +380,15 @@ test("runtime library materializer resolves instruction, skill, tool, MCP, and v
 
     assert.match(materialized.instructions[0]?.content ?? "", /implement/i);
     assert.equal(materialized.skills[0]?.skillId, "skill.software-implementation");
-    assert.deepEqual(materialized.toolProxyPolicy.allowedTools, ["shell", "workspace-read", "workspace-write"]);
+    assert.deepEqual(materialized.toolProxyPolicy.allowedTools, ["bash", "edit", "find", "grep", "ls", "read", "write"]);
+    assert.deepEqual(materialized.toolProxyPolicy.requiredProxyTools, []);
     assert.equal(materialized.mcpGrants[0]?.serverId, "filesystem-workspace");
     assert.deepEqual(materialized.mcpGrants[0]?.allowedTools, ["read_file", "write_file", "list_files"]);
     assert.equal(materialized.mcpRuntimeConfig.schemaVersion, "southstar.mcp_runtime_config.v1");
     assert.equal(materialized.mcpRuntimeConfig.servers[0]?.serverId, "filesystem-workspace");
     assert.equal(materialized.mcpRuntimeConfig.servers[0]?.transport, "stdio");
     assert.deepEqual(materialized.mcpRuntimeConfig.servers[0]?.command, {
-      argv: ["node", "/app/src/v2/mcp/filesystem-workspace-server.ts"],
+      argv: ["node", "/app/test-mcp-server.js"],
       cwd: "/workspace/repo",
     });
     assert.deepEqual(materialized.mcpRuntimeConfig.servers[0]?.envFromVault, []);
@@ -477,6 +478,66 @@ test("runtime library materializer fails closed when referenced library objects 
           vaultLeasePolicyRefs: [],
         }),
       /missing .*library object/i,
+    );
+  } finally {
+    await db.close();
+  }
+});
+
+test("runtime library materializer rejects logical tools without executable runtime bindings", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await upsertLibraryObject(db, {
+      objectKey: "tool.metadata-only",
+      objectKind: "tool_definition",
+      status: "approved",
+      headVersionId: "tool.metadata-only@1",
+      state: { operations: ["describe"] },
+    });
+    await captureSnapshotFromHeads(db, "run-materializer-unbound-tool", ["tool.metadata-only"]);
+
+    await assert.rejects(
+      () => materializeTaskLibraryRefs(db, {
+        runId: "run-materializer-unbound-tool",
+        taskId: "task-unbound-tool",
+        sessionId: "session-unbound-tool",
+        instructionRefs: [],
+        skillRefs: [],
+        toolGrantRefs: ["tool.metadata-only"],
+        mcpGrantRefs: [],
+        vaultLeasePolicyRefs: [],
+      }),
+      /tool definition tool\.metadata-only has no runtimeToolNames binding/,
+    );
+  } finally {
+    await db.close();
+  }
+});
+
+test("runtime library materializer rejects legacy tools bound to unsupported Pi names", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await upsertLibraryObject(db, {
+      objectKey: "tool.legacy-imaginary",
+      objectKind: "tool_definition",
+      status: "approved",
+      headVersionId: "tool.legacy-imaginary@1",
+      state: { operations: ["imagine"], runtimeToolNames: ["imaginary-tool"] },
+    });
+    await captureSnapshotFromHeads(db, "run-materializer-unsupported-tool", ["tool.legacy-imaginary"]);
+
+    await assert.rejects(
+      () => materializeTaskLibraryRefs(db, {
+        runId: "run-materializer-unsupported-tool",
+        taskId: "task-unsupported-tool",
+        sessionId: "session-unsupported-tool",
+        instructionRefs: [],
+        skillRefs: [],
+        toolGrantRefs: ["tool.legacy-imaginary"],
+        mcpGrantRefs: [],
+        vaultLeasePolicyRefs: [],
+      }),
+      /tool definition tool\.legacy-imaginary has unsupported Pi runtimeToolNames: imaginary-tool/,
     );
   } finally {
     await db.close();

@@ -1,0 +1,27 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - generic [ref=e3]:
+      - generic [ref=e5]:
+        - generic [ref=e6]:
+          - generic [ref=e7]:
+            - button "Southstar" [ref=e8]
+            - generic [ref=e15]:
+              - button "New" [disabled] [ref=e16]
+              - button "Refresh" [ref=e18] [cursor=pointer]
+          - button [ref=e23] [cursor=pointer]
+        - generic [ref=e24]: No sessions found
+      - generic [ref=e27]:
+        - button "Models" [ref=e28] [cursor=pointer]
+        - button "Skills" [ref=e32] [cursor=pointer]
+        - button "MCP" [ref=e37] [cursor=pointer]
+    - generic [ref=e45]:
+      - button "Hide sidebar" [ref=e46] [cursor=pointer]
+      - button "Switch to dark mode" [ref=e49] [cursor=pointer]
+      - generic [ref=e52]:
+        - button [pressed] [ref=e53] [cursor=pointer]
+        - button [ref=e57] [cursor=pointer]
+        - button [ref=e61] [cursor=pointer]
+        - button [ref=e70] [cursor=pointer]
+    - button "Show sidecar" [ref=e77] [cursor=pointer]
+  - button "Open Next.js Dev Tools" [ref=e85] [cursor=pointer]
+  - alert [ref=e89]

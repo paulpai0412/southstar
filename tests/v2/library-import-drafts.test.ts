@@ -10,7 +10,7 @@ import {
   installLibraryImportCandidates,
 } from "../../src/v2/design-library/importers/library-import-draft-store.ts";
 import { asImportSource } from "../../src/v2/design-library/importers/library-import-extractor.ts";
-import { extractLibraryCandidatesFromDocuments } from "../../src/v2/design-library/importers/library-candidate-extractor.ts";
+import { extractLibraryCandidatesFromDocuments, type LibraryImportCoverageConstraint } from "../../src/v2/design-library/importers/library-candidate-extractor.ts";
 import {
   analyzeLibraryImportWithLlm,
   analyzeLibraryImportOntologyWithLlm,
@@ -44,6 +44,54 @@ const browserSkillImportProvider: LibraryImportLlmProvider = async () => ({
     classificationReason: "The source explicitly requests a browser verification skill.",
   }],
 });
+
+function completeValidationCandidatePair() {
+  return [{
+    objectKey: "artifact.reusable-validation-evidence",
+    kind: "artifact",
+    title: "Reusable Validation Evidence",
+    scope: "software",
+    artifactType: "validation_evidence",
+    mediaTypes: ["application/json"],
+    evidenceKinds: ["screenshot", "command-output"],
+    validationRules: ["rule.validation-evidence"],
+    schemaRef: "schema.validation-evidence.v1",
+    requiredFields: ["evidence"],
+    provenanceRequirements: ["workspace-artifact"],
+    selectedByDefault: true,
+  }, {
+    objectKey: "evaluator.reusable-validation-evidence",
+    kind: "evaluator",
+    title: "Reusable Validation Evidence Evaluator",
+    scope: "software",
+    validatesArtifactRefs: ["artifact.reusable-validation-evidence"],
+    requiredInputs: ["accepted-artifact"],
+    evidenceKinds: ["screenshot", "command-output"],
+    verificationModes: ["deterministic"],
+    verificationProcedures: [{
+      id: "procedure.validate-evidence",
+      checkKind: "deterministic",
+      instruction: "Validate the accepted evidence against its declared schema and provenance.",
+      allowedEvidenceKinds: ["screenshot", "command-output"],
+    }],
+    independencePolicy: "independent",
+    resultSchemaRef: "southstar.requirement_evaluator_result.v2",
+    failureClassifications: ["invalid_evidence"],
+    selectedByDefault: true,
+  }];
+}
+
+function coverageTargetsFor(
+  candidates: ReturnType<typeof completeValidationCandidatePair>,
+  constraints: LibraryImportCoverageConstraint[],
+) {
+  return constraints.flatMap((constraint) => candidates.map((candidate) => ({
+    candidateObjectKey: candidate.objectKey,
+    gapRef: constraint.gapRef,
+    requirementId: constraint.requirementId,
+    criterionIds: constraint.criterionIds,
+  })));
+}
 
 async function createBrowserSkillImportDraft(db: Parameters<typeof createLibraryImportDraft>[0]) {
   return await createLibraryImportDraft(db, {
@@ -394,6 +442,119 @@ test("library import candidate prompt and host parser support governed vocabular
   );
 });
 
+test("Goal-linked candidate analysis revises an incomplete proposal until every blocking gap has a compatible pair", async () => {
+  const coverageConstraints: LibraryImportCoverageConstraint[] = [{
+    gapRef: "gap-render",
+    requirementId: "R1",
+    criterionIds: ["AC1"],
+    requiredEvidenceKinds: ["screenshot"],
+    blocking: true,
+    gapKind: "evaluator",
+  }, {
+    gapRef: "gap-command",
+    requirementId: "R2",
+    criterionIds: ["AC2"],
+    requiredEvidenceKinds: ["command-output"],
+    blocking: true,
+    gapKind: "evidence",
+  }];
+  const candidates = completeValidationCandidatePair();
+  const prompts: string[] = [];
+  const result = await analyzeLibraryImportWithLlm({
+    documents: [],
+    scope: "software",
+    coverageConstraints,
+    maxRepairAttempts: 1,
+    llmProvider: async ({ prompt }) => {
+      prompts.push(prompt);
+      return {
+        candidates,
+        candidateCoverageTargets: prompts.length === 1
+          ? coverageTargetsFor(candidates, coverageConstraints.slice(0, 1))
+          : coverageTargetsFor(candidates, coverageConstraints),
+      };
+    },
+  });
+
+  assert.equal(prompts.length, 2);
+  assert.match(prompts[0]!, /one complete proposal/i);
+  assert.match(prompts[0]!, /complete compatible artifact\/evaluator pair/i);
+  assert.match(prompts[1]!, /HostValidationFailed/);
+  assert.match(prompts[1]!, /does not cover blocking gaps/);
+  assert.equal(result.candidateCoverageTargets.length, 4);
+});
+
+test("Goal-linked candidate analysis rejects a proposal after revision attempts still omit one blocking gap", async () => {
+  const coverageConstraints: LibraryImportCoverageConstraint[] = [{
+    gapRef: "gap-a",
+    requirementId: "R1",
+    criterionIds: ["AC1"],
+    requiredEvidenceKinds: ["screenshot"],
+    blocking: true,
+    gapKind: "artifact",
+  }, {
+    gapRef: "gap-b",
+    requirementId: "R2",
+    criterionIds: ["AC2"],
+    requiredEvidenceKinds: ["command-output"],
+    blocking: true,
+    gapKind: "evaluator",
+  }];
+  const candidates = completeValidationCandidatePair();
+  await assert.rejects(
+    () => analyzeLibraryImportWithLlm({
+      documents: [],
+      scope: "software",
+      coverageConstraints,
+      maxRepairAttempts: 1,
+      llmProvider: async () => ({
+        candidates,
+        candidateCoverageTargets: coverageTargetsFor(candidates, coverageConstraints.slice(0, 1)),
+      }),
+    }),
+    /does not cover blocking gaps: gap-b/,
+  );
+});
+
+test("Goal-linked candidate analysis revises a structurally complete proposal that fails resolver dry-run", async () => {
+  const coverageConstraints: LibraryImportCoverageConstraint[] = [{
+    gapRef: "gap-domain-outcome",
+    requirementId: "R1",
+    criterionIds: ["AC1"],
+    requiredEvidenceKinds: ["screenshot"],
+    blocking: true,
+    gapKind: "evidence",
+  }];
+  const candidates = completeValidationCandidatePair();
+  const prompts: string[] = [];
+  let validationAttempts = 0;
+  const result = await analyzeLibraryImportWithLlm({
+    documents: [],
+    scope: "software",
+    coverageConstraints,
+    maxRepairAttempts: 1,
+    proposalValidator: async () => {
+      validationAttempts += 1;
+      if (validationAttempts === 1) {
+        throw new Error("R1/evidence: proposed artifact schema cannot represent the required persisted domain outcome");
+      }
+    },
+    llmProvider: async ({ prompt }) => {
+      prompts.push(prompt);
+      return {
+        candidates,
+        candidateCoverageTargets: coverageTargetsFor(candidates, coverageConstraints),
+      };
+    },
+  });
+
+  assert.equal(validationAttempts, 2);
+  assert.equal(prompts.length, 2);
+  assert.match(prompts[1]!, /authoritative dry-run result/);
+  assert.match(prompts[1]!, /cannot represent the required persisted domain outcome/);
+  assert.equal(result.candidateCoverageTargets.length, 2);
+});
+
 test("candidate install rejects tampered persisted validation contracts instead of normalizing them", async () => {
   const db = await createTestPostgresDb();
   const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-strict-persisted-"));
@@ -477,6 +638,7 @@ test("agent skill tool and MCP descriptions round-trip through one shared candid
     domain: "engineering",
     displayDomain: "Engineering",
     description: `Reusable ${kind} description`,
+    ...(kind === "tool" ? { operations: ["read_file"], runtimeToolNames: ["read"] } : {}),
     selectedByDefault: true,
     confidence: 0.9,
   }));
@@ -620,7 +782,7 @@ test("analyzeLibraryImportWithLlm drops candidates with untrusted source paths",
         { objectKey: "agent.reviewer", kind: "agent", title: "Reviewer", sourcePath: "agents/reviewer.agent.md" },
         { objectKey: "skill.review", kind: "skill", title: "Review", sourcePath: "skills/review.skill.md" },
         { objectKey: "skill.audit", kind: "skill", title: "Audit", sourcePath: "skills/audit.skill.md" },
-        { objectKey: "tool.github", kind: "tool", title: "GitHub", sourcePath: "tools/github.tool.yaml" },
+        { objectKey: "tool.github", kind: "tool", title: "GitHub", sourcePath: "tools/github.tool.yaml", operations: ["run_git_commands"], runtimeToolNames: ["bash"] },
         { objectKey: "skill.untrusted", kind: "skill", title: "Untrusted", sourcePath: "missing.md" },
       ],
     };
@@ -761,6 +923,8 @@ test("analyzeLibraryImportWithLlm maps candidates to canonical catalog domains f
         title: "Freeform",
         domain: "software",
         classificationReason: "Invalid domain should not be accepted.",
+        operations: ["read_file"],
+        runtimeToolNames: ["read"],
       },
     ],
   });
@@ -1046,7 +1210,7 @@ test("installLibraryImportCandidates writes selected candidates, syncs graph obj
     candidates: [
       { objectKey: "agent.reviewer", kind: "agent", title: "Reviewer", selectedByDefault: true, confidence: 0.92 },
       { objectKey: "skill.review", kind: "skill", title: "Review", selectedByDefault: true, confidence: 0.88 },
-      { objectKey: "tool.github", kind: "tool", title: "GitHub", selectedByDefault: true, confidence: 0.81 },
+      { objectKey: "tool.github", kind: "tool", title: "GitHub", selectedByDefault: true, confidence: 0.81, operations: ["run_git_commands"], runtimeToolNames: ["bash"] },
       { objectKey: "mcp.filesystem", kind: "mcp", title: "Filesystem", selectedByDefault: false, confidence: 0.5 },
     ],
     proposedEdges: [

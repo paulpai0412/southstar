@@ -74,7 +74,13 @@ export type ResolveGoalValidationInput = {
   requirementDraft: GoalRequirementDraftV1;
   ranker: GoalValidationCandidateRanker;
   scope?: string;
+  progress?: GoalValidationProgressListener;
 };
+
+export type GoalValidationProgressListener = (progress: {
+  event: string;
+  data: Record<string, unknown>;
+}) => void;
 
 export class GoalValidationNotReadyError extends Error {
   readonly code = "goal_validation_not_ready";
@@ -103,6 +109,20 @@ export async function resolveGoalValidationPg(
   input: ResolveGoalValidationInput,
 ): Promise<GoalValidationResolutionV1> {
   const candidates = await resolveApprovedValidationCandidates(db, { scope: input.scope });
+  return await resolveGoalValidationWithCandidates(input, candidates);
+}
+
+/**
+ * Resolve Goal validation against an explicit approved candidate set.
+ *
+ * The ordinary runtime path loads that set from Postgres. Library import uses
+ * the same resolver with a virtual overlay so a proposal must prove that it
+ * closes the current Goal before it can be shown for approval.
+ */
+export async function resolveGoalValidationWithCandidates(
+  input: ResolveGoalValidationInput,
+  candidates: ApprovedValidationCandidatesV1,
+): Promise<GoalValidationResolutionV1> {
   const artifactCandidates = candidates.artifactContracts.map((object) => candidateSummary(object, "approved artifact contract"));
   const evaluatorCandidatesByArtifact = Object.fromEntries(
     Object.entries(candidates.evaluatorProfilesByArtifact)
@@ -116,30 +136,57 @@ export async function resolveGoalValidationPg(
   const previews: RequirementCoveragePreviewV1[] = [];
   const bindings: RequirementValidationBindingV1[] = [];
   const gaps: GoalValidationGapV1[] = [];
+  const activeRequirements = input.goalContract.requirements;
+  input.progress?.({
+    event: "goal.validation.candidates.loaded",
+    data: {
+      artifactCandidateCount: artifactCandidates.length,
+      evaluatorCandidateCount: Object.values(evaluatorCandidatesByArtifact).flat().length,
+      requirementCount: activeRequirements.length,
+    },
+  });
 
-  for (const contractRequirement of input.goalContract.requirements) {
+  const requirementResults = await Promise.all(activeRequirements.map(async (contractRequirement, requirementIndex) => {
+    input.progress?.({
+      event: "goal.validation.requirement.started",
+      data: {
+        requirementId: contractRequirement.id,
+        requirementIndex,
+        requirementNumber: requirementIndex + 1,
+        requirementCount: activeRequirements.length,
+      },
+    });
     const requirement = draftRequirements.get(contractRequirement.id);
     if (!requirement || requirement.status === "superseded") {
-      gaps.push(gap({
+      const missingGap = gap({
         kind: "manual",
         requirementId: contractRequirement.id,
         blocking: contractRequirement.blocking,
         message: `Goal Requirement ${contractRequirement.id} is not present as an active draft requirement`,
-      }));
-      previews.push(emptyPreview(contractRequirement, "missing", ["artifact", "evaluator"]));
-      continue;
+      });
+      const preview = emptyPreview(contractRequirement, "missing", ["artifact", "evaluator"]);
+      input.progress?.({
+        event: "goal.validation.requirement.completed",
+        data: {
+          requirementId: contractRequirement.id,
+          requirementIndex,
+          requirementNumber: requirementIndex + 1,
+          requirementCount: activeRequirements.length,
+          status: "missing",
+          gapCount: 1,
+        },
+      });
+      return { gaps: [missingGap], preview };
     }
 
     const criteria = criteriaMapping(contractRequirement, requirement);
-    if (criteria.gaps.length > 0) {
-      gaps.push(...criteria.gaps.map((item) => gap({
-        kind: "criteria",
-        requirementId: contractRequirement.id,
-        criterionIds: item.criterionIds,
-        blocking: contractRequirement.blocking,
-        message: item.message,
-      })));
-    }
+    const criteriaGaps = criteria.gaps.map((item) => gap({
+      kind: "criteria",
+      requirementId: contractRequirement.id,
+      criterionIds: item.criterionIds,
+      blocking: contractRequirement.blocking,
+      message: item.message,
+    }));
 
     const rankingInput: GoalValidationCandidateRankerInputV1 = {
       goalContract: input.goalContract,
@@ -150,7 +197,7 @@ export async function resolveGoalValidationPg(
       artifactContractCandidates: artifactCandidates,
       evaluatorCandidates: evaluatorCandidatesByArtifact,
     };
-    const ranked = await rank(input.ranker, rankingInput);
+    const ranked = criteria.gaps.length > 0 ? [] : await rank(input.ranker, rankingInput);
     const artifactPreview = artifactCandidates;
     const evaluatorPreview = uniqueCandidates(
       Object.values(evaluatorCandidatesByArtifact).flat(),
@@ -164,15 +211,13 @@ export async function resolveGoalValidationPg(
       candidates,
       rankings: ranked,
     });
-    gaps.push(...attempt.gaps);
-    if (attempt.binding) bindings.push(attempt.binding);
     const missingKinds = new Set(attempt.missingKinds);
     if (artifactPreview.length === 0) missingKinds.add("artifact");
     if (evaluatorPreview.length === 0) missingKinds.add("evaluator");
     const status = attempt.binding
       ? attempt.binding.verificationMode === "human_approval" ? "manual" : "ready"
       : artifactPreview.length === 0 || evaluatorPreview.length === 0 ? "missing" : "partial";
-    previews.push({
+    const preview: RequirementCoveragePreviewV1 = {
       schemaVersion: "southstar.requirement_coverage_preview.v1",
       requirementId: contractRequirement.id,
       blocking: contractRequirement.blocking,
@@ -182,7 +227,31 @@ export async function resolveGoalValidationPg(
       missingKinds: [...missingKinds].sort(),
       criterionIds: criteria.criterionIds,
       acceptanceCriteria: [...contractRequirement.acceptanceCriteria],
+    };
+    input.progress?.({
+      event: "goal.validation.requirement.completed",
+      data: {
+        requirementId: contractRequirement.id,
+        requirementIndex,
+        requirementNumber: requirementIndex + 1,
+        requirementCount: activeRequirements.length,
+        status,
+        gapCount: criteria.gaps.length + attempt.gaps.length,
+      },
     });
+    return {
+      gaps: [...criteriaGaps, ...attempt.gaps],
+      ...(attempt.binding ? { binding: attempt.binding } : {}),
+      preview,
+    };
+  }));
+
+  // Promise.all preserves input order even though rank calls complete out of
+  // order. Persisted previews, bindings, and gaps therefore remain stable.
+  for (const result of requirementResults) {
+    gaps.push(...result.gaps);
+    if (result.binding) bindings.push(result.binding);
+    previews.push(result.preview);
   }
 
   for (const requirement of input.requirementDraft.requirements) {
@@ -224,10 +293,21 @@ export async function resolveGoalValidationPg(
   resolutionWithoutHash.ready = !resolutionWithoutHash.gaps.some((item) => item.blocking)
     && previews.filter((preview) => blockingRequirementIds.has(preview.requirementId)).every((preview) =>
       preview.status === "ready" && bindingRequirementIds.has(preview.requirementId));
-  return {
+  const resolution = {
     ...resolutionWithoutHash,
     resolutionHash: contentHashForPayload(resolutionWithoutHash),
   };
+  input.progress?.({
+    event: "goal.validation.resolution.completed",
+    data: {
+      ready: resolution.ready,
+      bindingCount: resolution.bindings.length,
+      gapCount: resolution.gaps.length,
+      blockingGapCount: resolution.gaps.filter((gap) => gap.blocking).length,
+      resolutionHash: resolution.resolutionHash,
+    },
+  });
+  return resolution;
 }
 
 export function goalValidationResolutionReady(resolution: GoalValidationResolutionV1): boolean {
@@ -351,7 +431,10 @@ async function resolveRequirementAttempt(input: {
       if (bindingResult.missingKinds) for (const kind of bindingResult.missingKinds) missingKinds.add(kind);
       continue;
     }
-    return { binding: bindingResult.binding, gaps, missingKinds };
+    // Rankings are alternatives, not cumulative obligations. Once one pair
+    // produces a valid binding, rejections from earlier alternatives must not
+    // keep the Requirement in a gap state or trigger an unnecessary repair.
+    return { binding: bindingResult.binding, gaps: [], missingKinds: new Set() };
   }
   return { gaps: uniqueGaps(gaps), missingKinds };
 }

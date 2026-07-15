@@ -5,7 +5,7 @@ scope: software
 status: approved
 description: Run local deterministic checks in the workspace.
 requiredOperations:
-  - test-execution
+  - run_tests
 risk:
   level: low
   dataSensitivity: workspace

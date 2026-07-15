@@ -119,8 +119,11 @@ test("graph metadata composition refs materialize into Docker-visible task bundl
     assert.doesNotMatch(await readFile(join(taskMaterialization.taskDir, "AGENTS.md"), "utf8"), /MUTATED REVIEWER/);
     assert.match(await readFile(join(taskMaterialization.taskDir, "skills", "skill.react-ui", "SKILL.md"), "utf8"), /Build React UI/);
     assert.equal(await readFile(join(taskMaterialization.taskDir, "skills", "skill.react-ui", "references", "patterns.md"), "utf8"), "Use controlled inputs.");
-    assert.equal(JSON.parse(await readFile(join(taskMaterialization.taskDir, "tools", "tool-policy.json"), "utf8")).allowedTools.includes("workspace-write"), true);
-    assert.equal(JSON.parse(await readFile(join(taskMaterialization.taskDir, "mcp", "grants.json"), "utf8"))[0].serverId, "filesystem-workspace");
+    assert.deepEqual(
+      JSON.parse(await readFile(join(taskMaterialization.taskDir, "tools", "tool-policy.json"), "utf8")).allowedTools,
+      ["edit", "write"],
+    );
+    assert.deepEqual(JSON.parse(await readFile(join(taskMaterialization.taskDir, "mcp", "grants.json"), "utf8")), []);
     const runtimeManifest = JSON.parse(await readFile(join(taskMaterialization.taskDir, "runtime-manifest.json"), "utf8"));
     assert.equal(runtimeManifest.policy.toolsAreGrantPolicyOnly, true);
     assert.equal(runtimeManifest.policy.mcpEntriesAreGrantPolicyOnly, true);
@@ -152,7 +155,7 @@ function generatedCompositionPlan(): WorkflowCompositionPlan {
       instructionRefs: ["instruction.react-review"],
       skillRefs: ["skill.react-ui"],
       toolGrantRefs: ["tool.workspace-write"],
-      mcpGrantRefs: ["mcp.filesystem-workspace"],
+      mcpGrantRefs: [],
       vaultLeasePolicyRefs: [],
       inputArtifactRefs: [],
       outputArtifactRefs: ["artifact.web_app"],
@@ -173,7 +176,7 @@ function generatedCompositionPlan(): WorkflowCompositionPlan {
         model: "pi-agent-default",
         thinkingLevel: "high",
         harnessRef: "pi",
-        instruction: "Implement the todo web app using the approved React UI skill, workspace write tool, filesystem MCP grant, and React review instruction. Produce artifact.web_app.",
+        instruction: "Implement the todo web app using the approved React UI skill, workspace write tool, and React review instruction. Produce artifact.web_app.",
         promptTemplateRef: "react-review",
         contextPolicyRef: "context.generated",
         sessionPolicyRef: "session.generated",
@@ -264,7 +267,7 @@ async function seedExecutableGraph(db: Awaited<ReturnType<typeof createTestPostg
       assetBundlePath: "library/skills/react-ui",
       allowedTools: ["workspace-write"],
       requiredMounts: ["workspace"],
-      mcpRequirements: ["filesystem-workspace"],
+      mcpRequirements: [],
       artifactContracts: ["artifact.web_app"],
     },
   });
@@ -273,14 +276,7 @@ async function seedExecutableGraph(db: Awaited<ReturnType<typeof createTestPostg
     objectKind: "tool_definition",
     status: "approved",
     headVersionId: "tool.workspace-write@1",
-    state: { scope: "global", title: "Workspace Write", toolName: "workspace-write", proxyToolName: "workspace-write-proxy" },
-  });
-  await upsertLibraryObject(db, {
-    objectKey: "mcp.filesystem-workspace",
-    objectKind: "mcp_tool_grant",
-    status: "approved",
-    headVersionId: "mcp.filesystem-workspace@1",
-    state: { scope: "global", title: "Filesystem Workspace", serverId: "filesystem-workspace", allowedTools: ["read_file", "write_file"] },
+    state: { scope: "global", title: "Workspace Write", runtimeToolNames: ["edit", "write"] },
   });
   await upsertLibraryObject(db, {
     objectKey: "instruction.react-review",
@@ -319,7 +315,6 @@ async function seedExecutableGraph(db: Awaited<ReturnType<typeof createTestPostg
   await upsertLibraryEdge(db, { fromObjectKey: "agent.frontend-developer", edgeType: "uses", toObjectKey: "agent.frontend-reviewer", scope: "software" });
   await upsertLibraryEdge(db, { fromObjectKey: "agent.frontend-developer", edgeType: "produces_artifact", toObjectKey: "artifact.web_app", scope: "software" });
   await upsertLibraryEdge(db, { fromObjectKey: "skill.react-ui", edgeType: "requires_tool", toObjectKey: "tool.workspace-write", scope: "software" });
-  await upsertLibraryEdge(db, { fromObjectKey: "skill.react-ui", edgeType: "allows_mcp_grant", toObjectKey: "mcp.filesystem-workspace", scope: "software" });
   await upsertLibraryEdge(db, { fromObjectKey: "skill.react-ui", edgeType: "uses_instruction", toObjectKey: "instruction.react-review", scope: "software" });
   await upsertLibraryEdge(db, { fromObjectKey: "evaluator.web-app", edgeType: "validates_artifact", toObjectKey: "artifact.web_app", scope: "software" });
 }

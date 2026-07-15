@@ -47,16 +47,19 @@ export type ArtifactRefPayload = {
   producedAt: string;
 };
 
-export type EvidenceKind =
-  | "file-diff"
-  | "test-result"
-  | "command-output"
-  | "url"
-  | "screenshot"
-  | "human-approval"
-  | "artifact-ref"
-  | "workspace-snapshot"
-  | "policy-decision";
+export const EVIDENCE_KINDS = [
+  "file-diff",
+  "test-result",
+  "command-output",
+  "url",
+  "screenshot",
+  "human-approval",
+  "artifact-ref",
+  "workspace-snapshot",
+  "policy-decision",
+] as const;
+
+export type EvidenceKind = (typeof EVIDENCE_KINDS)[number];
 
 export type EvidenceItemStatus = "present" | "missing" | "invalid" | "stale";
 

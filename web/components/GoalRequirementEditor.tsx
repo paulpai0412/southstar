@@ -50,7 +50,7 @@ export function GoalRequirementEditor({
       const response = await fetch(`/api/workflow/planner-drafts/${encodeURIComponent(selection.draftId)}/goal-requirements/${encodeURIComponent(selection.requirementId)}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ expectedDraftHash: selection.expectedDraftHash, patch: patchFromForm(form) }),
+        body: JSON.stringify({ expectedDraftHash: selection.expectedDraftHash, patch: patchFromForm(form, requirement) }),
       });
       const payload = await response.json().catch(() => undefined) as unknown;
       if (!response.ok) throw new Error(errorMessage(payload) ?? `HTTP ${response.status}`);
@@ -85,8 +85,24 @@ export function GoalRequirementEditor({
         <Field label="Open questions"><ListField value={form.openQuestions} onChange={(value) => setForm((current) => ({ ...current, openQuestions: value }))} /></Field>
         <Field label="Risk tags"><ListField value={form.riskTags} onChange={(value) => setForm((current) => ({ ...current, riskTags: value }))} /></Field>
         <Field label="Interaction contract refs">
-          <ListField value={form.interactionContractRefs} onChange={(value) => setForm((current) => ({ ...current, interactionContractRefs: value }))} />
-          {requirement.interactionContractRefs.length > 0 ? <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>{requirement.interactionContractRefs.map((contractId) => <button key={contractId} type="button" data-testid="goal-requirement-open-ui-contract" onClick={() => onUiContractSelect?.({ draftId: selection.draftId, contractId, requirementId: requirement.id })} style={contractButtonStyle}>Open {contractId}</button>)}</div> : <span style={emptyHintStyle}>No visual contract is linked. Add a reference only when screen/state behavior needs structured review.</span>}
+          <ListField ariaLabel="Interaction contract refs" value={form.interactionContractRefs} onChange={(value) => setForm((current) => ({ ...current, interactionContractRefs: value }))} />
+          {lines(form.interactionContractRefs).length > 0 ? (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {lines(form.interactionContractRefs).map((contractId) => (
+                <div key={contractId} style={{ display: "flex", gap: 4 }}>
+                  {requirement.interactionContractRefs.includes(contractId) ? <button type="button" data-testid="goal-requirement-open-ui-contract" onClick={() => onUiContractSelect?.({ draftId: selection.draftId, contractId, requirementId: requirement.id })} style={contractButtonStyle}>Open {contractId}</button> : null}
+                  <button
+                    type="button"
+                    data-testid={`goal-requirement-remove-ui-contract-${contractId}`}
+                    onClick={() => setForm((current) => ({ ...current, interactionContractRefs: lines(current.interactionContractRefs).filter((value) => value !== contractId).join("\n") }))}
+                    style={removeContractButtonStyle}
+                  >
+                    Remove {contractId}
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : <span style={emptyHintStyle}>No visual contract is linked. Add a reference only when screen/state behavior needs structured review.</span>}
         </Field>
       </div>
       <footer style={footerStyle}>
@@ -105,8 +121,8 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
   return <label style={fieldStyle}><span style={fieldLabelStyle}>{label}</span>{children}</label>;
 }
 
-function ListField({ value, onChange, placeholder = "One item per line" }: { value: string; onChange: (value: string) => void; placeholder?: string }) {
-  return <textarea value={value} onChange={(event) => onChange(event.target.value)} rows={3} style={textareaStyle} placeholder={placeholder} />;
+function ListField({ value, onChange, placeholder = "One item per line", ariaLabel }: { value: string; onChange: (value: string) => void; placeholder?: string; ariaLabel?: string }) {
+  return <textarea aria-label={ariaLabel} value={value} onChange={(event) => onChange(event.target.value)} rows={3} style={textareaStyle} placeholder={placeholder} />;
 }
 
 function formFromRequirement(requirement: GoalRequirementDraftView["requirements"][number]): RequirementForm {
@@ -116,7 +132,7 @@ function formFromRequirement(requirement: GoalRequirementDraftView["requirements
     userVisibleBehaviors: requirement.userVisibleBehaviors.join("\n"),
     businessRules: requirement.businessRules.join("\n"),
     acceptanceCriteria: requirement.acceptanceCriteria.map((criterion) => criterion.statement).join("\n"),
-    evidenceIntent: requirement.acceptanceCriteria.flatMap((criterion) => criterion.evidenceIntent).join("\n"),
+    evidenceIntent: uniqueStrings(requirement.acceptanceCriteria.flatMap((criterion) => criterion.evidenceIntent)).join("\n"),
     expectedOutcomeArtifacts: requirement.expectedOutcomeArtifacts.map((artifact) => artifact.mediaType ? `${artifact.description} | ${artifact.mediaType}` : artifact.description).join("\n"),
     verificationIntent: requirement.verificationIntent.join("\n"),
     assumptions: requirement.assumptions.join("\n"),
@@ -130,8 +146,13 @@ function emptyForm(): RequirementForm {
   return { title: "", statement: "", userVisibleBehaviors: "", businessRules: "", acceptanceCriteria: "", evidenceIntent: "", expectedOutcomeArtifacts: "", verificationIntent: "", assumptions: "", openQuestions: "", riskTags: "", interactionContractRefs: "" };
 }
 
-function patchFromForm(form: RequirementForm): Record<string, unknown> {
-  const criteria = lines(form.acceptanceCriteria).map((statement, index) => ({ id: `criterion-${index + 1}`, statement, evidenceIntent: lines(form.evidenceIntent) }));
+function patchFromForm(form: RequirementForm, requirement: GoalRequirementDraftView["requirements"][number]): Record<string, unknown> {
+  const evidenceIntent = lines(form.evidenceIntent);
+  const criteria = lines(form.acceptanceCriteria).map((statement, index) => ({
+    id: requirement.acceptanceCriteria[index]?.id ?? `${requirement.id}-criterion-${index + 1}`,
+    statement,
+    evidenceIntent,
+  }));
   return {
     title: form.title.trim(),
     statement: form.statement.trim(),
@@ -178,7 +199,8 @@ function selectionFromResponse(value: unknown, previous: GoalRequirementSelectio
   };
 }
 
-function lines(value: string): string[] { return value.split(/\n|,/).map((item) => item.trim()).filter(Boolean); }
+function lines(value: string): string[] { return uniqueStrings(value.split(/\n|,/).map((item) => item.trim()).filter(Boolean)); }
+function uniqueStrings(values: string[]): string[] { return [...new Set(values)]; }
 function errorMessage(value: unknown): string | undefined { return isRecord(value) && typeof value.error === "string" ? value.error : isRecord(value) && typeof value.message === "string" ? value.message : undefined; }
 function isRecord(value: unknown): value is Record<string, unknown> { return Boolean(value) && typeof value === "object" && !Array.isArray(value); }
 
@@ -194,5 +216,6 @@ const textareaStyle = { width: "100%", resize: "vertical" as const, border: "1px
 const footerStyle = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "9px 10px", borderTop: "1px solid var(--border)", background: "var(--bg-panel)" } as const;
 const saveButtonStyle = { border: "1px solid var(--accent)", borderRadius: 7, background: "var(--accent)", color: "#fff", padding: "8px 10px", cursor: "pointer", fontSize: 12, fontWeight: 700, flexShrink: 0 } as const;
 const contractButtonStyle = { border: "1px solid var(--accent)", borderRadius: 6, background: "transparent", color: "var(--accent)", padding: "6px 8px", cursor: "pointer", fontSize: 10, fontWeight: 650 } as const;
+const removeContractButtonStyle = { border: "1px solid var(--border)", borderRadius: 6, background: "transparent", color: "var(--text-dim)", padding: "6px 8px", cursor: "pointer", fontSize: 10, fontWeight: 650 } as const;
 const emptyHintStyle = { color: "var(--text-dim)", fontSize: 10, lineHeight: 1.4 } as const;
 const emptyStyle = { padding: 12, color: "var(--text-muted)", fontSize: 12 } as const;

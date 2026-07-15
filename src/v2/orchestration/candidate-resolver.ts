@@ -3,9 +3,7 @@ import {
   findApprovedLibraryObjectsByKind,
   findLibraryEdgesTo,
   findLibraryObjectByKey,
-  listLibraryObjects,
 } from "../design-library/library-graph-store.ts";
-import { isRuntimeProfilePrimitiveCandidate, resolveGraphProfileCandidates } from "../design-library/profile-composer/graph-profile-candidate-resolver.ts";
 import type {
   CandidatePacket,
   CandidateSummary,
@@ -98,17 +96,23 @@ export async function resolveWorkflowCandidates(db: SouthstarDb, input: ResolveW
     policy: input.templatePolicy,
   });
 
+  const graphMetadataCandidates = await buildGraphMetadataCandidatePacket(db, {
+    scope: input.scope,
+    requirementSpec: input.requirementSpec,
+  });
+  const runtimeCandidates = new Map(graphMetadataCandidates.nodes.map((node) => [node.ref, node]));
+  const availableAgentCount = graphMetadataCandidates.nodes.filter((node) => node.kind === "agent_definition").length;
   const unavailableRequirements: CandidatePacket["unavailableRequirements"] = [];
   const agentCandidatesByCapability: Record<string, CandidateSummary[]> = {};
   for (const capabilityRef of input.requirementSpec.requiredCapabilities) {
-    const providerEdges = await findLibraryEdgesTo(db, capabilityRef, "provides_capability", { scope: input.scope });
-    const candidates = await summariesForRefs(
+    const providerEdges = await findLibraryEdgesTo(db, capabilityRef, "provides_capability");
+    const candidates = (await summariesForRefs(
       db,
       providerEdges.map((edge) => edge.fromObjectKey),
       `provides ${capabilityRef}`,
-    );
+    )).filter((candidate) => runtimeCandidates.has(candidate.ref));
     agentCandidatesByCapability[capabilityRef] = candidates.filter((candidate) => candidate.kind === "agent_definition");
-    if (agentCandidatesByCapability[capabilityRef].length === 0) {
+    if (!runtimeCandidates.has(capabilityRef) || candidates.length === 0 || availableAgentCount === 0) {
       unavailableRequirements.push({ capabilityRef, reason: "no_approved_candidate" });
     }
   }
@@ -141,18 +145,17 @@ export async function resolveWorkflowCandidates(db: SouthstarDb, input: ResolveW
   const policyConstraints = (
     await findApprovedLibraryObjectsByKind(db, "policy_bundle", input.scope)
   ).map((object) => summary(object.objectKey, object.headVersionId, object.objectKind, object.state, "approved policy bundle"));
-  const graphProfileCandidates = await resolveGraphProfileCandidates(db, { scope: input.scope });
+  const refsForKinds = (...kinds: typeof graphMetadataCandidates.nodes[number]["kind"][]) => graphMetadataCandidates.nodes
+    .filter((node) => kinds.includes(node.kind))
+    .map((node) => node.ref)
+    .sort();
   const profilePrimitiveCandidates = {
-    ...graphProfileCandidates,
-    instructions: (
-      await listLibraryObjects(db, {
-        scope: input.scope,
-        status: "approved",
-        objectKind: "instruction_template",
-      })
-    ).filter(isRuntimeProfilePrimitiveCandidate).map((object) => object.objectKey).sort(),
+    agents: refsForKinds("agent_definition"),
+    skills: refsForKinds("skill_spec", "skill_definition"),
+    tools: refsForKinds("tool_definition"),
+    mcpGrants: refsForKinds("mcp_tool_grant"),
+    instructions: refsForKinds("instruction_template"),
   };
-  const graphMetadataCandidates = await buildGraphMetadataCandidatePacket(db, { scope: input.scope });
 
   return {
     requirementSpec: input.requirementSpec,

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  EVIDENCE_KINDS,
   EVIDENCE_PACKET_SCHEMA_VERSION,
   type EvidenceKind,
   type EvidencePacket,
@@ -19,6 +20,20 @@ export type ArtifactEvidenceClaim = {
   ref: string;
   kind: EvidenceKind;
 };
+
+type ExplicitEvidenceItem = {
+  kind: EvidenceKind;
+  status: "present" | "invalid";
+  sourceRef: string;
+  valueRef?: string;
+  claimRefs: string[];
+  summary: string;
+  value: Record<string, unknown>;
+};
+
+const EVIDENCE_KIND_SET = new Set<EvidenceKind>(EVIDENCE_KINDS);
+const MAX_EXPLICIT_EVIDENCE_DEPTH = 8;
+const MAX_EXPLICIT_EVIDENCE_NODES = 1_000;
 
 export function buildEvidencePacket(input: BuildEvidencePacketInput): EvidencePacket {
   const now = input.now ?? new Date().toISOString();
@@ -49,12 +64,16 @@ export function buildEvidencePacket(input: BuildEvidencePacketInput): EvidencePa
 
 export function screenshotEvidenceRef(artifact: Record<string, unknown>, runId: string): string | undefined {
   const browserEvidence = isRecord(artifact.browserEvidence) ? artifact.browserEvidence : {};
-  return safeScreenshotRef(firstDefined(
+  const legacyRef = safeScreenshotRef(firstDefined(
     firstArrayItem(browserEvidence.screenshots),
     browserEvidence.screenshot,
     firstArrayItem(artifact.screenshots),
     artifact.screenshot,
   ), runId);
+  if (legacyRef) return legacyRef;
+  return collectExplicitEvidenceItems(artifact, runId)
+    .find((item) => item.kind === "screenshot" && item.status === "present")
+    ?.valueRef;
 }
 
 /**
@@ -100,6 +119,10 @@ export function artifactEvidenceClaims(
   ]) {
     const screenshot = safeScreenshotRef(item, runId);
     if (screenshot) claims.push({ kind: "screenshot", ref: screenshot });
+  }
+  for (const item of collectExplicitEvidenceItems(artifact, runId)) {
+    if (item.status !== "present") continue;
+    for (const ref of item.claimRefs) claims.push({ kind: item.kind, ref });
   }
   return [...new Map(claims.map((claim) => [`${claim.kind}\u0000${claim.ref}`, claim])).values()]
     .sort((left, right) => left.kind.localeCompare(right.kind) || left.ref.localeCompare(right.ref));
@@ -227,7 +250,142 @@ function evidenceByKind(
       : invalidBrowserEvidence("screenshot", "screenshot must use an artifact ref, safe relative path, or HTTP(S) URL", now));
   }
 
+  const explicitItems = collectExplicitEvidenceItems(artifact, runId);
+  for (const kind of EVIDENCE_KINDS) {
+    const current = byKind.get(kind);
+    if (current?.status === "present") continue;
+    const candidates = explicitItems.filter((item) => item.kind === kind);
+    const candidate = candidates.find((item) => item.status === "present") ?? candidates[0];
+    if (!candidate) continue;
+    byKind.set(kind, {
+      kind,
+      status: candidate.status,
+      summary: candidate.summary,
+      sourceRef: candidate.sourceRef,
+      sha256: shortHash(safeJson(candidate.value)),
+      capturedAt: now,
+      redactionApplied: true,
+    });
+  }
+
   return byKind;
+}
+
+function collectExplicitEvidenceItems(
+  artifact: Record<string, unknown>,
+  runId: string,
+): ExplicitEvidenceItem[] {
+  const items: ExplicitEvidenceItem[] = [];
+  const visited = new WeakSet<object>();
+  const pending: Array<{ value: unknown; path: string; depth: number }> = [
+    { value: artifact, path: "artifact", depth: 0 },
+  ];
+  let visitedNodes = 0;
+
+  while (pending.length > 0 && visitedNodes < MAX_EXPLICIT_EVIDENCE_NODES) {
+    const current = pending.pop()!;
+    if (!current.value || typeof current.value !== "object" || current.depth > MAX_EXPLICIT_EVIDENCE_DEPTH) continue;
+    if (visited.has(current.value)) continue;
+    visited.add(current.value);
+    visitedNodes += 1;
+
+    if (Array.isArray(current.value)) {
+      for (let index = current.value.length - 1; index >= 0; index -= 1) {
+        pending.push({
+          value: current.value[index],
+          path: `${current.path}[${index}]`,
+          depth: current.depth + 1,
+        });
+      }
+      continue;
+    }
+
+    const record = current.value as Record<string, unknown>;
+    if (isEvidenceKind(record.evidenceKind)) {
+      items.push(explicitEvidenceItem(record.evidenceKind, record, current.path, runId));
+    }
+    const entries = Object.entries(record);
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+      const [key, value] = entries[index]!;
+      if (value && typeof value === "object") {
+        pending.push({ value, path: `${current.path}.${key}`, depth: current.depth + 1 });
+      }
+    }
+  }
+
+  return items;
+}
+
+function explicitEvidenceItem(
+  kind: EvidenceKind,
+  value: Record<string, unknown>,
+  path: string,
+  runId: string,
+): ExplicitEvidenceItem {
+  const id = nonEmptyString(value.id);
+  const sourceRef = id ?? path;
+  const result = validateExplicitEvidenceItem(kind, value, runId);
+  const claimRefs = [id, result.ref]
+    .filter((ref): ref is string => typeof ref === "string" && ref.length > 0);
+  return {
+    kind,
+    status: result.status,
+    sourceRef,
+    ...(result.ref ? { valueRef: result.ref } : {}),
+    claimRefs: [...new Set(claimRefs)],
+    summary: result.status === "present"
+      ? `Explicit ${kind} evidence ${sourceRef}`
+      : `Invalid explicit ${kind} evidence at ${path}`,
+    value,
+  };
+}
+
+function validateExplicitEvidenceItem(
+  kind: EvidenceKind,
+  value: Record<string, unknown>,
+  runId: string,
+): { status: "present" | "invalid"; ref?: string } {
+  if (kind === "url") {
+    const ref = safeHttpUrl(firstDefined(value.url, value.ref));
+    return ref ? { status: "present", ref } : { status: "invalid" };
+  }
+  if (kind === "screenshot") {
+    const ref = safeScreenshotRef(value, runId);
+    return ref ? { status: "present", ref } : { status: "invalid" };
+  }
+  if (kind === "test-result") {
+    return testRecordStatus(value) === "present"
+      ? { status: "present", ref: explicitEvidenceRef(value) }
+      : { status: "invalid" };
+  }
+  if (kind === "command-output") {
+    return commandStatus(value) === "present"
+      ? { status: "present", ref: explicitEvidenceRef(value) }
+      : { status: "invalid" };
+  }
+  if (kind === "human-approval" || kind === "policy-decision") {
+    const approved = value.approved === true
+      || value.allowed === true
+      || value.allow === true
+      || value.passed === true
+      || valueStatus(firstDefined(value.status, value.result, value.outcome, value.decision, value.verdict)) === "present";
+    return approved
+      ? { status: "present", ref: explicitEvidenceRef(value) }
+      : { status: "invalid" };
+  }
+
+  const ref = ["artifactRef", "ref", "resourceKey", "path", "url"]
+    .map((key) => nonEmptyString(value[key]))
+    .find((candidate): candidate is string => Boolean(candidate));
+  return ref ? { status: "present", ref } : { status: "invalid" };
+}
+
+function isEvidenceKind(value: unknown): value is EvidenceKind {
+  return typeof value === "string" && EVIDENCE_KIND_SET.has(value as EvidenceKind);
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function firstDefined(...values: unknown[]): unknown {

@@ -209,6 +209,49 @@ test("tork observer records terminal-without-callback when provider job failed w
   }
 });
 
+test("tork observer finalizes a cancelled hand execution after operator cancellation", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const runId = "run-tork-observer-cancelled";
+    await seedRunAndTask(db, runId, "task-a", { runStatus: "running", taskStatus: "running" });
+    await seedHandExecution(db, {
+      runId,
+      taskId: "task-a",
+      sessionId: "session-a",
+      attemptId: "attempt-1",
+      status: "cancel_requested",
+      queuedAt: "2026-06-21T10:00:00.000Z",
+      startedAt: "2026-06-21T10:00:01.000Z",
+      lastHeartbeatAt: "2026-06-21T10:00:02.000Z",
+      queueTimeoutSeconds: 600,
+      heartbeatTimeoutSeconds: 60,
+      externalJobId: "job-cancelled",
+    });
+
+    const result = await observeTorkHandExecutionExceptionsPg(db, {
+      now: "2026-06-21T10:01:00.000Z",
+      providerActions: {
+        poll: async (input) => {
+          assert.equal(input.externalJobId, "job-cancelled");
+          return { status: "CANCELLED" };
+        },
+      },
+    });
+
+    assert.deepEqual(result.observedKinds, ["tork_terminal_without_callback"]);
+    const hands = (await listResourcesPg(db, { resourceType: "hand_execution" }))
+      .filter((resource) => resource.runId === runId);
+    assert.equal(hands[0]?.status, "cancelled");
+    assert.equal(hands[0]?.payload.status, "cancelled");
+    assert.equal(hands[0]?.payload.torkObservedStatus, "CANCELLED");
+    const decisions = (await listResourcesPg(db, { resourceType: "recovery_decision" }))
+      .filter((resource) => resource.runId === runId);
+    assert.equal(decisions[0]?.payload.path, "retry-same-task-new-attempt");
+  } finally {
+    await db.close();
+  }
+});
+
 test("tork observer patches queued hand execution to running when provider execution has started", async () => {
   const db = await createTestPostgresDb();
   try {

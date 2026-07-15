@@ -2,17 +2,22 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type {
+  GoalDesignContent,
   GoalRequirementCoveragePreview,
   GoalRequirementDraftView,
   GoalRequirementSelection,
   GoalRequirementsContent,
 } from "@/lib/types";
+import type { GoalValidationProgressEvent } from "@/lib/workflow/generate-stream";
 
 export type GoalRequirementsConfirmation = {
   draftId: string;
   expectedDraftHash: string;
   draft: GoalRequirementDraftView;
+  onProgress?: (progress: GoalValidationProgressEvent) => void;
 };
+
+export type GoalRequirementsConfirmationResult = GoalRequirementsContent | GoalDesignContent;
 
 export function GoalRequirementListBlock({
   block,
@@ -21,26 +26,21 @@ export function GoalRequirementListBlock({
 }: {
   block: GoalRequirementsContent;
   onRequirementSelect?: (selection: GoalRequirementSelection) => void;
-  onConfirmRequirements?: (confirmation: GoalRequirementsConfirmation) => void | Promise<GoalRequirementsContent | void>;
+  onConfirmRequirements?: (confirmation: GoalRequirementsConfirmation) => void | Promise<GoalRequirementsConfirmationResult | void>;
 }) {
   const [currentBlock, setCurrentBlock] = useState(block);
   const [confirmState, setConfirmState] = useState<"idle" | "confirming" | "confirmed" | "error">("idle");
   const [confirmMessage, setConfirmMessage] = useState<string | null>(null);
+  const [confirmProgress, setConfirmProgress] = useState<GoalValidationProgressEvent | null>(null);
   useEffect(() => {
     setCurrentBlock(block);
     setConfirmState("idle");
     setConfirmMessage(null);
+    setConfirmProgress(null);
   }, [block]);
   const draft = currentBlock.draft;
   const coverage = useMemo(() => new Map((currentBlock.coveragePreview ?? []).map((entry) => [entry.requirementId, entry])), [currentBlock.coveragePreview]);
   const confirmable = currentBlock.confirmable === true;
-
-  const updateFromResponse = (value: unknown): GoalRequirementsContent => {
-    const next = extractContent(value, currentBlock);
-    if (!next) throw new Error("Requirement confirmation response did not include a valid draft, status, and draft hash.");
-    setCurrentBlock(next);
-    return next;
-  };
 
   const confirm = async () => {
     if (!confirmable || confirmState === "confirming") return;
@@ -50,11 +50,20 @@ export function GoalRequirementListBlock({
       draftId: currentBlock.draftId,
       expectedDraftHash: currentBlock.goalRequirementDraftHash,
       draft,
+      onProgress(progress) {
+        setConfirmProgress(progress);
+        setConfirmMessage(goalValidationProgressMessage(progress));
+      },
     };
     try {
       if (onConfirmRequirements) {
-        const next = updateFromResponse(await onConfirmRequirements(confirmation));
+        const value = await onConfirmRequirements(confirmation);
+        const next = isConfirmationResult(value)
+          ? value
+          : goalRequirementsConfirmationFromUnknown(value, confirmation);
+        if (!next) throw new Error("Requirement confirmation response did not include a valid lifecycle transition.");
         assertConfirmationResult(next, currentBlock);
+        if (next.type === "goalRequirements") setCurrentBlock(next);
       } else {
         const response = await fetch(`/api/workflow/planner-drafts/${encodeURIComponent(currentBlock.draftId)}/confirm-requirements`, {
           method: "POST",
@@ -63,13 +72,14 @@ export function GoalRequirementListBlock({
         });
         const payload = await response.json().catch(() => undefined) as unknown;
         if (!response.ok) throw new Error(errorMessage(payload) ?? `HTTP ${response.status}`);
-        const next = updateFromResponse(payload);
+        const next = goalRequirementsConfirmationFromUnknown(payload, confirmation);
+        if (!next) throw new Error("Requirement confirmation response did not include a valid lifecycle transition.");
         assertConfirmationResult(next, currentBlock);
+        if (next.type === "goalRequirements") setCurrentBlock(next);
       }
       setConfirmState("confirmed");
-      setConfirmMessage("Requirements confirmed; resolving validation contracts.");
+      setConfirmMessage("Requirements confirmed; advancing Goal validation.");
     } catch (error) {
-      setCurrentBlock((current) => ({ ...current, confirmable: false }));
       setConfirmState("error");
       setConfirmMessage(error instanceof Error ? error.message : String(error));
     }
@@ -135,7 +145,7 @@ export function GoalRequirementListBlock({
 
       {draft.nonGoals.length > 0 ? <p style={bodyStyle}><strong>Non-goals:</strong> {draft.nonGoals.join(" · ")}</p> : null}
       <footer style={footerStyle}>
-        <div aria-live="polite" style={{ color: confirmState === "error" ? "#f87171" : "var(--text-dim)", fontSize: 11, minWidth: 0, overflowWrap: "anywhere" }}>
+        <div data-testid="goal-validation-progress" data-event={confirmProgress?.event ?? ""} aria-live="polite" style={{ color: confirmState === "error" ? "#f87171" : "var(--text-dim)", fontSize: 11, minWidth: 0, overflowWrap: "anywhere" }}>
           {confirmMessage ?? (confirmable ? "Host marked this requirement draft confirmable." : "Waiting for host validation readiness.")}
         </div>
         <button
@@ -150,6 +160,30 @@ export function GoalRequirementListBlock({
       </footer>
     </section>
   );
+}
+
+function goalValidationProgressMessage(progress: GoalValidationProgressEvent): string {
+  if (progress.event === "heartbeat") {
+    return `Resolving validation coverage… ${Math.round((typeof progress.elapsedMs === "number" ? progress.elapsedMs : 0) / 1000)}s`;
+  }
+  if (progress.event === "goal.validation.started") return "Confirming the Requirement contract…";
+  if (progress.event === "goal.validation.requirements_confirmed") return "Requirement contract confirmed; loading approved validation candidates…";
+  if (progress.event === "goal.validation.candidates.loaded") return "Approved validation candidates loaded.";
+  if (progress.event === "goal.validation.requirement.started") {
+    const current = typeof progress.requirementNumber === "number" ? progress.requirementNumber : "?";
+    const total = typeof progress.requirementCount === "number" ? progress.requirementCount : "?";
+    return `Resolving Requirement ${current}/${total}${progress.requirementId ? ` · ${progress.requirementId}` : ""}…`;
+  }
+  if (progress.event === "goal.validation.requirement.completed") {
+    return `Requirement ${progress.requirementId ?? ""} coverage ${progress.status ?? "resolved"} · ${progress.gapCount ?? 0} gap(s).`;
+  }
+  if (progress.event === "goal.validation.resolution.completed") return "Requirement coverage resolution completed.";
+  if (progress.event === "goal.validation.library_review") return "A complete Library proposal is ready for review.";
+  if (progress.event === "goal.validation.slice_design.started") return "Validation is ready; designing the slice plan…";
+  if (progress.event === "library.import.candidates.repair.started") return "Revising the Library proposal against host validation issues…";
+  if (progress.event === "library.import.candidates.validated") return "Library proposal passed coverage validation.";
+  if (progress.event.startsWith("library.import.")) return "Preparing the complete Library validation proposal…";
+  return progress.event;
 }
 
 function extractContent(value: unknown, previous: GoalRequirementsContent): GoalRequirementsContent | null {
@@ -185,17 +219,24 @@ function extractContent(value: unknown, previous: GoalRequirementsContent): Goal
     confirmable: envelope.confirmable,
     validationIssues: envelope.validationIssues.filter((item): item is { path: string; message: string; code?: string } => isRecord(item) && typeof item.path === "string" && typeof item.message === "string").map((item) => ({ path: item.path as string, message: item.message as string, ...(typeof item.code === "string" ? { code: item.code } : {}) })),
     blockers: Array.isArray(envelope.blockers) ? envelope.blockers.filter((item): item is string => typeof item === "string") : previous.blockers,
+    ...(typeof envelope.libraryImportDraftId === "string" ? { libraryImportDraftId: envelope.libraryImportDraftId } : {}),
   };
 }
 
-function assertConfirmationResult(content: GoalRequirementsContent, previous: GoalRequirementsContent): void {
+function assertConfirmationResult(content: GoalRequirementsConfirmationResult, previous: GoalRequirementsContent): void {
+  if (content.type === "goalDesign") {
+    if (content.draftId !== previous.draftId || content.status !== "ready_for_review" || !content.goalDesignPackageHash || content.package === undefined) {
+      throw new Error("Requirement confirmation response did not preserve the draft or enter slice review.");
+    }
+    return;
+  }
   if (typeof content.confirmable !== "boolean") {
     throw new Error("Requirement confirmation response did not include host confirmation state.");
   }
   if (content.draftId !== previous.draftId || content.goalRequirementDraftHash !== previous.goalRequirementDraftHash) {
     throw new Error("Requirement confirmation response did not preserve the displayed draft identity.");
   }
-  if (content.status !== "validation_resolving" && content.status !== "validation_ready") {
+  if (content.status !== "validation_resolving" && content.status !== "library_review" && content.status !== "validation_ready") {
     throw new Error("Requirement confirmation response did not enter a validation phase.");
   }
 }
@@ -231,12 +272,75 @@ export function goalRequirementsContentShouldReplace(
 export function goalRequirementsConfirmationFromUnknown(
   value: unknown,
   expected: { draftId: string; expectedDraftHash: string },
-): GoalRequirementsContent | null {
+): GoalRequirementsConfirmationResult | null {
+  const envelope = isRecord(value) && isRecord(value.result) ? value.result : value;
+  if (isRecord(envelope)) {
+    const phase = stringValue(envelope.phase);
+    const status = stringValue(envelope.status);
+    if (phase === "slice_review" && status === "ready_for_review") {
+      const draftId = stringValue(envelope.draftId);
+      const requirementDraftHash = stringValue(envelope.goalRequirementDraftHash);
+      const packageHash = stringValue(envelope.goalDesignPackageHash);
+      if (draftId === expected.draftId && requirementDraftHash === expected.expectedDraftHash && packageHash && isRecord(envelope.goalDesignPackage)) {
+        return {
+          type: "goalDesign",
+          draftId,
+          status,
+          goalDesignPackageHash: packageHash,
+          package: envelope.goalDesignPackage,
+        };
+      }
+      return null;
+    }
+  }
   const content = goalRequirementsContentFromUnknown(value);
   if (!content) return null;
   if (content.draftId !== expected.draftId || content.goalRequirementDraftHash !== expected.expectedDraftHash) return null;
-  if (content.status !== "validation_resolving" && content.status !== "validation_ready") return null;
+  if (content.status !== "validation_resolving" && content.status !== "library_review" && content.status !== "validation_ready") return null;
   return content;
+}
+
+export function goalDesignContinuationFromUnknown(value: unknown): GoalDesignContent | null {
+  const envelope = isRecord(value) && isRecord(value.result) ? value.result : value;
+  if (!isRecord(envelope)) return null;
+  const continued = isRecord(envelope.continued) ? envelope.continued : envelope;
+  const draftId = stringValue(continued.draftId);
+  const status = stringValue(continued.status);
+  const phase = stringValue(continued.phase);
+  const packageHash = stringValue(continued.goalDesignPackageHash);
+  if (!draftId || status !== "ready_for_review" || phase !== "slice_review" || !packageHash || !isRecord(continued.goalDesignPackage)) return null;
+  return {
+    type: "goalDesign",
+    draftId,
+    status,
+    goalDesignPackageHash: packageHash,
+    package: continued.goalDesignPackage,
+  };
+}
+
+export function goalValidationResumeFromUnknown(value: unknown): {
+  draftId: string;
+  status: string;
+  libraryImportDraftId?: string;
+  ok: boolean;
+  error?: string;
+} | null {
+  const envelope = isRecord(value) && isRecord(value.result) ? value.result : value;
+  if (!isRecord(envelope)) return null;
+  const draftId = stringValue(envelope.draftId);
+  const status = stringValue(envelope.status) ?? stringValue(envelope.goalDesignPhase);
+  if (!draftId || !status || typeof envelope.ok !== "boolean") return null;
+  return {
+    draftId,
+    status,
+    ok: envelope.ok,
+    ...(stringValue(envelope.libraryImportDraftId) ? { libraryImportDraftId: stringValue(envelope.libraryImportDraftId) } : {}),
+    ...(stringValue(envelope.error) ? { error: stringValue(envelope.error) } : {}),
+  };
+}
+
+function isConfirmationResult(value: unknown): value is GoalRequirementsConfirmationResult {
+  return isRecord(value) && (value.type === "goalRequirements" || value.type === "goalDesign");
 }
 
 function goalRequirementPhaseRank(status: string): number {

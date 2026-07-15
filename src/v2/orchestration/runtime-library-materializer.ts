@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { SouthstarDb } from "../db/postgres.ts";
+import { unsupportedPiRuntimeToolNames } from "../harness/pi-runtime-tools.ts";
 import type { McpGrantInput, McpRuntimeConfig, McpRuntimeServerConfig, VaultLeaseInput } from "../agent-runner/task-envelope.ts";
 import type { ResolvedSkillSnapshot } from "../skills/types.ts";
 import type { ToolProxyPolicyPayload } from "../tool-proxy/types.ts";
@@ -88,17 +89,25 @@ export async function materializeTaskLibraryRefs(
   const toolPolicyArtifacts = [];
   for (const toolRef of unique(input.toolGrantRefs)) {
     const object = requireSnapshotObject(snapshot, toolRef, "tool_definition");
+    const runtimeToolNames = optionalStringArray(object.state, "runtimeToolNames");
+    if (runtimeToolNames.length === 0) {
+      throw new Error(`tool definition ${toolRef} has no runtimeToolNames binding`);
+    }
+    const unsupportedRuntimeToolNames = unsupportedPiRuntimeToolNames(runtimeToolNames);
+    if (unsupportedRuntimeToolNames.length > 0) {
+      throw new Error(`tool definition ${toolRef} has unsupported Pi runtimeToolNames: ${unsupportedRuntimeToolNames.join(", ")}`);
+    }
     toolPolicyArtifacts.push({
-      toolName: stringField(object.state, "toolName"),
-      proxyToolName: stringField(object.state, "proxyToolName"),
+      runtimeToolNames,
+      proxyToolNames: optionalStringArray(object.state, "proxyToolNames"),
     });
   }
   const toolProxyPolicy: ToolProxyPolicyPayload = {
     schemaVersion: "southstar.tool_proxy_policy.v1",
     runId: input.runId,
     sessionId: input.sessionId,
-    allowedTools: unique(toolPolicyArtifacts.map((item) => item.toolName)),
-    requiredProxyTools: unique(toolPolicyArtifacts.map((item) => item.proxyToolName)),
+    allowedTools: unique(toolPolicyArtifacts.flatMap((item) => item.runtimeToolNames)).sort(),
+    requiredProxyTools: unique(toolPolicyArtifacts.flatMap((item) => item.proxyToolNames)).sort(),
     forbiddenDirectEnvKeys: [...FORBIDDEN_DIRECT_ENV_KEYS],
     vaultLeaseRefs: unique(input.vaultLeasePolicyRefs),
     maxLeaseTtlSeconds: DEFAULT_MAX_VAULT_TTL_SECONDS,
@@ -214,27 +223,14 @@ function mcpRuntimeServerConfig(
 
 function mcpCommand(state: Record<string, unknown>, serverId: string): McpRuntimeServerConfig["command"] {
   const explicitCommand = optionalStringField(state, "command");
-  const defaults = explicitCommand ? { command: explicitCommand, args: [] } : defaultMcpCommand(serverId);
-  const command = explicitCommand ?? defaults.command;
+  if (!explicitCommand) throw new Error(`missing MCP command for ${serverId}`);
   const args = optionalStringArray(state, "args");
   const cwd = optionalStringField(state, "cwd");
   const result: McpRuntimeServerConfig["command"] = {
-    argv: [command, ...(args.length > 0 ? args : defaults.args)],
+    argv: [explicitCommand, ...args],
   };
-  const resolvedCwd = cwd ?? defaults.cwd;
-  if (resolvedCwd) result.cwd = resolvedCwd;
+  if (cwd) result.cwd = cwd;
   return result;
-}
-
-function defaultMcpCommand(serverId: string): { command: string; args: string[]; cwd?: string } {
-  if (serverId === "filesystem-workspace") {
-    return {
-      command: "node",
-      args: ["/app/src/v2/mcp/filesystem-workspace-server.ts"],
-      cwd: "/workspace/repo",
-    };
-  }
-  throw new Error(`missing MCP command for ${serverId}`);
 }
 
 function mcpEnvFromVault(

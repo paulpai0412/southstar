@@ -3,8 +3,11 @@ id: tool.workspace-read
 title: Workspace Read
 scope: software
 status: approved
-toolName: workspace-read
-proxyToolName: workspace-read
+runtimeToolNames:
+  - read
+  - grep
+  - find
+  - ls
 operations:
   - read_file
   - list_files

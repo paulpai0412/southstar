@@ -13,7 +13,7 @@ import { GoalContractInspector } from "./GoalContractInspector";
 import { GoalSliceEditor } from "./GoalSliceEditor";
 import { GoalRequirementEditor } from "./GoalRequirementEditor";
 import { UiInteractionContractViewer } from "./UiInteractionContractViewer";
-import { goalRequirementsConfirmationFromUnknown, goalRequirementsContentFromUnknown, goalRequirementsContentShouldReplace, type GoalRequirementsConfirmation } from "./GoalRequirementListBlock";
+import { goalDesignContinuationFromUnknown, goalRequirementsConfirmationFromUnknown, goalRequirementsContentFromUnknown, goalRequirementsContentShouldReplace, goalValidationResumeFromUnknown, type GoalRequirementsConfirmation, type GoalRequirementsConfirmationResult } from "./GoalRequirementListBlock";
 import { WorkflowStaticNodeProfile } from "./WorkflowStaticNodeProfile";
 import { OperatorSidebar } from "./operator/OperatorSidebar";
 import { OperatorTaskTabs } from "./operator/OperatorTaskTabs";
@@ -29,10 +29,13 @@ import { BranchNavigator } from "./BranchNavigator";
 import { useOperatorOverview } from "@/hooks/useOperatorOverview";
 import { useTheme } from "@/hooks/useTheme";
 import { buildOperatorIncidents } from "@/lib/operator/incidents";
-import type { GoalRequirementSelection, GoalRequirementsContent, GoalSliceSelection, SessionInfo, SessionTreeNode, UiInteractionContractSelection, WorkspaceSurface } from "@/lib/types";
+import type { AgentMessage, AssistantMessage, GoalDesignContent, GoalRequirementSelection, GoalRequirementsContent, GoalSliceSelection, LibraryImportCandidatesContent, SessionInfo, SessionTreeNode, UiInteractionContractSelection, WorkspaceSurface } from "@/lib/types";
+import type { LibraryImportCandidate, LibraryImportCandidateCoverageTarget, LibraryImportProposedEdge } from "@/lib/library/types";
 import type { WorkflowDag, WorkflowDagNode, WorkflowTemplateSummary } from "@/lib/workflow/types";
+import { confirmGoalRequirementsStream } from "@/lib/workflow/generate-stream";
 import type { ChatInputHandle } from "./ChatInput";
 import type { SessionStatsInfo } from "@/lib/pi-types";
+import { persistWorkflowUiMessage } from "@/lib/workflow/session-persistence-client";
 
 function goalRequirementContentFromSelection(selection: GoalRequirementSelection): GoalRequirementsContent {
   return {
@@ -45,6 +48,50 @@ function goalRequirementContentFromSelection(selection: GoalRequirementSelection
     validationIssues: selection.validationIssues ?? [],
     ...(selection.coveragePreview ? { coveragePreview: selection.coveragePreview } : {}),
   };
+}
+
+async function loadGoalLibraryImportCandidates(draftId: string): Promise<LibraryImportCandidatesContent> {
+  const response = await fetch(`/api/library/import-drafts/${encodeURIComponent(draftId)}`, { cache: "no-store" });
+  const payload = await response.json().catch(() => undefined) as { result?: unknown; error?: string; message?: string } | undefined;
+  if (!response.ok) throw new Error(payload?.error ?? payload?.message ?? `HTTP ${response.status}`);
+  const result = payload?.result;
+  if (!result || typeof result !== "object" || Array.isArray(result)) throw new Error("Library import draft response was invalid.");
+  const record = result as Record<string, unknown>;
+  const candidates = Array.isArray(record.candidates) ? record.candidates.filter(isLibraryImportCandidate) : [];
+  if (record.draftId !== draftId || candidates.length === 0) throw new Error("Library import draft did not include reviewable candidates.");
+  const proposedEdges = Array.isArray(record.proposedEdges) ? record.proposedEdges.filter(isLibraryImportProposedEdge) : undefined;
+  const candidateCoverageTargets = Array.isArray(record.candidateCoverageTargets)
+    ? record.candidateCoverageTargets.filter(isLibraryImportCandidateCoverageTarget)
+    : undefined;
+  return {
+    type: "libraryImportCandidates",
+    draftId,
+    candidates,
+    ...(candidateCoverageTargets ? { candidateCoverageTargets } : {}),
+    ...(proposedEdges ? { proposedEdges } : {}),
+  };
+}
+
+function isLibraryImportCandidate(value: unknown): value is LibraryImportCandidate {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.objectKey === "string" && typeof record.kind === "string" && typeof record.title === "string" && typeof record.scope === "string" && typeof record.selectedByDefault === "boolean";
+}
+
+function isLibraryImportProposedEdge(value: unknown): value is LibraryImportProposedEdge {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.fromObjectKey === "string" && typeof record.edgeType === "string" && typeof record.toObjectKey === "string" && typeof record.confidence === "number";
+}
+
+function isLibraryImportCandidateCoverageTarget(value: unknown): value is LibraryImportCandidateCoverageTarget {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.candidateObjectKey === "string"
+    && typeof record.gapRef === "string"
+    && typeof record.requirementId === "string"
+    && Array.isArray(record.criterionIds)
+    && record.criterionIds.every((criterionId) => typeof criterionId === "string");
 }
 import type { ReactNode } from "react";
 
@@ -221,6 +268,8 @@ export function AppShell() {
   const [goalDesignRevisionAnchor, setGoalDesignRevisionAnchor] = useState<GoalSliceSelection | null>(null);
   const [goalRequirementRevisionAnchor, setGoalRequirementRevisionAnchor] = useState<GoalRequirementSelection | null>(null);
   const [goalRequirementContentOverride, setGoalRequirementContentOverride] = useState<GoalRequirementsContent | null>(null);
+  const [goalDesignContentOverride, setGoalDesignContentOverride] = useState<GoalDesignContent | null>(null);
+  const [goalLibraryImportCandidatesOverride, setGoalLibraryImportCandidatesOverride] = useState<LibraryImportCandidatesContent | null>(null);
   const goalRequirementRevisionAnchorRef = useRef<GoalRequirementSelection | null>(null);
   const goalRequirementContentOverrideRef = useRef<GoalRequirementsContent | null>(null);
 
@@ -228,6 +277,8 @@ export function AppShell() {
     setGoalDesignRevisionAnchor(null);
     setGoalRequirementRevisionAnchor(null);
     setGoalRequirementContentOverride(null);
+    setGoalDesignContentOverride(null);
+    setGoalLibraryImportCandidatesOverride(null);
     goalRequirementRevisionAnchorRef.current = null;
     goalRequirementContentOverrideRef.current = null;
   }, [selectedSession?.id, workflowSelectedSession?.id, newSessionCwd, workflowNewSessionCwd]);
@@ -680,6 +731,21 @@ export function AppShell() {
     });
   }, [openSidecarTab]);
 
+  const persistGoalWorkflowState = useCallback((content: AssistantMessage["content"]) => {
+    const sessionId = appMode === "workflow" ? workflowSelectedSession?.id : selectedSession?.id;
+    if (!sessionId) return;
+    const message: AgentMessage = {
+      role: "assistant",
+      content,
+      model: "workflow-state",
+      provider: "southstar",
+      timestamp: Date.now(),
+    };
+    void persistWorkflowUiMessage(sessionId, message).catch((error) => {
+      console.error("Failed to persist Goal workflow state:", error);
+    });
+  }, [appMode, selectedSession?.id, workflowSelectedSession?.id]);
+
   const handleGoalSliceSelect = useCallback((selection: GoalSliceSelection) => {
     const currentPackage = goalDesignRevisionAnchor?.draftId === selection.draftId
       ? goalDesignRevisionAnchor
@@ -704,12 +770,19 @@ export function AppShell() {
 
   const handleGoalSlicePackageChange = useCallback((selection: GoalSliceSelection) => {
     setGoalDesignRevisionAnchor(selection);
+    persistGoalWorkflowState([{
+      type: "goalDesign",
+      draftId: selection.draftId,
+      selectedSliceId: selection.selectedSliceId,
+      ...(selection.goalDesignPackageHash ? { goalDesignPackageHash: selection.goalDesignPackageHash } : {}),
+      ...(selection.package !== undefined ? { package: selection.package } : {}),
+    }]);
     setSidecarTabs((current) => current.map((tab) => (
       tab.kind === "goalSlice" && tab.draftId === selection.draftId && tab.goalSliceSelection?.selectedSliceId === selection.selectedSliceId
         ? { ...tab, goalSliceSelection: selection, refreshKey: (tab.refreshKey ?? 0) + 1 }
         : tab
     )));
-  }, []);
+  }, [persistGoalWorkflowState]);
 
   const handleGoalRequirementSelect = useCallback((selection: GoalRequirementSelection) => {
     setChatWorkspaceSurface("workflow");
@@ -740,10 +813,12 @@ export function AppShell() {
   }, [openSidecarTab]);
 
   const handleGoalRequirementChange = useCallback((selection: GoalRequirementSelection) => {
+    const content = goalRequirementContentFromSelection(selection);
     goalRequirementRevisionAnchorRef.current = selection;
-    goalRequirementContentOverrideRef.current = goalRequirementContentFromSelection(selection);
+    goalRequirementContentOverrideRef.current = content;
     setGoalRequirementRevisionAnchor(selection);
-    setGoalRequirementContentOverride(goalRequirementContentFromSelection(selection));
+    setGoalRequirementContentOverride(content);
+    persistGoalWorkflowState([content]);
     setSidecarTabs((current) => current.map((tab) => (
       tab.kind === "goalRequirement"
         && tab.draftId === selection.draftId
@@ -751,13 +826,15 @@ export function AppShell() {
         ? { ...tab, goalRequirementSelection: selection, refreshKey: (tab.refreshKey ?? 0) + 1 }
         : tab
     )));
-  }, []);
+  }, [persistGoalWorkflowState]);
 
   const handleGoalRequirementInvalidated = useCallback((selection: GoalRequirementSelection) => {
+    const content = goalRequirementContentFromSelection(selection);
     goalRequirementRevisionAnchorRef.current = selection;
-    goalRequirementContentOverrideRef.current = goalRequirementContentFromSelection(selection);
+    goalRequirementContentOverrideRef.current = content;
     setGoalRequirementRevisionAnchor(selection);
-    setGoalRequirementContentOverride(goalRequirementContentFromSelection(selection));
+    setGoalRequirementContentOverride(content);
+    persistGoalWorkflowState([content]);
     setSidecarTabs((current) => current.map((tab) => (
       tab.kind === "goalRequirement"
         && tab.draftId === selection.draftId
@@ -765,7 +842,7 @@ export function AppShell() {
         ? { ...tab, goalRequirementSelection: selection, refreshKey: (tab.refreshKey ?? 0) + 1 }
         : tab
     )));
-  }, []);
+  }, [persistGoalWorkflowState]);
 
   const handleGoalRequirementsContent = useCallback((content: GoalRequirementsContent) => {
     // A chat H2 event is a host-authoritative replacement, including when the
@@ -776,6 +853,8 @@ export function AppShell() {
     if (!goalRequirementsContentShouldReplace(currentOverride, content)) return;
     goalRequirementContentOverrideRef.current = content;
     setGoalRequirementContentOverride(content);
+    setGoalDesignContentOverride((current) => current?.draftId === content.draftId ? null : current);
+    setGoalLibraryImportCandidatesOverride((current) => current?.draftId === content.libraryImportDraftId ? current : null);
     const current = goalRequirementRevisionAnchorRef.current;
     if (!current || current.draftId !== content.draftId) {
       goalRequirementRevisionAnchorRef.current = null;
@@ -810,26 +889,95 @@ export function AppShell() {
 
   const handleUiContractReviewChange = useCallback((value: unknown) => {
     const content = goalRequirementsContentFromUnknown(value);
-    if (content) handleGoalRequirementsContent(content);
-  }, [handleGoalRequirementsContent]);
+    if (content) {
+      handleGoalRequirementsContent(content);
+      persistGoalWorkflowState([content]);
+    }
+  }, [handleGoalRequirementsContent, persistGoalWorkflowState]);
 
-  const handleConfirmRequirements = useCallback(async (confirmation: GoalRequirementsConfirmation): Promise<GoalRequirementsContent | void> => {
-    const response = await fetch(`/api/workflow/planner-drafts/${encodeURIComponent(confirmation.draftId)}/confirm-requirements`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ expectedDraftHash: confirmation.expectedDraftHash }),
+  const handleConfirmRequirements = useCallback(async (confirmation: GoalRequirementsConfirmation): Promise<GoalRequirementsConfirmationResult | void> => {
+    let completed: Record<string, unknown> | undefined;
+    await confirmGoalRequirementsStream({
+      draftId: confirmation.draftId,
+      expectedDraftHash: confirmation.expectedDraftHash,
+      onHeartbeat(heartbeat) {
+        confirmation.onProgress?.({ event: "heartbeat", ...heartbeat });
+      },
+      onGoalValidationProgress(progress) {
+        confirmation.onProgress?.(progress);
+      },
+      onDone(result) {
+        completed = result;
+      },
     });
-    const payload = await response.json().catch(() => undefined) as { result?: unknown; error?: string; message?: string } | undefined;
-    if (!response.ok) throw new Error(payload?.error ?? payload?.message ?? `HTTP ${response.status}`);
-    const result = goalRequirementsConfirmationFromUnknown(payload?.result, {
+    const result = goalRequirementsConfirmationFromUnknown(completed, {
       draftId: confirmation.draftId,
       expectedDraftHash: confirmation.expectedDraftHash,
     });
-    if (!result) throw new Error("Requirement confirmation response did not include a valid goal requirement result.");
+    if (!result) throw new Error("Requirement confirmation response did not include a valid Goal lifecycle result.");
+    if (result.type === "goalDesign") {
+      setGoalDesignContentOverride(result);
+      setGoalLibraryImportCandidatesOverride(null);
+      persistGoalWorkflowState([result]);
+      return result;
+    }
     goalRequirementContentOverrideRef.current = result;
     setGoalRequirementContentOverride(result);
+    if (result.status === "library_review") {
+      if (!result.libraryImportDraftId) throw new Error("Goal validation entered Library review without an import draft.");
+      const candidates = await loadGoalLibraryImportCandidates(result.libraryImportDraftId);
+      setGoalLibraryImportCandidatesOverride(candidates);
+      persistGoalWorkflowState([result, candidates]);
+    } else {
+      setGoalLibraryImportCandidatesOverride(null);
+      persistGoalWorkflowState([result]);
+    }
     return result;
-  }, []);
+  }, [persistGoalWorkflowState]);
+
+  const handleGoalValidationResume = useCallback((value: unknown) => {
+    const continuation = goalDesignContinuationFromUnknown(value);
+    const requirements = goalRequirementContentOverrideRef.current;
+    if (continuation) {
+      if (requirements && continuation.draftId !== requirements.draftId) return;
+      setGoalDesignContentOverride(continuation);
+      setGoalLibraryImportCandidatesOverride(null);
+      persistGoalWorkflowState([continuation]);
+      return;
+    }
+    const resume = goalValidationResumeFromUnknown(value);
+    if (!resume || !requirements || resume.draftId !== requirements.draftId) return;
+    if (resume.status !== "library_review" || !resume.libraryImportDraftId) return;
+    const nextRequirements: GoalRequirementsContent = {
+      ...requirements,
+      status: "library_review",
+      confirmable: false,
+      libraryImportDraftId: resume.libraryImportDraftId,
+    };
+    goalRequirementContentOverrideRef.current = nextRequirements;
+    setGoalRequirementContentOverride(nextRequirements);
+    setGoalLibraryImportCandidatesOverride(null);
+    persistGoalWorkflowState([nextRequirements]);
+    void loadGoalLibraryImportCandidates(resume.libraryImportDraftId).then((candidates) => {
+      if (goalRequirementContentOverrideRef.current?.libraryImportDraftId === candidates.draftId) {
+        setGoalLibraryImportCandidatesOverride(candidates);
+        persistGoalWorkflowState([nextRequirements, candidates]);
+      }
+    }).catch((error) => {
+      const current = goalRequirementContentOverrideRef.current;
+      if (!current || current.libraryImportDraftId !== resume.libraryImportDraftId) return;
+      const failed: GoalRequirementsContent = {
+        ...current,
+        validationIssues: [
+          ...(current.validationIssues ?? []),
+          { path: "libraryImportDraftId", message: error instanceof Error ? error.message : String(error), code: "library_import_draft_load_failed" },
+        ],
+      };
+      goalRequirementContentOverrideRef.current = failed;
+      setGoalRequirementContentOverride(failed);
+      persistGoalWorkflowState([failed]);
+    });
+  }, [persistGoalWorkflowState]);
 
   const handleGoalContractSelect = useCallback((dag: WorkflowDag) => {
     const scopeId = dag.runId ?? dag.draftId;
@@ -1745,6 +1893,9 @@ export function AppShell() {
                 goalDesignRevisionAnchor={goalDesignRevisionAnchor}
                 goalRequirementRevisionAnchor={goalRequirementRevisionAnchor}
                 goalRequirementContentOverride={goalRequirementContentOverride}
+                goalDesignContentOverride={goalDesignContentOverride}
+                goalLibraryImportCandidatesOverride={goalLibraryImportCandidatesOverride}
+                onGoalValidationResume={handleGoalValidationResume}
                 onGoalContractSelect={handleGoalContractSelect}
                 onWorkflowGoalRevise={handleWorkflowGoalRevise}
                 onLibraryGraphNodeSelect={handleLibraryGraphNodeSelect}
@@ -1779,6 +1930,9 @@ export function AppShell() {
               goalDesignRevisionAnchor={goalDesignRevisionAnchor}
               goalRequirementRevisionAnchor={goalRequirementRevisionAnchor}
               goalRequirementContentOverride={goalRequirementContentOverride}
+              goalDesignContentOverride={goalDesignContentOverride}
+              goalLibraryImportCandidatesOverride={goalLibraryImportCandidatesOverride}
+              onGoalValidationResume={handleGoalValidationResume}
               onGoalContractSelect={handleGoalContractSelect}
               onWorkflowGoalRevise={handleWorkflowGoalRevise}
             />

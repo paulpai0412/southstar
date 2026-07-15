@@ -1,0 +1,305 @@
+- button "Southstar":
+  - generic: Southstar
+- button "New":
+  - text: New
+- button "Refresh":
+- button ".../apps/southstar-vocab"
+- generic: Workflow Sessions
+- generic: (no messages)
+- button "Rename":
+- button "Delete":
+- generic: 2h ago
+- generic: 0 messages
+- generic: (no messages)
+- button "Rename":
+- button "Delete":
+- generic: 2h ago
+- generic: 0 messages
+- generic: (no messages)
+- button "Rename":
+- button "Delete":
+- generic: 2h ago
+- generic: 0 messages
+- generic: "Return exactly: vocab-ok"
+- button "Rename":
+- button "Delete":
+- generic: 2h ago
+- generic: 2 messages
+- generic: "Return exactly this text and nothing else: second-ok"
+- button "Rename":
+- button "Delete":
+- generic: 2h ago
+- generic: 2 messages
+- generic: "Return exactly this text and nothing else: first-ok"
+- button "Rename":
+- button "Delete":
+- generic: 2h ago
+- generic: 2 messages
+- generic: Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+- button "Rename":
+- button "Delete":
+- generic: 2h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 2h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 2h ago
+- generic: 2 messages
+- generic: Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+- button "Rename":
+- button "Delete":
+- generic: 2h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 2h ago
+- generic: 2 messages
+- generic: (no messages)
+- button "Rename":
+- button "Delete":
+- generic: 2h ago
+- generic: 0 messages
+- generic: (no messages)
+- button "Rename":
+- button "Delete":
+- generic: 2h ago
+- generic: 0 messages
+- generic: "Use the approved Library Goal Design SOP to design outcome slices from the confirmed Goal Contract and frozen validation bindings. GoalDesignSkillRef: skill.southstar-goal-design G..."
+- button "Rename":
+- button "Delete":
+- generic: 2h ago
+- generic: 2 messages
+- generic: Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+- button "Rename":
+- button "Delete":
+- generic: 3h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 3h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to turn only the Requirement Draft's declared interactionContractRefs into reviewable UI interaction contracts. GoalDesignSkillRef: skill.southst..."
+- button "Rename":
+- button "Delete":
+- generic: 3h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 3h ago
+- generic: 2 messages
+- generic: Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+- button "Rename":
+- button "Delete":
+- generic: 3h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to turn only the Requirement Draft's declared interactionContractRefs into reviewable UI interaction contracts. GoalDesignSkillRef: skill.southst..."
+- button "Rename":
+- button "Delete":
+- generic: 3h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to turn only the Requirement Draft's declared interactionContractRefs into reviewable UI interaction contracts. GoalDesignSkillRef: skill.southst..."
+- button "Rename":
+- button "Delete":
+- generic: 3h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 3h ago
+- generic: 2 messages
+- generic: Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+- button "Rename":
+- button "Delete":
+- generic: 3h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 3h ago
+- generic: 2 messages
+- generic: (no messages)
+- button "Rename":
+- button "Delete":
+- generic: 4h ago
+- generic: 0 messages
+- generic: "Use the approved Library Goal Design SOP to design outcome slices from the confirmed Goal Contract and frozen validation bindings. GoalDesignSkillRef: skill.southstar-goal-design G..."
+- button "Rename":
+- button "Delete":
+- generic: 4h ago
+- generic: 2 messages
+- generic: Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+- button "Rename":
+- button "Delete":
+- generic: 4h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to turn only the Requirement Draft's declared interactionContractRefs into reviewable UI interaction contracts. GoalDesignSkillRef: skill.southst..."
+- button "Rename":
+- button "Delete":
+- generic: 4h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 4h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 4h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 4h ago
+- generic: 2 messages
+- generic: Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+- button "Rename":
+- button "Delete":
+- generic: 4h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 4h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 4h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 4h ago
+- generic: 2 messages
+- generic: Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+- button "Rename":
+- button "Delete":
+- generic: 5h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 5h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 5h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 5h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 5h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 5h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 5h ago
+- generic: 2 messages
+- generic: "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill...."
+- button "Rename":
+- button "Delete":
+- generic: 5h ago
+- generic: 2 messages
+- generic: Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+- button "Rename":
+- button "Delete":
+- generic: 1d ago
+- generic: 2 messages
+- generic: (no messages)
+- button "Rename":
+- button "Delete":
+- generic: 1d ago
+- generic: 0 messages
+- generic: You are Southstar's library-constrained workflow architect. Return exactly one JSON object matching schemaVersion southstar.workflow_composition_plan.v1. Do not return markdown, co...
+- button "Rename":
+- button "Delete":
+- generic: 1d ago
+- generic: 1 messages
+- generic: "Use the approved Library Goal Design SOP to design this Goal Contract. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill.southstar-goal-design@132bb1..."
+- button "Rename":
+- button "Delete":
+- generic: 1d ago
+- generic: 2 messages
+- generic: Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+- button "Rename":
+- button "Delete":
+- generic: 1d ago
+- generic: 2 messages
+- generic: Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+- button "Rename":
+- button "Delete":
+- generic: 1d ago
+- generic: 2 messages
+- generic: (no messages)
+- button "Rename":
+- button "Delete":
+- generic: 1d ago
+- generic: 0 messages
+- button "Workflow Library":
+  - text: Workflow Library
+- button "Refresh workflow library":
+- button "all":
+  - generic: all
+- button "workflows":
+  - generic: workflows
+- button "Models":
+  - text: Models
+- button "Skills":
+  - text: Skills
+- button "MCP":
+  - text: MCP
+- button "Hide sidebar":
+- button "Switch to dark mode":
+- button "Export HTML" [disabled]:
+- button "Branches":
+- button "Chat":
+  - text: Chat
+- button "Library":
+  - text: Library
+- button "Workflow" [active] [pressed]:
+  - text: Workflow
+- button "Operator":
+  - text: Operator
+- generic: π
+- generic: Southstar Mission Engine
+- generic: ship it.▍
+- text: web
+- generic: v0.7.0
+- text: pi
+- generic: v0.80.2
+- textbox "Message… Type / for commands"
+- button "Send" [disabled]:
+  - text: Send
+- button "Attach image":
+- button "GPT-5.3 Codex":
+  - generic: GPT-5.3 Codex
+- button "auto":
+  - generic: auto
+- button "default":
+  - generic: default
+- button "Compact":
+  - text: Compact
+- button "关闭完成提示音":
+- button "Show sidecar":
+- button "Open Next.js Dev Tools":
+- alert

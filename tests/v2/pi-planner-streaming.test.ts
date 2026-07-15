@@ -58,6 +58,61 @@ test("Pi SDK planner streaming ignores non-assistant single-message events", asy
   assert.deepEqual(deltas, ["{\"schemaVersion\"}"]);
 });
 
+test("Pi SDK planner completes on agent_end even when session.prompt remains pending", async () => {
+  const listeners: Array<(event: unknown) => void> = [];
+  let promptStarted = false;
+  let disposed = false;
+  const session: PiSdkPlannerSession = {
+    async prompt() {
+      promptStarted = true;
+      queueMicrotask(() => {
+        for (const listener of listeners) listener({ message: { role: "assistant", content: "complete" } });
+        for (const listener of listeners) listener({ type: "agent_end" });
+      });
+      await new Promise<never>(() => undefined);
+    },
+    dispose() {
+      disposed = true;
+    },
+    subscribe(listener: (event: unknown) => void) {
+      listeners.push(listener);
+      return () => undefined;
+    },
+  };
+
+  const client = createPiSdkPlannerClient({ createSession: async () => session, timeoutMs: 100 });
+
+  assert.equal(await client.generate("compose a workflow"), "complete");
+  assert.equal(promptStarted, true);
+  assert.equal(disposed, true);
+});
+
+test("Pi SDK planner completes on terminal assistant message_end when agent_end is blocked", async () => {
+  const listeners: Array<(event: unknown) => void> = [];
+  let disposed = false;
+  const session: PiSdkPlannerSession = {
+    async prompt() {
+      queueMicrotask(() => {
+        const message = { role: "assistant", content: "complete before agent_end", stopReason: "stop" };
+        for (const listener of listeners) listener({ type: "message_end", message });
+      });
+      await new Promise<never>(() => undefined);
+    },
+    dispose() {
+      disposed = true;
+    },
+    subscribe(listener: (event: unknown) => void) {
+      listeners.push(listener);
+      return () => undefined;
+    },
+  };
+
+  const client = createPiSdkPlannerClient({ createSession: async () => session, timeoutMs: 100 });
+
+  assert.equal(await client.generate("compose a workflow"), "complete before agent_end");
+  assert.equal(disposed, true);
+});
+
 test("Pi SDK planner client applies configured model before prompting", async () => {
   const listeners: Array<(event: unknown) => void> = [];
   const commands: unknown[] = [];

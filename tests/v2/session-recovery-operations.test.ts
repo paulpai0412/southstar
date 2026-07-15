@@ -352,6 +352,40 @@ test("workspace snapshot captures clean git repo and rollback restores files", a
   }
 });
 
+test("captures a non-Git project as filesystem evidence instead of skipping the snapshot", async () => {
+  const db = await createTestPostgresDb();
+  const project = await mkdtemp(join(tmpdir(), "southstar-workspace-filesystem-"));
+  try {
+    await writeFile(join(project, "package.json"), JSON.stringify({ name: "vocab" }));
+    await writeFile(join(project, "README.md"), "offline vocabulary app\n");
+    await createWorkflowRunPg(db, {
+      id: "run-filesystem-snapshot",
+      status: "running",
+      domain: "software",
+      goalPrompt: "snapshot a non-git project",
+      workflowManifestJson: "{}",
+      executionProjectionJson: "{}",
+      snapshotJson: "{}",
+      runtimeContextJson: JSON.stringify({ cwd: project, projectRoot: project }),
+      metricsJson: "{}",
+    });
+
+    const snapshot = await captureWorkspaceSnapshotForTaskPg(db, {
+      runId: "run-filesystem-snapshot",
+      taskId: "implement",
+      sessionId: "root-run-filesystem-snapshot-implement",
+      attemptId: "attempt-1",
+    });
+
+    assert.deepEqual(snapshot, { resourceKey: "workspace_snapshot:run-filesystem-snapshot:implement:attempt-1", status: "captured" });
+    const resource = await getResourceByKeyPg(db, "workspace_snapshot", snapshot!.resourceKey);
+    assert.equal((resource?.payload as { provider?: string }).provider, "filesystem");
+    assert.match((resource?.payload as { rootHash?: string }).rootHash ?? "", /^[0-9a-f]{64}$/);
+  } finally {
+    await db.close();
+  }
+});
+
 test("stale unapproved rollback replay does not downgrade succeeded rollback operation", async () => {
   const db = await createTestPostgresDb();
   try {

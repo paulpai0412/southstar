@@ -33,6 +33,7 @@ import type { SessionStatsInfo } from "@/lib/pi-types";
 import type { WorkflowDag } from "@/lib/workflow/types";
 import type { LibraryImportCandidate, LibraryImportProposedEdge, LibrarySseFrame } from "@/lib/library/types";
 import type { SessionKind } from "@/lib/session-kind";
+import { persistWorkflowUiMessage } from "@/lib/workflow/session-persistence-client";
 
 export type { CompactResultInfo } from "@/lib/agent-session-engine";
 
@@ -598,6 +599,18 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     });
   }, []);
 
+  const persistWorkflowMessage = useCallback(async (sessionId: string | null, message: AgentMessage) => {
+    if (!sessionId) return;
+    try {
+      await persistWorkflowUiMessage(sessionId, message);
+    } catch (error) {
+      addNotice({
+        type: "warning",
+        message: `Workflow completed, but its UI history could not be saved: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    }
+  }, [addNotice]);
+
   const handleExtensionUiRequest = useCallback((request: ExtensionUiRequest) => {
     switch (request.method) {
       case "select":
@@ -916,6 +929,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       let executionSetIdentity: { executionSetId: string; sliceRunCount: number } | null = null;
       let goalDesignBlock: GoalDesignContent | null = null;
       let goalRequirementsBlock: GoalRequirementsContent | null = null;
+      let workflowSessionId: string | null = null;
       const workflowAbortController = new AbortController();
       workflowAbortControllerRef.current?.abort();
       workflowAbortControllerRef.current = workflowAbortController;
@@ -948,8 +962,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       };
 
       try {
-        const workflowSessionId = sessionIdRef.current ?? await ensureNewSession();
+        workflowSessionId = sessionIdRef.current ?? await ensureNewSession();
         if (workflowSessionId) promoteNewSession(1, trimmedMessage);
+        await persistWorkflowMessage(workflowSessionId, userMsg);
         const workflowCwd = opts.workflowCwd ?? session?.cwd ?? newSessionCwd;
         const submissionFingerprint = `${workflowCwd ?? ""}\u0000${trimmedMessage}`;
         if (!revisionDraftId && workflowSubmissionRef.current?.fingerprint !== submissionFingerprint) {
@@ -1091,7 +1106,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
               : completedReviewDraft.status === "needs_input"
                 ? "needs more input"
                 : "is ready for review";
-            setMessages((prev) => [...prev, {
+            const assistantMsg: AgentMessage = {
               role: "assistant",
               content: [
                 { type: "text", text: streamedText || `Goal draft ${completedReviewDraft.draftId} ${statusText}.` },
@@ -1101,32 +1116,40 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
               model: "workflow-generate",
               provider: "southstar",
               timestamp: Date.now(),
-            } as AgentMessage]);
+            } as AgentMessage;
+            setMessages((prev) => [...prev, assistantMsg]);
+            await persistWorkflowMessage(workflowSessionId, assistantMsg);
             addNotice({ type: "info", message: `Goal draft ${statusText}.` });
             workflowSubmissionRef.current = null;
             return;
           }
-          if (recoverableIdentity) {
+          const completedRecoverable = recoverableIdentity as { draftId: string; runId?: string; error: string } | null;
+          if (completedRecoverable) {
             const streamedText = normalizeWorkflowStreamText(rawStreamedText);
-            setMessages((prev) => [...prev, {
+            const assistantMsg: AgentMessage = {
               role: "assistant",
-              content: [{ type: "text", text: streamedText || `Goal accepted as draft ${recoverableIdentity!.draftId}.` }],
+              content: [{ type: "text", text: streamedText || `Goal accepted as draft ${completedRecoverable.draftId}.` }],
               model: "workflow-generate",
               provider: "southstar",
               timestamp: Date.now(),
-            } as AgentMessage]);
+            } as AgentMessage;
+            setMessages((prev) => [...prev, assistantMsg]);
+            await persistWorkflowMessage(workflowSessionId, assistantMsg);
             addNotice({ type: "info", message: "Goal accepted; workflow details can be recovered from the persisted identity." });
             return;
           }
-          if (executionSetIdentity) {
+          const completedExecutionSet = executionSetIdentity as { executionSetId: string; sliceRunCount: number } | null;
+          if (completedExecutionSet) {
             const streamedText = normalizeWorkflowStreamText(rawStreamedText);
-            setMessages((prev) => [...prev, {
+            const assistantMsg: AgentMessage = {
               role: "assistant",
-              content: [{ type: "text", text: streamedText || `Goal execution set ${executionSetIdentity!.executionSetId} created with ${executionSetIdentity!.sliceRunCount} slice runs.` }],
+              content: [{ type: "text", text: streamedText || `Goal execution set ${completedExecutionSet.executionSetId} created with ${completedExecutionSet.sliceRunCount} slice runs.` }],
               model: "workflow-generate",
               provider: "southstar",
               timestamp: Date.now(),
-            } as AgentMessage]);
+            } as AgentMessage;
+            setMessages((prev) => [...prev, assistantMsg]);
+            await persistWorkflowMessage(workflowSessionId, assistantMsg);
             addNotice({ type: "success", message: "Goal execution set created." });
             workflowSubmissionRef.current = null;
             return;
@@ -1147,6 +1170,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           timestamp: Date.now(),
         };
         setMessages((prev) => [...prev, assistantMsg]);
+        await persistWorkflowMessage(workflowSessionId, assistantMsg);
       } catch (e) {
         if (workflowAbortController.signal.aborted) {
           addNotice({ type: "info", message: "Workflow generation stopped" });
@@ -1157,14 +1181,16 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           ? `Library is not ready: ${e.message}. Open Library to review and sync diagnostics, then retry this Goal.`
           : `Workflow generation failed: ${message}`;
         addNotice({ type: "error", message: failure });
-        setMessages((prev) => [...prev, {
+        const assistantMsg: AgentMessage = {
           role: "assistant",
           content: [{ type: "text", text: failure }],
           model: "workflow-generate",
           provider: "southstar",
           errorMessage: message,
           timestamp: Date.now(),
-        } as AgentMessage]);
+        } as AgentMessage;
+        setMessages((prev) => [...prev, assistantMsg]);
+        await persistWorkflowMessage(workflowSessionId, assistantMsg);
       } finally {
         if (workflowAbortControllerRef.current === workflowAbortController) {
           workflowAbortControllerRef.current = null;
@@ -1246,7 +1272,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       setAgentPhase(null);
       dispatch({ type: "end" });
     }
-  }, [effectiveNewSessionCwd, isNew, newSessionModel, toolPreset, thinkingLevel, session, messages, agentRunning, connectEvents, ensureNewSession, promoteNewSession, waitForPromptSettlement, sessionKind, opts.workflowMode, opts.workflowCwd, opts.workflowTemplate, opts.libraryScope, opts.goalDesignRevisionAnchor, opts.goalRequirementRevisionAnchor, addNotice]);
+  }, [effectiveNewSessionCwd, isNew, newSessionModel, toolPreset, thinkingLevel, session, messages, agentRunning, connectEvents, ensureNewSession, promoteNewSession, waitForPromptSettlement, sessionKind, opts.workflowMode, opts.workflowCwd, opts.workflowTemplate, opts.libraryScope, opts.goalDesignRevisionAnchor, opts.goalRequirementRevisionAnchor, addNotice, persistWorkflowMessage]);
 
   const handleConfirmGoalDesign = useCallback(async (selection: GoalSliceSelection) => {
     const packageHash = selection.goalDesignPackageHash;
@@ -1307,7 +1333,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       });
       if (!dag) throw new Error("goal design confirmation completed without a DAG");
       const confirmedDag = dag as WorkflowDag;
-      setMessages((prev) => [...prev, {
+      const assistantMsg: AgentMessage = {
         role: "assistant",
         content: [
           ...(streamedText ? [{ type: "text" as const, text: streamedText }] : [{ type: "text" as const, text: "Goal design confirmed; DAG composed." }]),
@@ -1316,20 +1342,24 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         model: "workflow-generate",
         provider: "southstar",
         timestamp: Date.now(),
-      }]);
+      };
+      setMessages((prev) => [...prev, assistantMsg]);
+      await persistWorkflowMessage(sessionIdRef.current, assistantMsg);
       addNotice({ type: "success", message: "Goal design confirmed; DAG composed." });
     } catch (error) {
       if (!controller.signal.aborted) {
         const message = error instanceof Error ? error.message : String(error);
         addNotice({ type: "error", message });
-        setMessages((prev) => [...prev, {
+        const assistantMsg: AgentMessage = {
           role: "assistant",
           content: [{ type: "text", text: `Goal design confirmation failed: ${message}` }],
           model: "workflow-generate",
           provider: "southstar",
           errorMessage: message,
           timestamp: Date.now(),
-        } as AgentMessage]);
+        } as AgentMessage;
+        setMessages((prev) => [...prev, assistantMsg]);
+        await persistWorkflowMessage(sessionIdRef.current, assistantMsg);
       }
     } finally {
       if (workflowAbortControllerRef.current === controller) workflowAbortControllerRef.current = null;
@@ -1338,7 +1368,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       setAgentPhase(null);
       dispatch({ type: "end" });
     }
-  }, [addNotice]);
+  }, [addNotice, persistWorkflowMessage]);
 
   const handleAbort = useCallback(async () => {
     if (workflowAbortControllerRef.current) {

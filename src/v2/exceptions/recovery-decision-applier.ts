@@ -239,6 +239,7 @@ function isTerminalRecoveryDecisionStatus(status: RecoveryDecisionStatus): statu
 }
 
 const recoveryPathHandlers: Partial<Record<RecoveryPath, RecoveryPathHandler>> = {
+  "none-observe-only": applySimpleRecoveryPath,
   "wake-new-brain": applyWakeNewBrainPath,
   "reprovision-hand": applyReprovisionHandPath,
   "retry-same-task-new-attempt": applySimpleRecoveryPath,

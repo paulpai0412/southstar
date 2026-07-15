@@ -200,7 +200,7 @@ test("Pi SDK agent harness completes implementation_report fallback fields for u
   });
 });
 
-test("Pi SDK agent harness marks unstructured verification_report as blocking failure", async () => {
+test("Pi SDK agent harness fills only declared verification fallback fields", async () => {
   const listeners: Array<(event: unknown) => void> = [];
   const harness = createPiSdkAgentHarness({
     createSession: async () => ({
@@ -227,13 +227,13 @@ test("Pi SDK agent harness marks unstructured verification_report as blocking fa
   assert.equal(result.artifact.safeToSave, false);
   assert.deepEqual(result.artifact.commandsRun, []);
   assert.deepEqual(result.artifact.testResults, [{
-    checkId: "pi-sdk-structured-output",
     command: "pi-sdk-harness",
-    status: "not-verified",
-    gating: "blocking",
-    summary: "Pi SDK response did not include a structured verification report.",
+    status: "not-run",
+    gating: "non-gating",
+    summary: "Pi SDK response did not include structured test results.",
   }]);
-  assert.deepEqual(result.artifact.risks, ["Pi SDK returned unstructured verification text; runtime must trigger repair before accepting this work."]);
+  assert.equal(result.artifact.risks, undefined);
+  assert.equal(result.artifact.artifactEvidence, undefined);
   assert.deepEqual(result.progress, ["pi-agent returned unstructured text"]);
 });
 
@@ -256,8 +256,11 @@ test("Pi SDK agent harness promotes nested verification_report artifacts to the 
                   summary: "All blocking checks passed.",
                   pass: true,
                   safeToSave: true,
+                  verdict: "passed",
+                  checks: [],
+                  evidenceRefs: ["artifact://run-1/task-1/implementation_report"],
                   verifiedArtifactRefs: ["artifact://run-1/task-1/implementation_report"],
-                  commandsRun: ["npm test"],
+                  commandsRun: [{ command: "npm test", status: "passed", exitCode: 0, output: "ok" }],
                   testResults: [{ command: "npm test", status: "passed", gating: "blocking" }],
                   remainingFailures: [],
                 },
@@ -275,8 +278,46 @@ test("Pi SDK agent harness promotes nested verification_report artifacts to the 
   assert.equal(result.artifact.summary, "All blocking checks passed.");
   assert.equal(result.artifact.pass, true);
   assert.equal(result.artifact.safeToSave, true);
-  assert.deepEqual(result.artifact.commandsRun, ["npm test"]);
+  assert.deepEqual(result.artifact.commandsRun, [{ command: "npm test", status: "passed", exitCode: 0, output: "ok" }]);
   assert.deepEqual(result.artifact.remainingFailures, []);
+});
+
+test("Pi SDK agent harness does not add legacy verification fields to a dynamic contract", async () => {
+  const listeners: Array<(event: unknown) => void> = [];
+  const harness = createPiSdkAgentHarness({
+    createSession: async () => ({
+      subscribe: (listener: (event: unknown) => void) => {
+        listeners.push(listener);
+        return () => undefined;
+      },
+      prompt: async () => {
+        listeners.forEach((listener) => listener({
+          type: "agent_end",
+          messages: [{
+            role: "assistant",
+            content: [{ type: "text", text: JSON.stringify({
+              artifact: {
+                summary: "Startup checks passed.",
+                verdict: "pass",
+                checks: [{ name: "startup", status: "pass" }],
+                evidenceRefs: ["artifacts/startup.json"],
+              },
+            }) }],
+          }],
+        }));
+      },
+    }),
+  });
+
+  const result = await harness.run({ envelope: envelopeV2WithDynamicVerificationReport(), attempt: 1 });
+
+  assert.equal(result.artifact.verdict, "pass");
+  assert.deepEqual(result.artifact.checks, [{ name: "startup", status: "pass" }]);
+  assert.deepEqual(result.artifact.evidenceRefs, ["artifacts/startup.json"]);
+  assert.equal(result.artifact.pass, undefined);
+  assert.equal(result.artifact.safeToSave, undefined);
+  assert.equal(result.artifact.testResults, undefined);
+  assert.equal(result.artifact.artifactEvidence, undefined);
 });
 
 test("Pi SDK agent harness prompts verification tasks for top-level artifact fields", async () => {
@@ -299,8 +340,11 @@ test("Pi SDK agent harness prompts verification tasks for top-level artifact fie
                 summary: "All blocking checks passed.",
                 pass: true,
                 safeToSave: true,
+                verdict: "passed",
+                checks: [],
+                evidenceRefs: ["artifact://run-1/task-1/implementation_report"],
                 verifiedArtifactRefs: ["artifact://run-1/task-1/implementation_report"],
-                commandsRun: ["npm test"],
+                commandsRun: [{ command: "npm test", status: "passed", exitCode: 0, output: "ok" }],
                 testResults: [{ command: "npm test", status: "passed", gating: "blocking" }],
                 remainingFailures: [],
               },
@@ -315,7 +359,7 @@ test("Pi SDK agent harness prompts verification tasks for top-level artifact fie
   await harness.run({ envelope: envelopeV2WithVerificationReport(), attempt: 1 });
 
   assert.match(prompts[0], /Runner output contract:/);
-  assert.match(prompts[0], /artifact must contain these fields at top level: summary, pass, safeToSave, verifiedArtifactRefs, commandsRun, testResults, remainingFailures/);
+  assert.match(prompts[0], /artifact must contain these fields at top level: verdict, checks, evidenceRefs, summary, pass, safeToSave, verifiedArtifactRefs, commandsRun, testResults, remainingFailures/);
   assert.match(prompts[0], /verifiedArtifactRefs must be an array of exact upstream ArtifactRef values/);
   assert.match(prompts[0], /commandsRun entries must be executed command result objects/);
   assert.match(prompts[0], /include status or exitCode/);
@@ -359,7 +403,7 @@ test("Pi SDK agent harness sends TaskEnvelopeV2 rendered agent prompt", async ()
 });
 
 test("Pi SDK agent harness configures model and thinking level from TaskEnvelopeV2 agent profile", async () => {
-  const sessionInputs: Array<{ cwd: string; model?: { provider: string; modelId: string }; thinkingLevel?: string }> = [];
+  const sessionInputs: Array<{ cwd: string; model?: { provider: string; modelId: string }; thinkingLevel?: string; tools?: string[] }> = [];
   const sentEvents: unknown[] = [];
   const listeners: Array<(event: unknown) => void> = [];
   const harness = createPiSdkAgentHarness({
@@ -401,6 +445,77 @@ test("Pi SDK agent harness configures model and thinking level from TaskEnvelope
     { type: "set_model", provider: "pi", modelId: "pi-agent-default" },
     { type: "set_thinking_level", thinkingLevel: "high" },
   ]);
+});
+
+test("Pi SDK agent harness passes materialized runtime tool allowlist into session creation", async () => {
+  const sessionInputs: Array<{ cwd: string; tools?: string[] }> = [];
+  const listeners: Array<(event: unknown) => void> = [];
+  const harness = createPiSdkAgentHarness({
+    createSession: async (input) => {
+      sessionInputs.push(input);
+      return {
+        subscribe: (listener: (event: unknown) => void) => {
+          listeners.push(listener);
+          return () => undefined;
+        },
+        prompt: async () => {
+          listeners.forEach((listener) => listener({
+            type: "agent_end",
+            messages: [{
+              role: "assistant",
+              content: [{ type: "text", text: JSON.stringify({ artifact: { summary: "done" }, progress: ["done"] }) }],
+            }],
+          }));
+        },
+      };
+    },
+  });
+  const env = envelopeV2();
+  env.toolProxyPolicy = {
+    schemaVersion: "southstar.tool_proxy_policy.v1",
+    runId: env.runId,
+    sessionId: env.session.sessionId,
+    allowedTools: ["write", "read", "bash", "read"],
+    requiredProxyTools: [],
+    forbiddenDirectEnvKeys: [],
+    vaultLeaseRefs: [],
+    maxLeaseTtlSeconds: 60,
+    redactResultPayloads: true,
+    failClosed: true,
+  };
+
+  await harness.run({ envelope: env, attempt: 1 });
+
+  assert.deepEqual(sessionInputs[0]?.tools, ["bash", "read", "write"]);
+});
+
+test("Pi SDK agent harness rejects Library tools without a Pi SDK runtime binding", async () => {
+  let createSessionCalls = 0;
+  const harness = createPiSdkAgentHarness({
+    createSession: async () => {
+      createSessionCalls += 1;
+      throw new Error("must not create a session");
+    },
+  });
+  const env = envelopeV2();
+  env.toolProxyPolicy = {
+    schemaVersion: "southstar.tool_proxy_policy.v1",
+    runId: env.runId,
+    sessionId: env.session.sessionId,
+    allowedTools: ["imaginary-tool"],
+    requiredProxyTools: [],
+    forbiddenDirectEnvKeys: [],
+    vaultLeaseRefs: [],
+    maxLeaseTtlSeconds: 60,
+    redactResultPayloads: true,
+    failClosed: true,
+  };
+
+  await assert.rejects(
+    () => harness.run({ envelope: env, attempt: 1 }),
+    /does not provide selected runtime tools: imaginary-tool/,
+  );
+  assert.equal(createSessionCalls, 0);
 });
 
 test("Pi SDK agent harness runs mounted workspace tasks from /workspace/repo", async () => {
@@ -643,8 +758,19 @@ function envelopeV2WithVerificationReport(): TaskEnvelopeV2 {
   env.artifactContracts = [{
     id: "verification_report",
     artifactType: "verification_report",
-    requiredFields: ["summary"],
-    evidenceFields: ["summary"],
+    requiredFields: ["verdict", "checks", "evidenceRefs", "summary", "pass", "safeToSave", "verifiedArtifactRefs", "commandsRun", "testResults", "remainingFailures"],
+    evidenceFields: ["checks", "evidenceRefs", "verifiedArtifactRefs", "commandsRun", "testResults"],
+  }];
+  return env;
+}
+
+function envelopeV2WithDynamicVerificationReport(): TaskEnvelopeV2 {
+  const env = envelopeV2WithVerificationReport();
+  env.artifactContracts = [{
+    id: "verification_report",
+    artifactType: "verification_report",
+    requiredFields: ["verdict", "checks", "evidenceRefs"],
+    evidenceFields: ["checks", "evidenceRefs"],
   }];
   return env;
 }

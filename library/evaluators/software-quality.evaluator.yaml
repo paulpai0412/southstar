@@ -1,13 +1,59 @@
 schemaVersion: southstar.library.evaluator_profile_file.v1
 id: evaluator.software-quality
-title: Software Quality
-scope: software
+title: "Software Quality Evidence Evaluator"
+scope: "software"
 status: approved
 validatesArtifactRefs:
-  - artifact.implementation_report
-  - artifact.verification_report
-  - artifact.completion_report
+  - "artifact.software-validation-evidence-bundle"
+requiredInputs:
+  - "artifact-ref"
+  - "requirement-context"
 evidenceKinds:
-  - test-result
-  - command-output
-  - file-diff
+  - "artifact-ref"
+  - "command-output"
+  - "screenshot"
+  - "test-result"
+  - "url"
+  - "workspace-snapshot"
+verificationModes:
+  - "deterministic"
+  - "browser_interaction"
+  - "semantic_review"
+verificationProcedures:
+  - id: "procedure.cross-evidence-validation"
+    checkKind: "deterministic"
+    instruction: "Verify required evidence kinds are present, complete, and traceable to requirement criteria; confirm internal consistency of evidence metadata and references."
+    allowedEvidenceKinds:
+      - "artifact-ref"
+      - "command-output"
+      - "screenshot"
+      - "test-result"
+      - "url"
+      - "workspace-snapshot"
+  - id: "procedure.ui-proof-consistency"
+    checkKind: "browser_interaction"
+    instruction: "Review screenshot and URL evidence and corroborate with referenced test results or artifacts for consistency of claimed behavior."
+    allowedEvidenceKinds:
+      - "screenshot"
+      - "url"
+      - "test-result"
+      - "artifact-ref"
+  - id: "procedure.implementation-corroboration"
+    checkKind: "semantic_review"
+    instruction: "Correlate artifact references, workspace snapshots, command output, and test results to confirm implementation and verification coherence."
+    allowedEvidenceKinds:
+      - "artifact-ref"
+      - "workspace-snapshot"
+      - "command-output"
+      - "test-result"
+independencePolicy: "independent"
+resultSchemaRef: "southstar.requirement_evaluator_result.v2"
+failureClassifications:
+  - "missing-required-evidence"
+  - "incompatible-evidence-kind"
+  - "traceability-mismatch"
+  - "evidence-integrity-failure"
+  - "verification-check-failed"
+importDraftId: "library-import-goal-f04e32703d35e2384f2bc201680759e4"
+importCandidateKey: "evaluator.software-quality"
+importSourcePath: "Confirmed-Goal-validation-gaps.md"

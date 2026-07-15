@@ -1,0 +1,47 @@
+schemaVersion: southstar.library.artifact_contract_file.v1
+id: artifact.vocabulary-offline-runtime-evidence
+title: "Vocabulary Offline Runtime Verification Evidence"
+scope: "software"
+status: approved
+artifactType: "vocabulary_offline_runtime_verification_evidence"
+mediaTypes:
+  - "application/json"
+  - "text/plain"
+  - "image/png"
+evidenceKinds:
+  - "artifact-ref"
+  - "command-output"
+  - "screenshot"
+  - "test-result"
+  - "workspace-snapshot"
+  - "url"
+validationRules:
+  - "must include at least one assessment start and one submitted response result with per-item correctness outcomes"
+  - "when cumulative accuracy is reported, must include evidence for at least two completed assessment attempts"
+  - "reported current and cumulative accuracy values must be recomputable from recorded response outcomes and persisted history"
+  - "must include pre-restart and post-restart state snapshots with stable identity linkage for persistence continuity checks"
+  - "must include offline execution evidence showing core flows complete without required network dependency"
+  - "must include startup command output, service reachability URL check, and dependency check command output"
+schemaRef: "southstar.artifact.vocabulary_offline_runtime_evidence.v1"
+requiredFields:
+  - "runContext"
+  - "assessmentItemsSnapshot"
+  - "attemptRecords"
+  - "perItemEvaluation"
+  - "currentAccuracy"
+  - "cumulativeAccuracy"
+  - "historyConsistencySnapshot"
+  - "restartContinuitySnapshot"
+  - "offlineExecutionTrace"
+  - "startupAndDependencyChecks"
+  - "evidenceIndex"
+provenanceRequirements:
+  - "command-output evidence must record command, timestamp, exit code, and captured output"
+  - "test-result evidence must include test identifiers, execution status, and timestamps"
+  - "screenshot evidence must be step-labeled to show start, input, submit, and result transitions when UI flow is validated"
+  - "workspace-snapshot evidence must reference persisted data locations or query extracts tied to the evaluated run context"
+  - "artifact-ref evidence must resolve to versioned artifacts used for derived comparison or recomputation"
+  - "url evidence must include checked endpoint, status/result, and timestamp"
+importDraftId: "library-import-goal-906fff0baee16a36879cff4d6fb19945"
+importCandidateKey: "artifact.vocabulary-offline-runtime-evidence"
+importSourcePath: "Confirmed-Goal-validation-gaps.md"

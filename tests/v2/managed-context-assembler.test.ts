@@ -147,6 +147,102 @@ test("ManagedContextAssembler supplies only confirmed UI contracts owned by task
   }
 });
 
+test("ManagedContextAssembler scopes a shared evaluator pipeline to the task requirement binding", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedManagedContextLibrary(db);
+    const workflow = manifest("req-entry");
+    workflow.evaluatorPipelines = [{
+      id: "software-feature-quality",
+      validationBindingIds: ["binding-entry", "binding-quiz"],
+      evaluators: [{
+        id: "check-entry",
+        kind: "evidence",
+        required: true,
+        config: { validationBindingId: "binding-entry", criterionId: "criterion-entry" },
+      }, {
+        id: "check-quiz",
+        kind: "evidence",
+        required: true,
+        config: { validationBindingId: "binding-quiz", criterionId: "criterion-quiz" },
+      }],
+      onFailure: { defaultStrategy: "ask-human" },
+    }];
+    await createWorkflowRunPg(db, {
+      id: "run-managed-context-scoped-evaluator",
+      status: "running",
+      domain: "software",
+      goalPrompt: "build entry then quiz",
+      workflowManifestJson: JSON.stringify(workflow),
+      executionProjectionJson: "{}",
+      snapshotJson: "{}",
+      runtimeContextJson: "{}",
+      metricsJson: "{}",
+    });
+    await captureManagedContextSnapshot(db, "run-managed-context-scoped-evaluator");
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "goal_requirement_coverage",
+      resourceKey: "goal-coverage-scoped-evaluator",
+      runId: "run-managed-context-scoped-evaluator",
+      scope: "run",
+      status: "frozen",
+      payload: {
+        schemaVersion: "southstar.goal_requirement_coverage.v1",
+        goalContractHash: "3".repeat(64),
+        entries: [{
+          requirementId: "req-entry",
+          producerTaskIds: ["implement-feature"],
+          artifactRefs: ["implementation_report"],
+          evaluatorTaskIds: ["implement-feature"],
+          evaluatorProfileRefs: ["software-feature-quality"],
+          evaluatorProfileVersionRefs: [],
+          validationBindingId: "binding-entry",
+          criterionIds: ["criterion-entry"],
+          acceptanceCriteria: ["Entry behavior passes."],
+          requiredEvidenceKinds: ["test-result"],
+        }, {
+          requirementId: "req-quiz",
+          producerTaskIds: ["implement-quiz"],
+          artifactRefs: ["implementation_report"],
+          evaluatorTaskIds: ["verify-quiz"],
+          evaluatorProfileRefs: ["software-feature-quality"],
+          evaluatorProfileVersionRefs: [],
+          validationBindingId: "binding-quiz",
+          criterionIds: ["criterion-quiz"],
+          acceptanceCriteria: ["Quiz behavior passes."],
+          requiredEvidenceKinds: ["test-result"],
+        }],
+      },
+      summary: {},
+    });
+    await createWorkflowTaskPg(db, {
+      id: "implement-feature",
+      runId: "run-managed-context-scoped-evaluator",
+      taskKey: "implement-feature",
+      status: "claimed",
+      sortOrder: 0,
+      dependsOn: [],
+      rootSessionId: "session-scoped-evaluator",
+    });
+
+    const assembled = await createManagedContextAssembler(db).buildForTask({
+      runId: "run-managed-context-scoped-evaluator",
+      taskId: "implement-feature",
+      sessionId: "session-scoped-evaluator",
+      attemptId: "implement-feature-attempt-1",
+      handExecutionId: "hand-scoped-evaluator",
+      dependsOn: [],
+    });
+
+    assert.deepEqual(assembled.taskEnvelope.evaluatorPipeline.validationBindingIds, ["binding-entry"]);
+    assert.deepEqual(assembled.taskEnvelope.evaluatorPipeline.evaluators.map((step) => step.id), ["check-entry"]);
+    assert.match(assembled.taskEnvelope.agentPrompt, /criterion-entry/);
+    assert.doesNotMatch(assembled.taskEnvelope.agentPrompt, /criterion-quiz/);
+  } finally {
+    await db.close();
+  }
+});
+
 test("ManagedContextAssembler maps host project root into mounted container workspace", async () => {
   const db = await createTestPostgresDb();
   try {
@@ -317,7 +413,7 @@ function visualRequirement(title: string, contractRef: string) {
     blocking: true,
     userVisibleBehaviors: [title],
     businessRules: [],
-    acceptanceCriteria: [{ statement: `${title} can be completed.`, evidenceIntent: ["screen state"] }],
+    acceptanceCriteria: [{ statement: `${title} can be completed.`, evidenceIntent: ["screenshot"] }],
     expectedOutcomeArtifacts: [{ description: title }],
     verificationIntent: ["Inspect state transition."],
     assumptions: [],
@@ -414,7 +510,7 @@ function manifest(requirementId = "req-owned") {
       instructionRefs: ["instruction.software-maker"],
       skillRefs: ["skill.software-implementation"],
       toolGrantRefs: ["tool.workspace-read", "tool.workspace-write", "tool.shell-command"],
-      mcpGrantRefs: ["mcp.filesystem-workspace"],
+      mcpGrantRefs: [],
       vaultLeasePolicyRefs: [],
       rootSession: { validator: "schema-evaluator-v1", maxRepairAttempts: 1 },
       execution: {
@@ -588,7 +684,7 @@ function makerProfile() {
     agentsMdRefs: ["agent.software-maker"],
     promptTemplateRef: "software-maker",
     skillRefs: ["skill.software-implementation"],
-    mcpGrantRefs: ["mcp.filesystem-workspace"],
+    mcpGrantRefs: [],
     vaultLeasePolicyRefs: [],
     memoryScopes: ["software", "project"],
     contextPolicyRef: "software-context-default",
@@ -696,7 +792,7 @@ async function seedManagedContextLibrary(db: Awaited<ReturnType<typeof createTes
       body: "# Software Implementation\n\nImplement the requested change.",
       allowedTools: ["workspace-read", "workspace-write", "shell-command"],
       requiredMounts: ["workspace"],
-      mcpRequirements: ["filesystem-workspace"],
+      mcpRequirements: [],
       artifactContracts: ["implementation_report"],
     },
   });
@@ -715,26 +811,19 @@ async function seedManagedContextLibrary(db: Awaited<ReturnType<typeof createTes
       artifactContracts: ["implementation_plan"],
     },
   });
-  for (const [objectKey, toolName] of [
-    ["tool.workspace-read", "workspace-read"],
-    ["tool.workspace-write", "workspace-write"],
-    ["tool.shell-command", "shell-command"],
+  for (const [objectKey, title, runtimeToolNames] of [
+    ["tool.workspace-read", "workspace-read", ["read", "grep", "find", "ls"]],
+    ["tool.workspace-write", "workspace-write", ["edit", "write"]],
+    ["tool.shell-command", "shell-command", ["bash"]],
   ] as const) {
     await upsertLibraryObject(db, {
       objectKey,
       objectKind: "tool_definition",
       status: "approved",
       headVersionId: `${objectKey}@managed-context-test`,
-      state: { scope: "global", title: toolName, toolName, proxyToolName: `${toolName}-proxy` },
+      state: { scope: "global", title, runtimeToolNames },
     });
   }
-  await upsertLibraryObject(db, {
-    objectKey: "mcp.filesystem-workspace",
-    objectKind: "mcp_tool_grant",
-    status: "approved",
-    headVersionId: "mcp.filesystem-workspace@managed-context-test",
-    state: { scope: "global", title: "Filesystem Workspace", serverId: "filesystem-workspace", allowedTools: ["read_file", "write_file"] },
-  });
 }
 
 async function captureManagedContextSnapshot(
@@ -751,7 +840,6 @@ async function captureManagedContextSnapshot(
       "tool.workspace-read",
       "tool.workspace-write",
       "tool.shell-command",
-      "mcp.filesystem-workspace",
     ];
   await captureRunLibrarySnapshotPg(db, {
     runId,

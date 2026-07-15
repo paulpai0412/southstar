@@ -114,7 +114,7 @@ test("saves a valid profile draft as a local file and syncs it to graph", async 
   }
 });
 
-test("rejects saving profile drafts that add unsupported agent skills", async () => {
+test("saves a profile that dynamically combines independently approved agent and skill primitives", async () => {
   const db = await createTestPostgresDb();
   const root = await mkdtemp(join(tmpdir(), "southstar-profile-draft-unsupported-"));
   try {
@@ -141,19 +141,24 @@ test("rejects saving profile drafts that add unsupported agent skills", async ()
       validation: { ok: true, issues: [] },
     };
 
-    await assert.rejects(
-      () => saveNodeProfileDraft(db, {
-        root,
-        draft: tampered,
-        templateId: "template.todo-webapp",
-        actor: "operator",
-        reason: "attempt unsupported skill",
-      }),
-      /cannot save invalid node profile draft/,
-    );
+    const saved = await saveNodeProfileDraft(db, {
+      root,
+      draft: tampered,
+      templateId: "template.todo-webapp",
+      actor: "operator",
+      reason: "compose independently approved primitives",
+    });
 
-    await assert.rejects(access(join(root, "profiles/generated/todo-webapp/implement-ui.profile.yaml")), /ENOENT/);
-    assert.equal(await findLibraryObjectByKey(db, tampered.profile.profileId), null);
+    assert.equal(saved.relativePath, "profiles/generated/todo-webapp/implement-ui.profile.yaml");
+    await access(join(root, saved.relativePath));
+    const savedProfileId = "profile.generated.todo-webapp.implement-ui";
+    assert.equal((await findLibraryObjectByKey(db, savedProfileId))?.status, "draft");
+    assert.deepEqual(
+      (await findLibraryEdgesFrom(db, savedProfileId, "uses", { scope: "software" }))
+        .map((edge) => edge.toObjectKey)
+        .sort(),
+      ["skill.database-design", "skill.react-ui"],
+    );
   } finally {
     await db.close();
     await rm(root, { recursive: true, force: true });
@@ -276,7 +281,7 @@ async function seedProfilePrimitives(db: Awaited<ReturnType<typeof createTestPos
     objectKind: "tool_definition",
     status: "approved",
     headVersionId: "tool.workspace-write@1",
-    state: { scope: "global", title: "Workspace Write" },
+    state: { scope: "global", title: "Workspace Write", runtimeToolNames: ["edit", "write"] },
   });
   await upsertLibraryObject(db, {
     objectKey: "mcp.filesystem-workspace",

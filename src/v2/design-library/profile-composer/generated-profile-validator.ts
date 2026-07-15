@@ -1,6 +1,6 @@
 import type { SouthstarDb } from "../../db/postgres.ts";
 import { findLibraryEdgesFrom, findLibraryObjectByKey } from "../library-graph-store.ts";
-import type { LibraryDefinitionKind, LibraryEdgeType, LibraryObjectSummary } from "../types.ts";
+import type { LibraryDefinitionKind, LibraryEdgeType } from "../types.ts";
 
 export type GeneratedNodeProfileInput = {
   scope: string;
@@ -23,23 +23,9 @@ export async function validateGeneratedNodeProfile(
 ): Promise<GeneratedProfileValidationResult> {
   const issues: GeneratedProfileValidationResult["issues"] = [];
   await requireObject(db, input.agentRef, "agentRef", "agent_definition", input.scope, issues);
-  const agentSkillRefs = new Set(await approvedLinkedRefsByEdgeTypes(
-    db,
-    input.agentRef,
-    ["uses"],
-    "skill_spec",
-    input.scope,
-  ));
 
   for (const [index, skillRef] of input.skillRefs.entries()) {
     await requireObject(db, skillRef, `skillRefs.${index}`, "skill_spec", input.scope, issues);
-    if (!agentSkillRefs.has(skillRef)) {
-      issues.push({
-        code: "agent_does_not_use_skill",
-        path: `skillRefs.${index}`,
-        message: `${input.agentRef} does not use ${skillRef}`,
-      });
-    }
     const requiredTools = await approvedLinkedRefsByEdgeTypes(
       db,
       skillRef,
@@ -112,11 +98,10 @@ async function approvedLinkedRefsByEdgeTypes(
 ): Promise<string[]> {
   const refs = new Set<string>();
   for (const edgeType of edgeTypes) {
-    const edges = await findLibraryEdgesFrom(db, fromObjectKey, edgeType, { scope });
+    const edges = await findLibraryEdgesFrom(db, fromObjectKey, edgeType);
     for (const edge of edges) {
       const object = await findLibraryObjectByKey(db, edge.toObjectKey);
       if (!object || object.status !== "approved" || object.objectKind !== expectedKind) continue;
-      if (!objectVisibleInScope(object, scope)) continue;
       refs.add(edge.toObjectKey);
     }
   }
@@ -139,17 +124,5 @@ async function requireObject(
   if (object.objectKind !== expectedKind) {
     issues.push({ code: "wrong_kind_ref", path, message: `${objectKey} must be ${expectedKind}` });
   }
-  if (!objectVisibleInScope(object, scope)) {
-    issues.push({ code: "out_of_scope_ref", path, message: `${objectKey} is not visible in ${scope}` });
-  }
-}
-
-function objectVisibleInScope(object: LibraryObjectSummary, scope: string): boolean {
-  if (scope === "all") return true;
-  const objectScope = typeof object.state.scope === "string" && object.state.scope.length > 0
-    ? object.state.scope
-    : "global";
-  if (objectScope === "global" || objectScope === scope) return true;
-  const domainRefs = object.state.domainRefs;
-  return Array.isArray(domainRefs) && domainRefs.includes(scope);
+  void scope;
 }

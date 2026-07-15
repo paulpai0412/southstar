@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { unsupportedPiRuntimeToolNames } from "../../harness/pi-runtime-tools.ts";
 import type { LibraryDefinitionKind } from "../types.ts";
 import type {
   LibraryFileKind,
@@ -123,6 +124,30 @@ export function parseLibraryFileContent(input: { path: string; content: string }
     issues.push(error("status", "status is required", "status_required"));
   } else if (!VALID_STATUSES.has(status as LibraryFileRecord["status"])) {
     issues.push(error("status", `status is not supported: ${status}`, "status_unsupported"));
+  }
+
+  if (format.kind === "tool") {
+    const runtimeToolNames = parsed.data.runtimeToolNames;
+    if (
+      !Array.isArray(runtimeToolNames)
+      || runtimeToolNames.length === 0
+      || runtimeToolNames.some((value) => typeof value !== "string" || value.trim().length === 0)
+    ) {
+      issues.push(error(
+        "runtimeToolNames",
+        "runtimeToolNames must contain at least one executable harness tool name",
+        "runtime_tool_binding_required",
+      ));
+    } else {
+      const unsupportedRuntimeToolNames = unsupportedPiRuntimeToolNames(runtimeToolNames);
+      if (unsupportedRuntimeToolNames.length > 0) {
+        issues.push(error(
+          "runtimeToolNames",
+          `runtimeToolNames contains tools unsupported by the Pi harness: ${unsupportedRuntimeToolNames.join(", ")}`,
+          "runtime_tool_binding_unsupported",
+        ));
+      }
+    }
   }
 
   if (id && (format.kind === "artifact" || format.kind === "evaluator")) {

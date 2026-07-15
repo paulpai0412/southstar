@@ -1,5 +1,6 @@
 import type { AnyTaskEnvelope } from "../agent-runner/task-envelope.ts";
 import type { AgentHarness, HarnessRunInput, HarnessRunResult } from "./types.ts";
+import { unsupportedPiRuntimeToolNames } from "./pi-runtime-tools.ts";
 
 export type PiSdkHarnessSession = {
   send?: (event: unknown) => Promise<void>;
@@ -14,6 +15,7 @@ type PiSdkHarnessSessionInput = {
   cwd: string;
   model?: { provider: string; modelId: string };
   thinkingLevel?: string;
+  tools?: string[];
 };
 
 export type PiSdkAgentHarnessOptions = {
@@ -99,8 +101,14 @@ function sessionInputFromEnvelope(envelope: HarnessRunInput["envelope"], cwd: st
   const provider = envelope.agentProfile.provider?.trim();
   const modelId = envelope.agentProfile.model?.trim();
   const thinkingLevel = envelope.agentProfile.thinkingLevel?.trim();
+  const tools = [...new Set(envelope.toolProxyPolicy?.allowedTools ?? [])].sort();
+  const unsupportedTools = unsupportedPiRuntimeToolNames(tools);
+  if (unsupportedTools.length > 0) {
+    throw new Error(`Pi SDK harness does not provide selected runtime tools: ${unsupportedTools.join(", ")}`);
+  }
   return {
     cwd,
+    tools,
     ...(provider && modelId ? { model: { provider, modelId } } : {}),
     ...(thinkingLevel ? { thinkingLevel } : {}),
   };
@@ -150,27 +158,42 @@ function runnerOutputContractDirective(envelope: HarnessRunInput["envelope"]): s
   const contract = primaryArtifactContract(envelope);
   const contractId = contract?.id;
   if (!contractId) return [];
-  const fields = contractId === "verification_report"
-    ? ["summary", "pass", "safeToSave", "verifiedArtifactRefs", "commandsRun", "testResults", "remainingFailures"]
-    : contract?.requiredFields ?? [];
+  // The Library artifact contract is the source of truth.  Do not substitute
+  // a legacy field set for a well-known artifact id: imported contracts may
+  // intentionally require different top-level fields (for example
+  // verdict/checks/evidenceRefs instead of summary/pass).
+  const fields = contract?.requiredFields ?? [];
+  const fieldSet = new Set(fields);
   return [
     "Runner output contract:",
     "Return exactly one JSON object. Do not wrap it in markdown.",
     `Top-level shape: {"artifact": {...}, "progress": string[], "metrics": object}.`,
     `artifact must contain these fields at top level: ${fields.join(", ")}.`,
-    "pass and safeToSave must be booleans: true or false.",
-    "commandsRun entries must be executed command result objects, not bare strings.",
-    "commandsRun.status allowed values: passed, failed, blocked.",
-    `commandsRun item schema: {"command": "npm test" or ["npm","test"], "status": "passed", "exitCode": 0, "output": "bounded relevant output"}.`,
-    "Each commandsRun item must include status or exitCode; command records without an outcome do not satisfy command-output evidence.",
-    "exitCode must be an integer; use 0 for success and non-zero for failed command execution.",
-    "testResults.status allowed values: passed, failed, failed_non_gating, blocked, not-verified, not-run, skipped, pass_with_environment_gap.",
-    "gating allowed values: blocking, non-gating.",
-    `testResults item schema: {"name": "check name", "command": "npm test", "status": "passed", "gating": "blocking", "details": "bounded evidence"}.`,
-    ...(contractId === "verification_report"
+    ...(fieldSet.has("pass") || fieldSet.has("safeToSave")
+      ? ["pass and safeToSave, when required by this contract, must be booleans: true or false."]
+      : []),
+    ...(fieldSet.has("commandsRun")
+      ? [
+        "commandsRun entries must be executed command result objects, not bare strings.",
+        "commandsRun.status allowed values: passed, failed, blocked.",
+        `commandsRun item schema: {"command": "npm test" or ["npm","test"], "status": "passed", "exitCode": 0, "output": "bounded relevant output"}.`,
+        "Each commandsRun item must include status or exitCode; command records without an outcome do not satisfy command-output evidence.",
+        "exitCode must be an integer; use 0 for success and non-zero for failed command execution.",
+      ]
+      : []),
+    ...(fieldSet.has("testResults")
+      ? [
+        "testResults.status allowed values: passed, failed, failed_non_gating, blocked, not-verified, not-run, skipped, pass_with_environment_gap.",
+        "gating allowed values: blocking, non-gating.",
+        `testResults item schema: {"name": "check name", "command": "npm test", "status": "passed", "gating": "blocking", "details": "bounded evidence"}.`,
+      ]
+      : []),
+    ...(fieldSet.has("verifiedArtifactRefs")
       ? ["verifiedArtifactRefs must be an array of exact upstream ArtifactRef values evaluated by this verifier."]
       : []),
-    "remainingFailures must be an array; use [] only when every blocking check passed.",
+    ...(fieldSet.has("remainingFailures")
+      ? ["remainingFailures must be an array; use [] only when every blocking check passed."]
+      : []),
     `Do not put the report under artifact.${contractId}.`,
     `Do not return {"${contractId}": ...} as the primary artifact shape.`,
   ];
@@ -219,6 +242,11 @@ async function createDefaultPiSdkSession(input: PiSdkHarnessSessionInput): Promi
   const pi = await import("@earendil-works/pi-coding-agent");
   const result = await pi.createAgentSession({
     cwd: input.cwd,
+    ...(input.tools !== undefined
+      ? input.tools.length > 0
+        ? { tools: input.tools }
+        : { noTools: "all" as const }
+      : {}),
     sessionStartEvent: {
       mode: "sdk",
       source: "southstar-agent-runner",
@@ -343,8 +371,9 @@ function completeArtifactForEnvelope(
   if (requiredFields.length === 0) return artifact;
 
   const next = { ...artifact };
-  applyContractFallbackFields(next, contract?.id, reason);
   if (!hasValue(next.summary)) next.summary = "Pi SDK returned a structured artifact without a summary.";
+  if (requiredFields.includes("pass") && !hasValue(next.pass)) next.pass = false;
+  if (requiredFields.includes("safeToSave") && !hasValue(next.safeToSave)) next.safeToSave = false;
   if (requiredFields.includes("filesChanged") && !hasValue(next.filesChanged)) next.filesChanged = [];
   if (requiredFields.includes("commandsRun") && !hasValue(next.commandsRun)) next.commandsRun = [];
   if (requiredFields.includes("testResults") && !hasValue(next.testResults)) {
@@ -397,45 +426,6 @@ function primaryContractArtifact(artifact: Record<string, unknown>, envelope: An
     ...artifact,
     ...nested,
   };
-}
-
-function applyContractFallbackFields(next: Record<string, unknown>, contractId: string | undefined, reason: string): void {
-  if (contractId === "verification_report") {
-    if (!hasValue(next.pass)) next.pass = false;
-    if (!hasValue(next.safeToSave)) next.safeToSave = false;
-    if (!hasValue(next.commandsRun)) next.commandsRun = [];
-    if (!hasValue(next.testResults)) {
-      next.testResults = [{
-        checkId: "pi-sdk-structured-output",
-        command: "pi-sdk-harness",
-        status: "not-verified",
-        gating: "blocking",
-        summary: "Pi SDK response did not include a structured verification report.",
-      }];
-    }
-    if (!hasValue(next.risks)) {
-      next.risks = ["Pi SDK returned unstructured verification text; runtime must trigger repair before accepting this work."];
-    }
-    if (!hasValue(next.artifactEvidence)) {
-      next.artifactEvidence = {
-        source: "pi-sdk-harness",
-        status: "synthesized",
-        reason,
-      };
-    }
-    return;
-  }
-  if (contractId === "completion_report") {
-    if (!hasValue(next.acceptedArtifacts)) next.acceptedArtifacts = [];
-    if (!hasValue(next.tests)) {
-      next.tests = [{
-        command: "pi-sdk-harness",
-        status: "not-verified",
-        gating: "non-gating",
-        summary: "Pi SDK response did not include structured completion test evidence.",
-      }];
-    }
-  }
 }
 
 function hasValue(value: unknown): boolean {

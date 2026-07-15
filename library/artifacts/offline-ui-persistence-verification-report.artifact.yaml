@@ -1,0 +1,38 @@
+schemaVersion: southstar.library.artifact_contract_file.v1
+id: artifact.offline-ui-persistence-verification-report
+title: "Offline UI Persistence Verification Report"
+scope: "software"
+status: approved
+artifactType: "offline_ui_persistence_verification_report"
+mediaTypes:
+  - "application/json"
+evidenceKinds:
+  - "artifact-ref"
+  - "command-output"
+  - "screenshot"
+  - "test-result"
+  - "url"
+  - "workspace-snapshot"
+validationRules:
+  - "Must document at least one offline create-and-list scenario with explicit pre-restart and post-restart list snapshots."
+  - "Must include automated test-result evidence confirming add/list behavior succeeds in offline mode."
+  - "Must link screenshot and URL evidence to the same verified scenario instance."
+  - "Must include command-output demonstrating the executed offline validation flow."
+  - "Must include artifact-ref links for persisted data snapshot records and workspace-snapshot provenance."
+schemaRef: "southstar.software.offline_ui_persistence_verification_report.v1"
+requiredFields:
+  - "scenarioId"
+  - "offlineExecutionContext"
+  - "uiActionTrace"
+  - "listSnapshotBeforeRestart"
+  - "listSnapshotAfterRestart"
+  - "persistenceComparison"
+  - "evidenceRefs"
+  - "generatedAt"
+provenanceRequirements:
+  - "Record repository revision and workspace identifier used for the validation run."
+  - "Record command invocations and timestamps for evidence generation."
+  - "Record traceability links from each evidence item to scenario and snapshot identifiers."
+importDraftId: "library-import-goal-b8d22f7611d9d0f033a129126ec0b8f9"
+importCandidateKey: "artifact.offline-ui-persistence-verification-report"
+importSourcePath: "Confirmed-Goal-validation-gaps.md"

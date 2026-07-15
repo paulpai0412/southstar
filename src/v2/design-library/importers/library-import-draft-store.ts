@@ -39,15 +39,19 @@ import {
 import {
   analyzeLibraryImportWithLlm,
   analyzeLibraryImportOntologyResultWithLlm,
+  normalizeLibraryImportCoverageTargets,
   type LibraryImportOntologyExistingGraph,
   type LibraryImportLlmProvider,
+  type LibraryImportProposalValidator,
 } from "./library-llm-import-analyzer.ts";
 import {
   normalizeLibraryImportCandidateKindFields,
 } from "./library-import-candidate-schema.ts";
 import type {
   LibraryImportCandidate,
+  LibraryImportCandidateCoverageTarget,
   LibraryImportCandidateKind,
+  LibraryImportCoverageConstraint,
   LibraryImportEdgeType,
   LibraryImportProposedEdge,
 } from "./library-candidate-extractor.ts";
@@ -64,6 +68,7 @@ export type LibraryImportDraftResult = {
   proposal: LibraryImportProposal;
   documents?: LibraryImportSourceDocument[];
   candidates?: LibraryImportCandidate[];
+  candidateCoverageTargets?: LibraryImportCandidateCoverageTarget[];
   proposedEdges?: LibraryImportProposedEdge[];
   piSessionId?: string;
 };
@@ -144,6 +149,8 @@ export async function createLibraryImportDraft(
     originGoalValidationResolutionHash?: string;
     originGoalValidationGapHash?: string;
     originGoalValidationAttempt?: number;
+    coverageConstraints?: LibraryImportCoverageConstraint[];
+    proposalValidator?: LibraryImportProposalValidator;
   },
 ): Promise<LibraryImportDraftResult> {
   const origin = await goalValidationImportOrigin(db, input);
@@ -179,6 +186,9 @@ export async function createLibraryImportDraft(
     llmProvider: input.llmProvider,
     requestPrompt: input.requestPrompt,
     sourceRepoPath: sourceSnapshot.repoPath,
+    coverageConstraints: input.coverageConstraints,
+    proposalValidator: input.proposalValidator,
+    progress: input.progress,
   });
   input.progress?.({
     event: "library.import.candidates.completed",
@@ -202,6 +212,8 @@ export async function createLibraryImportDraft(
       proposal,
       documents,
       candidates: analysis.candidates,
+      candidateCoverageTargets: analysis.candidateCoverageTargets,
+      ...(input.coverageConstraints ? { coverageConstraints: input.coverageConstraints } : {}),
       proposedEdges: analysis.proposedEdges,
       ...(origin ?? {}),
       ...(analysis.piSessionId ? { piSessionId: analysis.piSessionId } : {}),
@@ -225,6 +237,7 @@ export async function createLibraryImportDraft(
       proposal,
       documents,
       candidates: analysis.candidates,
+      candidateCoverageTargets: analysis.candidateCoverageTargets,
       proposedEdges: analysis.proposedEdges,
       ...(analysis.piSessionId ? { piSessionId: analysis.piSessionId } : {}),
     };
@@ -315,6 +328,11 @@ function linkedLibraryImportDraftResult(
     proposal: proposal as LibraryImportProposal,
     documents: asImportSourceDocuments(payload.documents),
     candidates: asImportCandidates(payload.candidates),
+    candidateCoverageTargets: asImportCandidateCoverageTargets(
+      payload.candidateCoverageTargets,
+      asImportCandidates(payload.candidates),
+      payload.coverageConstraints,
+    ),
     proposedEdges: asImportProposedEdges(payload.proposedEdges),
     ...(typeof payload.piSessionId === "string" ? { piSessionId: payload.piSessionId } : {}),
   };
@@ -482,6 +500,14 @@ export async function installLibraryImportCandidates(
   try {
     const draft = await loadLibraryImportCandidateDraft(db, input.draftId);
     const selectedCandidates = selectLibraryImportCandidates(draft.candidates, input.selectedCandidateIds);
+    if (draft.coverageConstraints.length > 0) {
+      const selectedKeys = new Set(selectedCandidates.map((candidate) => candidate.objectKey));
+      normalizeLibraryImportCoverageTargets(
+        draft.candidateCoverageTargets.filter((target) => selectedKeys.has(target.candidateObjectKey)),
+        selectedCandidates,
+        draft.coverageConstraints,
+      );
+    }
     const existingGraph = await loadLibraryImportOntologyExistingGraph(db, selectedCandidates);
     input.progress?.({
       event: "library.import.existing_graph.loaded",
@@ -754,18 +780,21 @@ async function preflightLibraryImportProposal(
   return preflighted;
 }
 
-type LibraryImportCandidateDraft = {
+export type LibraryImportCandidateDraft = {
   resourceId: string;
   status: string;
   payload: Record<string, unknown>;
   summary: Record<string, unknown>;
   candidates: LibraryImportCandidate[];
+  candidateCoverageTargets: LibraryImportCandidateCoverageTarget[];
+  coverageConstraints: LibraryImportCoverageConstraint[];
   proposedEdges: LibraryImportProposedEdge[];
 };
 
-async function loadLibraryImportCandidateDraft(
+export async function loadLibraryImportCandidateDraft(
   db: SouthstarDb,
   draftId: string,
+  options: { allowInstalled?: boolean } = {},
 ): Promise<LibraryImportCandidateDraft> {
   const resource = await db.maybeOne<LibraryImportDraftResourceRow>(
     `select id, status, title, payload_json, summary_json
@@ -778,7 +807,7 @@ async function loadLibraryImportCandidateDraft(
   if (payload.schemaVersion !== LIBRARY_IMPORT_DRAFT_SCHEMA_VERSION) {
     throw new Error(`library import draft has unsupported schema: ${draftId}`);
   }
-  if (resource.status !== "draft") {
+  if (resource.status !== "draft" && !(options.allowInstalled && resource.status === "installed")) {
     throw new Error(`library import draft is already ${resource.status}: ${draftId}`);
   }
   const candidates = asImportCandidates(payload.candidates);
@@ -791,6 +820,12 @@ async function loadLibraryImportCandidateDraft(
     payload,
     summary: asRecord(resource.summary_json),
     candidates,
+    candidateCoverageTargets: asImportCandidateCoverageTargets(
+      payload.candidateCoverageTargets,
+      candidates,
+      payload.coverageConstraints,
+    ),
+    coverageConstraints: asImportCoverageConstraints(payload.coverageConstraints),
     proposedEdges: asImportProposedEdges(payload.proposedEdges),
   };
 }
@@ -1018,6 +1053,12 @@ function renderLibraryImportCandidate(
           `description: ${yamlScalar(candidate.description ?? "")}`,
           ...yamlArray("requiredOperations", candidate.requiredOperations),
         ]
+        : candidate.kind === "tool"
+          ? [
+            ...(candidate.description ? [`description: ${yamlScalar(candidate.description)}`] : []),
+            ...yamlArray("operations", candidate.operations),
+            ...yamlArray("runtimeToolNames", candidate.runtimeToolNames),
+          ]
         : candidate.kind === "artifact"
           ? [
             ...(candidate.description ? [`description: ${yamlScalar(candidate.description)}`] : []),
@@ -1233,6 +1274,74 @@ function asImportCandidates(value: unknown): LibraryImportCandidate[] {
     };
     return candidate;
   });
+}
+
+function asImportCandidateCoverageTargets(
+  value: unknown,
+  candidates: LibraryImportCandidate[],
+  constraintsValue: unknown,
+): LibraryImportCandidateCoverageTarget[] {
+  return normalizeLibraryImportCoverageTargets(value, candidates, asImportCoverageConstraints(constraintsValue));
+}
+
+function asImportCoverageConstraints(value: unknown): LibraryImportCoverageConstraint[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error("coverageConstraints must be an array");
+  return value.map((item, index) => {
+    const record = asRecord(item);
+    if (typeof record.blocking !== "boolean") throw new Error(`coverageConstraints.${index}.blocking must be boolean`);
+    if (!Array.isArray(record.criterionIds) || record.criterionIds.some((criterionId) => typeof criterionId !== "string" || criterionId.trim().length === 0)) {
+      throw new Error(`coverageConstraints.${index}.criterionIds must be a string array`);
+    }
+    if (record.criterionStatements !== undefined && !Array.isArray(record.criterionStatements)) {
+      throw new Error(`coverageConstraints.${index}.criterionStatements must be an array`);
+    }
+    const criterionStatements = (record.criterionStatements ?? []).map((item, criterionIndex) => {
+      const criterion = asRecord(item);
+      return {
+        criterionId: requiredString(criterion.criterionId, `coverageConstraints.${index}.criterionStatements.${criterionIndex}.criterionId`),
+        statement: requiredString(criterion.statement, `coverageConstraints.${index}.criterionStatements.${criterionIndex}.statement`),
+      };
+    });
+    if (record.expectedOutcomeArtifacts !== undefined && !Array.isArray(record.expectedOutcomeArtifacts)) {
+      throw new Error(`coverageConstraints.${index}.expectedOutcomeArtifacts must be an array`);
+    }
+    const expectedOutcomeArtifacts = (record.expectedOutcomeArtifacts ?? []).map((item, artifactIndex) => {
+      const artifact = asRecord(item);
+      const mediaType = artifact.mediaType === undefined
+        ? undefined
+        : requiredString(artifact.mediaType, `coverageConstraints.${index}.expectedOutcomeArtifacts.${artifactIndex}.mediaType`);
+      return {
+        description: requiredString(artifact.description, `coverageConstraints.${index}.expectedOutcomeArtifacts.${artifactIndex}.description`),
+        ...(mediaType ? { mediaType } : {}),
+      };
+    });
+    return {
+      gapRef: requiredString(record.gapRef, `coverageConstraints.${index}.gapRef`),
+      requirementId: requiredString(record.requirementId, `coverageConstraints.${index}.requirementId`),
+      criterionIds: [...new Set(record.criterionIds as string[])].sort(),
+      requiredEvidenceKinds: strictStoredStringArray(record.requiredEvidenceKinds, `coverageConstraints.${index}.requiredEvidenceKinds`),
+      blocking: record.blocking,
+      gapKind: requiredString(record.gapKind, `coverageConstraints.${index}.gapKind`),
+      ...(record.requirementStatement === undefined ? {} : {
+        requirementStatement: requiredString(record.requirementStatement, `coverageConstraints.${index}.requirementStatement`),
+      }),
+      criterionStatements,
+      expectedOutcomeArtifacts,
+      verificationIntent: strictStoredStringArray(
+        record.verificationIntent,
+        `coverageConstraints.${index}.verificationIntent`,
+      ),
+    };
+  });
+}
+
+function strictStoredStringArray(value: unknown, label: string): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || item.trim().length === 0)) {
+    throw new Error(`${label} must be a string array`);
+  }
+  return [...new Set(value as string[])].sort();
 }
 
 function asImportSourceDocuments(value: unknown): LibraryImportSourceDocument[] {

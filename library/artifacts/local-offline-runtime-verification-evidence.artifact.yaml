@@ -1,0 +1,35 @@
+schemaVersion: southstar.library.artifact_contract_file.v1
+id: artifact.local-offline-runtime-verification-evidence
+title: "Local Offline Runtime Verification Evidence"
+scope: "software"
+status: approved
+artifactType: "local_offline_runtime_verification_evidence.v1"
+mediaTypes:
+  - "text/plain"
+  - "application/json"
+  - "image/png"
+evidenceKinds:
+  - "command-output"
+  - "policy-decision"
+  - "screenshot"
+  - "test-result"
+  - "url"
+validationRules:
+  - "Must include startup command output demonstrating successful local application launch."
+  - "Must include browser-accessible local endpoint evidence with matching URL and screenshot context."
+  - "Must include automated test-result evidence for required local flows."
+  - "Must include policy-decision evidence that core functionality does not depend on external network integrations."
+schemaRef: "southstar.artifact.local_offline_runtime_verification_evidence.v1"
+requiredFields:
+  - "startupLogs"
+  - "localEndpoint"
+  - "browserReachabilityEvidence"
+  - "localFlowTestResults"
+  - "offlineDependencyPolicyDecision"
+provenanceRequirements:
+  - "Evidence must originate from the same local workspace execution window."
+  - "Startup logs, URL checks, and screenshots must reference the same reachable endpoint."
+  - "Policy decision must identify the basis for offline-only core dependency assessment."
+importDraftId: "library-import-goal-908fab7db13a530ebf495d0169dd3a63"
+importCandidateKey: "artifact.local-offline-runtime-verification-evidence"
+importSourcePath: "Confirmed-Goal-validation-gaps.md"

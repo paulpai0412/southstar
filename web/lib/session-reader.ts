@@ -16,6 +16,7 @@ import type { SessionEntry as PiSessionEntry, SessionInfo as PiSessionInfo } fro
 import { normalizeToolCalls } from "./normalize";
 import { classifySessionKindFromEntries, type SessionKind } from "./session-kind";
 import { buildWorkflowCompositionPlanDisplay } from "./workflow/composition-plan-dag";
+import { isWorkflowUiCheckpointMessage, restorePersistedWorkflowUiMessage } from "./workflow/session-message";
 import { slimMessageForUi, slimSessionTreeForUi } from "./session-slimming";
 export { filterSessionsByKind, SOUTHSTAR_SESSION_KIND_CUSTOM_TYPE, type SessionKind } from "./session-kind";
 export { slimSessionTreeForUi } from "./session-slimming";
@@ -389,7 +390,8 @@ export function buildSessionContext(entries: SessionEntry[], leafId?: string | n
         timestamp: raw.timestamp as number | undefined,
       });
     }
-    return slimMessageForUi(renderWorkflowComposerMessage(normalizeToolCalls(msg)));
+    const restoredMessage = restorePersistedWorkflowUiMessage(msg);
+    return slimMessageForUi(renderWorkflowComposerMessage(normalizeToolCalls(restoredMessage)));
   });
 
   const display = filterDisplayMessages(contextMessages, contextEntryIds);
@@ -440,6 +442,8 @@ function filterDisplayMessages(messages: AgentMessage[], entryIds: string[]): Pi
 
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
+
+    if (isWorkflowUiCheckpointMessage(msg)) continue;
 
     displayMessages.push(msg);
     displayEntryIds.push(entryIds[i] ?? "");

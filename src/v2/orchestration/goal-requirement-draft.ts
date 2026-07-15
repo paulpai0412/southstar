@@ -7,11 +7,17 @@ import type { RequirementSpecV2 } from "../design-library/types.ts";
 import type { ResolvedGoalDesignSkillV1 } from "./goal-design.ts";
 import type { LlmTextClient } from "./llm-composer.ts";
 import type { WorkspaceGoalDiscoveryV1 } from "./goal-workspace-discovery.ts";
+import { EVIDENCE_KINDS, type EvidenceKind } from "../artifacts/types.ts";
+import {
+  finalizeUiInteractionContract,
+  type UiInteractionContractInputV1,
+  type UiInteractionContractV1,
+} from "./ui-interaction-contract.ts";
 
 export type GoalAcceptanceCriterionDraftV1 = {
   id: string;
   statement: string;
-  evidenceIntent: string[];
+  evidenceIntent: EvidenceKind[];
 };
 
 export type GoalAcceptanceCriterionDraftInputV1 = Omit<GoalAcceptanceCriterionDraftV1, "id"> & {
@@ -152,6 +158,11 @@ export type GoalRequirementDraftInterpreter = {
     | { kind: "revision"; draft: GoalRequirementDraftV1; summary: string }
     | { kind: "needs_input"; question: string }
   >;
+  designUiInteractionContracts?(input: {
+    requirementDraft: GoalRequirementDraftV1;
+    goalDesignSkill: ResolvedGoalDesignSkillV1;
+    onDelta?: (text: string) => void;
+  }): Promise<UiInteractionContractV1[]>;
 };
 
 export type LlmGoalRequirementDraftOptions = {
@@ -201,7 +212,48 @@ export function createLlmGoalRequirementDraftInterpreter(
     async revise(input) {
       return reviseGoalRequirementDraftWithLlm({ ...input, ...options });
     },
+    async designUiInteractionContracts(input) {
+      return designUiInteractionContractsWithLlm({ ...input, ...options });
+    },
   };
+}
+
+export async function designUiInteractionContractsWithLlm(input: {
+  requirementDraft: GoalRequirementDraftV1;
+  goalDesignSkill: ResolvedGoalDesignSkillV1;
+  onDelta?: (text: string) => void;
+} & LlmGoalRequirementDraftOptions): Promise<UiInteractionContractV1[]> {
+  const expectedRefs = activeUiInteractionContractRefs(input.requirementDraft);
+  if (expectedRefs.length === 0) return [];
+  const basePrompt = renderUiInteractionContractDesignPrompt(input.requirementDraft, input.goalDesignSkill, expectedRefs);
+  let prompt = basePrompt;
+  const maxOutputChars = input.maxOutputChars ?? MAX_REQUIREMENT_RESPONSE_CHARS;
+  for (let attempt = 1; attempt <= MAX_REQUIREMENT_ATTEMPTS; attempt += 1) {
+    const deltas: string[] = [];
+    const response = input.client.generateTextStream
+      ? await input.client.generateTextStream(
+        { model: input.model, prompt, temperature: 0, cwd: input.requirementDraft.workspace.cwd },
+        { onDelta: (delta) => deltas.push(delta) },
+      )
+      : await input.client.generateText({
+        model: input.model,
+        prompt,
+        temperature: 0,
+        cwd: input.requirementDraft.workspace.cwd,
+      });
+    try {
+      if (response.length > maxOutputChars) throw new Error(`response exceeds ${maxOutputChars} characters`);
+      const contracts = parseUiInteractionContractDesign(response, input.requirementDraft, expectedRefs);
+      for (const delta of deltas) input.onDelta?.(delta);
+      return contracts;
+    } catch (error) {
+      if (attempt === MAX_REQUIREMENT_ATTEMPTS) {
+        throw new Error(`invalid UI interaction contract design: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      prompt = renderRequirementRepairPrompt(basePrompt, response, error);
+    }
+  }
+  throw new Error("UI interaction contract designer exhausted attempts");
 }
 
 export async function interpretGoalRequirementDraftWithLlm(input: {
@@ -411,6 +463,16 @@ export function goalRequirementDraftReadiness(draft: GoalRequirementDraftV1): {
   return { confirmable: issues.length === 0, issues };
 }
 
+/**
+ * Validate a draft strongly enough to persist a review revision while still
+ * allowing the user to resolve reviewable requirement issues in the UI.
+ * Confirmation continues to use goalRequirementDraftReadiness, so an
+ * unresolved blocking question can never become Goal Contract authority.
+ */
+export function validateGoalRequirementDraftForRevision(draft: GoalRequirementDraftV1): GoalRequirementDraftIssue[] {
+  return validateGoalRequirementDraft(draft).filter((entry) => !REVISION_REVIEWABLE_ISSUES.has(entry.code));
+}
+
 export function reviseGoalRequirementDraft(
   draft: GoalRequirementDraftV1,
   operation: GoalRequirementDraftRevisionOperation,
@@ -533,6 +595,7 @@ const VALID_STATUSES = new Set<GoalRequirementDraftItemV1["status"]>([
   "confirmed",
   "superseded",
 ]);
+const VALID_EVIDENCE_KINDS = new Set<string>(EVIDENCE_KINDS);
 
 const REVISION_REVIEWABLE_ISSUES = new Set<GoalRequirementDraftIssueCode>([
   "blocking_requirement_missing_criteria",
@@ -642,7 +705,7 @@ function validateRequirementShape(requirement: unknown): boolean {
 
 function criterionInputShape(value: unknown): boolean {
   if (!isRecord(value)) return false;
-  return nonEmptyString(value.statement) && stringArrayValid(value.evidenceIntent);
+  return nonEmptyString(value.statement) && evidenceKindArrayValid(value.evidenceIntent);
 }
 
 function criterionDraftShape(value: unknown): boolean {
@@ -814,7 +877,7 @@ function renderRequirementInterpretationPrompt(input: {
         blocking: "boolean",
         userVisibleBehaviors: ["string"],
         businessRules: ["string"],
-        acceptanceCriteria: [{ statement: "string", evidenceIntent: ["string"] }],
+        acceptanceCriteria: [{ statement: "string", evidenceIntent: ["EvidenceKind"] }],
         expectedOutcomeArtifacts: [{ description: "string", mediaType: "string?" }],
         verificationIntent: ["string"],
         assumptions: ["string"],
@@ -829,6 +892,9 @@ function renderRequirementInterpretationPrompt(input: {
     "Return exactly the requirement fields shown above. Every array item must be a non-empty string unless it is an object shown in the schema.",
     "Use [] for empty arrays. Do not use null, false, objects, or empty strings as array entries.",
     "Requirements must describe independently verifiable observable outcomes, including user-visible behaviors, rules, acceptance criteria, expected artifacts, and verification intent.",
+    `Every acceptanceCriteria.evidenceIntent value must be one of these exact host evidence kinds: ${EVIDENCE_KINDS.join(", ")}. Translate semantic evidence requests into these values; never put prose in evidenceIntent.`,
+    "Set interactionContractRefs only when that requirement's acceptance depends on reviewing a visual layout, visible UI state, responsive behavior, accessibility behavior, or an interactive screen transition.",
+    "Do not attach interactionContractRefs to persistence, data integrity, offline operation, implementation, automated testing, packaging, or other non-visual requirements merely because the overall goal includes a UI. Use [] for those requirements.",
     "Do not return Library object references, workflow plans, graph nodes, agent assignments, tool grants, or execution sequencing.",
     "Do not return host-owned fields: schemaVersion, originalPrompt, workspace, projectRef, id, revision, parentRevision, status, draftHash, or any hash.",
     "blockingInputs are only unavailable decisions that require the user; do not use them for local workspace facts discoverable below.",
@@ -869,12 +935,90 @@ function renderRequirementRevisionPrompt(input: {
     }),
     "For kind=revision, return exactly kind, summary, and either draft or operation. Draft contains exactly summary, requirements, nonGoals, blockingInputs. Operation contains semantic fields only; the host chooses target ids from the host selections below.",
     "For kind=needs_input, return exactly kind and question.",
+    `Every revised acceptanceCriteria.evidenceIntent value must remain one of these exact host evidence kinds: ${EVIDENCE_KINDS.join(", ")}. Never put prose in evidenceIntent.`,
+    "Preserve the interaction-contract policy: only requirements whose acceptance depends on visual layout, visible UI state, responsive/accessibility behavior, or interactive screen transitions may have interactionContractRefs. Non-visual requirements must use [].",
     "Do not return requirement ids, status, revision, parentRevision, draftHash, hashes, library references, orchestration fields, or execution fields.",
     `SelectedRequirementId (host context only): ${input.selectedRequirementId ?? ""}`,
     `SelectedRequirementIds (host context only): ${JSON.stringify(input.selectedRequirementIds ?? [])}`,
     `UserMessage: ${input.message}`,
     `CurrentRequirementDraft: ${JSON.stringify(input.currentDraft)}`,
   ].join("\n");
+}
+
+function renderUiInteractionContractDesignPrompt(
+  draft: GoalRequirementDraftV1,
+  goalDesignSkill: ResolvedGoalDesignSkillV1,
+  expectedRefs: string[],
+): string {
+  return [
+    "Use the approved Goal Design skill to turn only the Requirement Draft's declared interactionContractRefs into reviewable UI interaction contracts.",
+    `GoalDesignSkillRef: ${goalDesignSkill.objectKey}`,
+    `GoalDesignSkillVersionRef: ${goalDesignSkill.versionRef}`,
+    goalDesignSkill.body,
+    "Return JSON only with exactly one top-level key: contracts.",
+    "UiInteractionContractDesignOutputSchema:",
+    JSON.stringify({
+      contracts: [{
+        id: "exact interactionContractRef",
+        requirementIds: ["exact Requirement id"],
+        screens: [{
+          id: "string",
+          title: "string",
+          purpose: "string",
+          layout: { regions: [{ id: "string", role: "header | navigation | main | aside | footer | dialog | status", position: "top | left | center | right | bottom | overlay", childRefs: ["element id"] }] },
+          elements: [{ id: "string", type: "button | input | textarea | select | checkbox | text | heading | list | card | form | table | image | link | status", label: "string?", visibleInStates: ["state id"], enabledInStates: ["state id"] }],
+          states: ["string"],
+          actions: [{ id: "string", triggerElementId: "element id", fromState: "state id", toState: "state id", targetScreenId: "screen id?", expectedEffect: "string" }],
+          responsiveRules: ["string"],
+          accessibilityRules: ["string"],
+        }],
+        flows: [{ id: "string", steps: ["action id"], successOutcome: "string" }],
+        criterionBindings: [{ criterionId: "exact criterion id", screenIds: ["screen id"], elementIds: ["element id"], actionIds: ["action id"] }],
+      }],
+    }),
+    `Return exactly one contract for every ref in ExpectedInteractionContractRefs and no other contract: ${JSON.stringify(expectedRefs)}.`,
+    "Use only exact Requirement and criterion ids from RequirementDraft. Every active referenced Requirement and every one of its criteria must be covered by the matching contract.",
+    "Model observable layout, visible states, actions, responsive rules, accessibility rules, and success flows. Do not include host-owned revision, status, hash, schemaVersion, or persistence fields.",
+    "Do not invent implementation tasks, workflow nodes, Library objects, test commands, source files, or API endpoints.",
+    "RequirementDraft:",
+    JSON.stringify(draft),
+  ].join("\n");
+}
+
+function activeUiInteractionContractRefs(draft: GoalRequirementDraftV1): string[] {
+  return [...new Set(draft.requirements
+    .filter((requirement) => requirement.status !== "superseded")
+    .flatMap((requirement) => requirement.interactionContractRefs))].sort();
+}
+
+function parseUiInteractionContractDesign(
+  response: string,
+  draft: GoalRequirementDraftV1,
+  expectedRefs: string[],
+): UiInteractionContractV1[] {
+  const payload = parseJsonObject(response, "UI interaction contract design");
+  exactSemanticKeys(payload, ["contracts"], "UI interaction contract design");
+  const expected = new Set(expectedRefs);
+  const seen = new Set<string>();
+  const contracts = requiredArray(payload.contracts, "contracts").map((value, index) => {
+    const path = `contracts.${index}`;
+    const contract = parseJsonObject(value, path);
+    exactSemanticKeys(contract, ["id", "requirementIds", "screens", "flows", "criterionBindings"], path);
+    const id = requiredString(contract.id, `${path}.id`);
+    if (!expected.has(id)) throw new Error(`${path}.id is not a declared interactionContractRef: ${id}`);
+    if (seen.has(id)) throw new Error(`duplicate UI interaction contract: ${id}`);
+    seen.add(id);
+    const input: UiInteractionContractInputV1 = {
+      requirementIds: requiredStringArray(contract.requirementIds, `${path}.requirementIds`),
+      screens: requiredArray(contract.screens, `${path}.screens`) as UiInteractionContractInputV1["screens"],
+      flows: requiredArray(contract.flows, `${path}.flows`) as UiInteractionContractInputV1["flows"],
+      criterionBindings: requiredArray(contract.criterionBindings, `${path}.criterionBindings`) as UiInteractionContractInputV1["criterionBindings"],
+    };
+    return finalizeUiInteractionContract(input, draft, { id });
+  });
+  const missing = expectedRefs.filter((ref) => !seen.has(ref));
+  if (missing.length > 0) throw new Error(`missing UI interaction contracts: ${missing.join(", ")}`);
+  return contracts;
 }
 
 function renderRequirementRepairPrompt(basePrompt: string, response: string, error: unknown): string {
@@ -984,7 +1128,7 @@ function parseSemanticPatch(value: unknown, path: string): GoalRequirementDraftS
       exactSemanticKeys(criterionObject, REQUIREMENT_CRITERION_KEYS, criterionPath);
       return {
         statement: requiredString(criterionObject.statement, `${criterionPath}.statement`),
-        evidenceIntent: requiredStringArray(criterionObject.evidenceIntent, `${criterionPath}.evidenceIntent`),
+        evidenceIntent: requiredEvidenceKinds(criterionObject.evidenceIntent, `${criterionPath}.evidenceIntent`),
       };
     });
   }
@@ -1012,7 +1156,7 @@ function parseSemanticRequirement(value: unknown, index: number, prefix = "requi
     exactSemanticKeys(criterionObject, REQUIREMENT_CRITERION_KEYS, criterionPath);
     return {
       statement: requiredString(criterionObject.statement, `${criterionPath}.statement`),
-      evidenceIntent: requiredStringArray(criterionObject.evidenceIntent, `${criterionPath}.evidenceIntent`),
+      evidenceIntent: requiredEvidenceKinds(criterionObject.evidenceIntent, `${criterionPath}.evidenceIntent`),
     };
   });
   const artifacts = requiredArray(object.expectedOutcomeArtifacts, `${path}.expectedOutcomeArtifacts`).map((artifact, artifactIndex) => {
@@ -1254,6 +1398,19 @@ function requiredArray(value: unknown, path: string): unknown[] {
 
 function requiredStringArray(value: unknown, path: string): string[] {
   return requiredArray(value, path).map((entry, index) => requiredString(entry, `${path}.${index}`));
+}
+
+function requiredEvidenceKinds(value: unknown, path: string): EvidenceKind[] {
+  const values = requiredStringArray(value, path);
+  const unsupported = values.filter((item) => !VALID_EVIDENCE_KINDS.has(item));
+  if (unsupported.length > 0) {
+    throw new Error(`${path} contains unsupported evidence kinds: ${unsupported.join(", ")}; allowed values: ${EVIDENCE_KINDS.join(", ")}`);
+  }
+  return values as EvidenceKind[];
+}
+
+function evidenceKindArrayValid(value: unknown): value is EvidenceKind[] {
+  return stringArrayValid(value) && value.every((item) => VALID_EVIDENCE_KINDS.has(item));
 }
 
 function requiredString(value: unknown, path: string): string {

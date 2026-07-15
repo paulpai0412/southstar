@@ -349,15 +349,15 @@ function beautifulArticleSkill(): SeedObject {
 }
 
 function workspaceReadTool(): SeedObject {
-  return { objectKey: "tool.workspace-read", objectKind: "tool_definition", state: { access: "read", toolName: "workspace-read", proxyToolName: "workspace-read-proxy" } };
+  return { objectKey: "tool.workspace-read", objectKind: "tool_definition", state: { access: "read", runtimeToolNames: ["read", "grep", "find", "ls"] } };
 }
 
 function workspaceWriteTool(): SeedObject {
-  return { objectKey: "tool.workspace-write", objectKind: "tool_definition", state: { access: "write", toolName: "workspace-write", proxyToolName: "workspace-write-proxy" } };
+  return { objectKey: "tool.workspace-write", objectKind: "tool_definition", state: { access: "write", runtimeToolNames: ["edit", "write"] } };
 }
 
 function shellTool(): SeedObject {
-  return { objectKey: "tool.shell-command", objectKind: "tool_definition", state: { access: "shell", toolName: "shell", proxyToolName: "shell-proxy" } };
+  return { objectKey: "tool.shell-command", objectKind: "tool_definition", state: { access: "shell", runtimeToolNames: ["bash"] } };
 }
 
 function browserMcpGrant(): SeedObject {

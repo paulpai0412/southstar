@@ -59,6 +59,7 @@ import {
   reviseUiInteractionContractPg,
 } from "../../src/v2/orchestration/goal-design-draft-service.ts";
 import { finalizeGoalRequirementDraft, type GoalRequirementDraftInputV1 } from "../../src/v2/orchestration/goal-requirement-draft.ts";
+import { finalizeUiInteractionContract } from "../../src/v2/orchestration/ui-interaction-contract.ts";
 import { resolveGoalValidationPg } from "../../src/v2/orchestration/goal-validation-resolver.ts";
 import {
   createPostgresPlannerDraft,
@@ -128,6 +129,47 @@ test("Goal submission persists requirements_review before Slice design", async (
   });
 });
 
+test("Goal submission persists blocking open questions for requirements review and blocks confirmation", async () => {
+  await withDb(async (db) => {
+    await seedGoalDesignSkill(db);
+    const cwd = process.cwd();
+    const goalPrompt = "Create an offline article with a review decision";
+    const input = validGoalRequirementDraftInput(goalPrompt, cwd);
+    input.requirements[0]!.openQuestions = ["Should the review decision be persisted locally?"];
+    const semanticDraft = finalizeGoalRequirementDraft(input);
+    const draft = await preparePostgresGoalRequirementDraft(db, {
+      goalPrompt,
+      cwd,
+      requirementInterpreter: {
+        async interpret() { return semanticDraft; },
+        async revise() { return { kind: "revision", draft: semanticDraft, summary: "unchanged" }; },
+      },
+    });
+
+    assert.equal(draft.status, "requirements_review");
+    assert.equal(draft.confirmable, false);
+    assert.ok(draft.validationIssues.some((entry) => entry.code === "blocking_requirement_has_open_question"));
+    assert.ok(await getResourceByKeyPg(db, "planner_draft", draft.draftId));
+    assert.deepEqual(await loadCurrentGoalRequirementDraftPg(db, draft.draftId), semanticDraft);
+    await assert.rejects(
+      () => confirmGoalRequirementsPg(db, {
+        draftId: draft.draftId,
+        expectedDraftHash: draft.goalRequirementDraftHash,
+        goalContractMetadata: {
+          domain: "design/article",
+          intent: "review",
+          workType: "general",
+          expectedArtifactRefs: [],
+          requiredCapabilities: [],
+          assumptions: [],
+          requestedSideEffects: [],
+        },
+      }),
+      /goal_requirement_not_confirmable/,
+    );
+  });
+});
+
 test("visual requirements remain unconfirmable until a versioned UI contract is confirmed", async () => {
   await withDb(async (db) => {
     await seedGoalDesignSkill(db);
@@ -184,6 +226,36 @@ test("visual requirements remain unconfirmable until a versioned UI contract is 
     assert.equal(current.parentRevision, 1);
     assert.ok(await getResourceByKeyPg(db, "ui_interaction_contract_revision", `${draft.draftId}:ui-review:revision:1`));
     assert.ok(await getResourceByKeyPg(db, "ui_interaction_contract_revision", `${draft.draftId}:ui-review:revision:2`));
+  });
+});
+
+test("Requirement preparation persists LLM-designed UI contracts before visual review", async () => {
+  await withDb(async (db) => {
+    await seedGoalDesignSkill(db);
+    const cwd = process.cwd();
+    const goalPrompt = "Create a review interaction";
+    const semanticDraft = visualRequirementDraft(goalPrompt, cwd);
+    const requirement = semanticDraft.requirements[0]!;
+    const generatedContract = finalizeUiInteractionContract(
+      visualContractInput(requirement.id, requirement.acceptanceCriteria[0]!.id),
+      semanticDraft,
+      { id: "ui-review" },
+    );
+    const result = await preparePostgresGoalRequirementDraft(db, {
+      goalPrompt,
+      cwd,
+      requirementInterpreter: {
+        async interpret() { return semanticDraft; },
+        async revise() { return { kind: "revision", draft: semanticDraft, summary: "unchanged" }; },
+        async designUiInteractionContracts() { return [generatedContract]; },
+      },
+    });
+    assert.equal(result.confirmable, false);
+    assert.equal(result.validationIssues.some((entry) => entry.code === "missing_ui_interaction_contract"), false);
+    assert.equal(result.validationIssues.some((entry) => entry.code === "unconfirmed_ui_interaction_contract"), true);
+    const stored = await loadCurrentUiInteractionContractPg(db, { draftId: result.draftId, contractId: "ui-review" });
+    assert.equal(stored.contractHash, generatedContract.contractHash);
+    assert.equal(stored.status, "draft");
   });
 });
 
@@ -322,9 +394,9 @@ test("confirmed requirements with gaps create one immutable linked Library impor
     const goal = await createConfirmedGoalRequirementDraft(db, "Create an offline article with validation");
     const missing = validationResolution(goal, false);
     let candidateCalls = 0;
-    const provider: LibraryImportLlmProvider = async () => {
+    const provider: LibraryImportLlmProvider = async ({ prompt }) => {
       candidateCalls += 1;
-      return validationImportCandidates();
+      return validationImportCandidates(prompt);
     };
 
     const first = await resolveAndPersistGoalValidationPg(db, {
@@ -349,12 +421,18 @@ test("confirmed requirements with gaps create one immutable linked Library impor
     assert.equal((importDraft!.payload as any).originGoalContractHash, goal.goalContractHash);
     assert.equal((importDraft!.payload as any).originGoalRequirementDraftHash, goal.goalRequirementDraftHash);
     assert.equal((importDraft!.payload as any).originGoalValidationResolutionHash, missing.resolutionHash);
-    assert.match((importDraft!.payload as any).requestPrompt, /smallest reusable Library candidate change set/);
+    assert.match((importDraft!.payload as any).requestPrompt, /one complete reusable Library candidate proposal/);
     assert.match((importDraft!.payload as any).requestPrompt, /Do not create unrelated domain, capability, agent, skill, tool, MCP, workflow/);
     const gapSource = JSON.parse((importDraft!.payload as any).source.content);
     assert.equal(gapSource.schemaVersion, "southstar.goal_validation_import_request.v1");
     assert.deepEqual(gapSource.gaps.map((gap: any) => gap.requirementId), [goal.goalContract.requirements[0]!.id]);
     assert.deepEqual(gapSource.requirements[0].acceptanceCriteria, goal.goalContract.requirements[0]!.acceptanceCriteria);
+    const coverageConstraint = (importDraft!.payload as any).coverageConstraints[0];
+    assert.equal(coverageConstraint.requirementStatement, goal.goalContract.requirements[0]!.statement);
+    assert.deepEqual(
+      coverageConstraint.criterionStatements.map((criterion: any) => criterion.statement),
+      goal.goalRequirementDraft.requirements[0]!.acceptanceCriteria.map((criterion) => criterion.statement),
+    );
     const resolutionCount = await db.one<{ count: string }>(
       "select count(*) from southstar.runtime_resources where resource_type = 'goal_validation_resolution_revision' and resource_key like $1",
       [`${goal.draftId}:%`],
@@ -561,7 +639,7 @@ test("Requirement review through validated DAG has no late validation candidate 
   });
 });
 
-test("partial candidate approval creates an actionable follow-up draft that can be approved to finish validation", async () => {
+test("Goal-linked candidate install rejects a partial selection before writing Library files", async () => {
   await withDb(async (db) => {
     const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-goal-validation-partial-"));
     try {
@@ -569,7 +647,7 @@ test("partial candidate approval creates an actionable follow-up draft that can 
       await writeFile(join(libraryRoot, "skills/goal.skill.md"), approvedGoalValidationPurposeSkill("skill.test-goal", "goal_design"));
       await writeFile(join(libraryRoot, "skills/composer.skill.md"), approvedGoalValidationPurposeSkill("skill.test-composer", "composer_guidance"));
       const goal = await createConfirmedGoalRequirementDraft(db, "Create an offline article through partial Library approval");
-      const provider = partialGoalValidationImportProvider();
+      const provider = realGoalValidationImportProvider();
       const waiting = await resolveAndPersistGoalValidationPg(db, {
         draftId: goal.draftId,
         expectedGoalContractHash: goal.goalContractHash,
@@ -588,40 +666,17 @@ test("partial candidate approval creates an actionable follow-up draft that can 
           }),
         }));
       const partialEnvelope = await partialResponse.json() as any;
-      assert.equal(partialResponse.status, 200, JSON.stringify(partialEnvelope));
-      assert.equal(partialEnvelope.result.goalValidationResume.status, "library_review");
-      const followUpDraftId = partialEnvelope.result.goalValidationResume.libraryImportDraftId;
-      assert.match(followUpDraftId, /^library-import-goal-/);
-      assert.notEqual(followUpDraftId, firstDraftId);
-      assert.equal((await getResourceByKeyPg(db, "library_import_draft", firstDraftId))?.status, "installed");
-      const followUp = await getResourceByKeyPg(db, "library_import_draft", followUpDraftId);
-      assert.equal(followUp?.status, "draft");
-      assert.equal((followUp?.payload as any).originGoalValidationAttempt, 2);
-      assert.deepEqual((followUp?.payload as any).candidates.map((candidate: any) => candidate.objectKey), ["evaluator.offline-html"]);
-
-      const completeResponse = await handleRuntimeRoute({ db, libraryRoot, libraryImportLlmProvider: provider } as any,
-        new Request(`http://local/api/v2/library/import-drafts/${followUpDraftId}/install`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            selectedCandidateIds: ["evaluator.offline-html"],
-            actor: "operator",
-            reason: "approve the remaining evaluator contract",
-          }),
-        }));
-      const completeEnvelope = await completeResponse.json() as any;
-      assert.equal(completeResponse.status, 200, JSON.stringify(completeEnvelope));
-      assert.equal(completeEnvelope.result.goalValidationResume.status, "validation_ready");
-      const stored = await getResourceByKeyPg(db, "planner_draft", goal.draftId);
-      assert.equal((stored?.payload as any).goalDesignPhase, "validation_ready");
-      assert.equal((stored?.payload as any).goalValidationResolution.gaps.length, 0);
+      assert.equal(partialResponse.status, 400, JSON.stringify(partialEnvelope));
+      assert.match(partialEnvelope.error, /complete artifact\/evaluator candidate pair/);
+      assert.equal((await getResourceByKeyPg(db, "library_import_draft", firstDraftId))?.status, "draft");
+      assert.equal(await findLibraryObjectByKey(db, "artifact.offline-html"), null);
     } finally {
       await rm(libraryRoot, { recursive: true, force: true });
     }
   });
 });
 
-test("an installed linked draft is not reused when the same resolution hash still has gaps", async () => {
+test("candidate store refuses a partial Goal-linked install before a follow-up round can be created", async () => {
   await withDb(async (db) => {
     const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-goal-validation-same-resolution-"));
     try {
@@ -634,25 +689,16 @@ test("an installed linked draft is not reused when the same resolution hash stil
         draftId: goal.draftId,
         expectedGoalContractHash: goal.goalContractHash,
         resolver: async () => missing,
-        libraryImportLlmProvider: async () => validationImportCandidates(),
+        libraryImportLlmProvider: async ({ prompt }) => validationImportCandidates(prompt),
       });
-      await installLibraryImportCandidates(db, {
-        root: libraryRoot,
-        draftId: waiting.libraryImportDraftId!,
-        selectedCandidateIds: ["artifact.offline-html"],
-        actor: "operator",
-        reason: "approve one candidate while the resolver remains unchanged",
-      });
-
-      const resumed = await resumeGoalValidationAfterLibraryImportPg(db, {
-        libraryImportDraftId: waiting.libraryImportDraftId!,
-        resolver: async () => missing,
-        libraryImportLlmProvider: async () => ({ candidates: validationImportCandidates().candidates.filter((candidate) => candidate.kind === "evaluator") }),
-      });
-      assert.equal(resumed.goalValidationResolution.resolutionHash, missing.resolutionHash);
-      assert.notEqual(resumed.libraryImportDraftId, waiting.libraryImportDraftId);
-      assert.equal((await getResourceByKeyPg(db, "library_import_draft", waiting.libraryImportDraftId!))?.status, "installed");
-      assert.equal((await getResourceByKeyPg(db, "library_import_draft", resumed.libraryImportDraftId!))?.status, "draft");
+      await assert.rejects(() => installLibraryImportCandidates(db, {
+          root: libraryRoot,
+          draftId: waiting.libraryImportDraftId!,
+          selectedCandidateIds: ["artifact.offline-html"],
+          actor: "operator",
+          reason: "partial Goal-linked proposal must be rejected",
+        }), /complete artifact\/evaluator candidate pair/);
+      assert.equal((await getResourceByKeyPg(db, "library_import_draft", waiting.libraryImportDraftId!))?.status, "draft");
     } finally {
       await rm(libraryRoot, { recursive: true, force: true });
     }
@@ -666,7 +712,7 @@ test("Requirement revision marks linked validation import candidates stale", asy
       draftId: goal.draftId,
       expectedGoalContractHash: goal.goalContractHash,
       resolver: async () => validationResolution(goal, false),
-      libraryImportLlmProvider: async () => validationImportCandidates(),
+      libraryImportLlmProvider: async ({ prompt }) => validationImportCandidates(prompt),
     });
     assert.ok(waiting.libraryImportDraftId);
 
@@ -716,7 +762,7 @@ test("Library install rejects a linked candidate when the persisted validation r
         draftId: goal.draftId,
         expectedGoalContractHash: goal.goalContractHash,
         resolver: async () => original,
-        libraryImportLlmProvider: async () => validationImportCandidates(),
+        libraryImportLlmProvider: async ({ prompt }) => validationImportCandidates(prompt),
       });
       const { resolutionHash: _oldHash, ...changedWithoutHash } = original;
       const changedPayload = {
@@ -778,8 +824,9 @@ test("Library install rechecks Goal validation under the install transaction loc
         resolutionHash: contentHashForPayload(changedPayload),
       };
       let changedDuringInstall = false;
-      const provider: LibraryImportLlmProvider = async ({ prompt }) => {
-        if (prompt.startsWith("Rank only the supplied approved artifact contracts")) return { recommendations: [] };
+      const resolveProvider = realGoalValidationImportProvider();
+      const provider: LibraryImportLlmProvider = async (request) => {
+        const { prompt } = request;
         if (prompt.startsWith("Generate ontology edges")) {
           if (!changedDuringInstall) {
             changedDuringInstall = true;
@@ -792,7 +839,7 @@ test("Library install rechecks Goal validation under the install transaction loc
           }
           return { proposedEdges: [] };
         }
-        return validationImportCandidates();
+        return await resolveProvider(request);
       };
       const waiting = await resolveAndPersistGoalValidationPg(db, {
         draftId: goal.draftId,
@@ -822,7 +869,7 @@ test("Library install rechecks Goal validation under the install transaction loc
   });
 });
 
-test("a post-commit resolver failure keeps installed Library state and returns a recoverable Goal error", async () => {
+test("a post-commit Library install reuses its validated proposal without a second rank pass", async () => {
   await withDb(async (db) => {
     const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-goal-validation-post-commit-error-"));
     try {
@@ -831,14 +878,18 @@ test("a post-commit resolver failure keeps installed Library state and returns a
       await writeFile(join(libraryRoot, "skills/composer.skill.md"), approvedGoalValidationPurposeSkill("skill.test-composer", "composer_guidance"));
       const goal = await createConfirmedGoalRequirementDraft(db, "Keep Library install committed if validation retry fails");
       let rankCalls = 0;
-      const provider: LibraryImportLlmProvider = async ({ prompt }) => {
+      const resolveProvider = realGoalValidationImportProvider();
+      const provider: LibraryImportLlmProvider = async (request) => {
+        const { prompt } = request;
         if (prompt.startsWith("Rank only the supplied approved artifact contracts")) {
           rankCalls += 1;
+          // The initial Goal validation is the only semantic rank pass.  The
+          // post-commit resume must use the installed proposal coverage and
+          // never call this ranker again.
           if (rankCalls > 1) throw new Error("temporary ranker outage after committed install");
-          return { recommendations: [] };
         }
         if (prompt.startsWith("Generate ontology edges")) return { proposedEdges: [] };
-        return validationImportCandidates();
+        return await resolveProvider(request);
       };
       const waiting = await resolveAndPersistGoalValidationPg(db, {
         draftId: goal.draftId,
@@ -859,19 +910,19 @@ test("a post-commit resolver failure keeps installed Library state and returns a
       const envelope = await response.json() as any;
       assert.equal(response.status, 200, JSON.stringify(envelope));
       assert.equal(envelope.result.installed, true);
-      assert.equal(envelope.result.goalValidationResume.ok, false);
-      assert.equal(envelope.result.goalValidationResume.recoverable, true);
-      assert.match(envelope.result.goalValidationResume.error, /temporary ranker outage/);
+      assert.equal(envelope.result.goalValidationResume.ok, true);
+      assert.equal(envelope.result.goalValidationResume.status, "validation_ready");
+      assert.equal(rankCalls, 1);
       assert.equal((await getResourceByKeyPg(db, "library_import_draft", waiting.libraryImportDraftId!))?.status, "installed");
       assert.equal((await findLibraryObjectByKey(db, "artifact.offline-html"))?.status, "approved");
-      assert.equal((await getResourceByKeyPg(db, "planner_draft", goal.draftId))?.status, "library_review");
+      assert.equal((await getResourceByKeyPg(db, "planner_draft", goal.draftId))?.status, "validation_ready");
     } finally {
       await rm(libraryRoot, { recursive: true, force: true });
     }
   });
 });
 
-test("a post-commit missing provider error preserves actionable resume readiness", async () => {
+test("a post-commit resume does not require the validation LLM provider", async () => {
   await withDb(async (db) => {
     const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-goal-validation-resume-provider-missing-"));
     try {
@@ -898,14 +949,11 @@ test("a post-commit missing provider error preserves actionable resume readiness
       const envelope = await response.json() as any;
       assert.equal(response.status, 200, JSON.stringify(envelope));
       assert.equal(envelope.result.installed, true);
-      assert.equal(envelope.result.goalValidationResume.ok, false);
-      assert.equal(envelope.result.goalValidationResume.recoverable, true);
-      assert.equal(envelope.result.goalValidationResume.code, "goal_validation_provider_not_configured");
-      assert.equal(envelope.result.goalValidationResume.httpStatus, 503);
-      assert.deepEqual(envelope.result.goalValidationResume.readiness.missing, ["libraryImportLlmProvider"]);
-      assert.match(envelope.result.goalValidationResume.readiness.action, /Configure the runtime Library LLM provider/);
+      assert.equal(envelope.result.goalValidationResume.ok, true);
+      assert.equal(envelope.result.goalValidationResume.status, "validation_ready");
       assert.equal((await getResourceByKeyPg(db, "library_import_draft", waiting.libraryImportDraftId!))?.status, "installed");
       assert.equal((await findLibraryObjectByKey(db, "artifact.offline-html"))?.status, "approved");
+      assert.equal((await getResourceByKeyPg(db, "planner_draft", goal.draftId))?.status, "validation_ready");
     } finally {
       await rm(libraryRoot, { recursive: true, force: true });
     }
@@ -916,12 +964,13 @@ test("confirm-requirements route resolves validation and returns the linked Libr
   await withDb(async (db) => {
     const goal = await createConfirmedGoalRequirementDraft(db, "Create an offline article through the planner route");
     let rankPrompt = "";
-    const provider: LibraryImportLlmProvider = async ({ prompt }) => {
+    const resolveProvider = realGoalValidationImportProvider();
+    const provider: LibraryImportLlmProvider = async (request) => {
+      const { prompt } = request;
       if (prompt.startsWith("Rank only the supplied approved artifact contracts")) {
         rankPrompt = prompt;
-        return { recommendations: [] };
       }
-      return validationImportCandidates();
+      return await resolveProvider(request);
     };
     const response = await handleRuntimeRoute({
       db,
@@ -945,6 +994,34 @@ test("confirm-requirements route resolves validation and returns the linked Libr
     assert.match(rankPrompt, /Allowed verificationMode values: deterministic, browser_interaction, semantic_review, human_approval/);
     assert.match(rankPrompt, /Use only refs and versionRefs supplied below/);
     assert.match(rankPrompt, /Do not add Requirements or Acceptance Criteria/);
+  });
+});
+
+test("confirm-requirements stream reports Requirement coverage and proposal revision lifecycle", async () => {
+  await withDb(async (db) => {
+    const goal = await createConfirmedGoalRequirementDraft(db, "Create an offline article through the streamed planner route");
+    const provider = realGoalValidationImportProvider();
+    const response = await handleRuntimeRoute({
+      db,
+      goalInterpreter: fixedGoalInterpreter(goal.goalContract),
+      libraryImportLlmProvider: provider,
+      libraryChatHeartbeatMs: 5,
+    } as any, new Request(`http://local/api/v2/planner/drafts/${goal.draftId}/confirm-requirements/stream`, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "text/event-stream" },
+      body: JSON.stringify({ expectedDraftHash: goal.goalRequirementDraftHash, actor: "operator" }),
+    }));
+    const events = await response.text();
+
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get("content-type") ?? "", /text\/event-stream/);
+    assert.match(events, /event: goal\.validation\.started/);
+    assert.match(events, /event: goal\.validation\.requirement\.started/);
+    assert.match(events, /event: goal\.validation\.requirement\.completed/);
+    assert.match(events, /event: library\.import\.candidates\.validated/);
+    assert.match(events, /event: goal\.validation\.library_review/);
+    assert.match(events, /event: goal_requirements/);
+    assert.match(events, /event: done/);
   });
 });
 
@@ -3477,7 +3554,7 @@ function visualRequirementDraft(goalPrompt: string, cwd: string) {
       blocking: true,
       userVisibleBehaviors: ["The answer is hidden until requested."],
       businessRules: [],
-      acceptanceCriteria: [{ statement: "Reveal changes question to answer state.", evidenceIntent: ["screen state"] }],
+      acceptanceCriteria: [{ statement: "Reveal changes question to answer state.", evidenceIntent: ["screenshot"] }],
       expectedOutcomeArtifacts: [{ description: "Review interaction" }],
       verificationIntent: ["Exercise reveal."],
       assumptions: [],
@@ -3805,9 +3882,8 @@ function validationResolution(
   return { ...withoutHash, resolutionHash: contentHashForPayload(withoutHash) };
 }
 
-function validationImportCandidates() {
-  return {
-    candidates: [{
+function validationImportCandidates(prompt?: string) {
+  const candidates = [{
       objectKey: "artifact.offline-html",
       kind: "artifact",
       title: "Offline HTML",
@@ -3839,8 +3915,36 @@ function validationImportCandidates() {
       resultSchemaRef: "southstar.requirement_evaluator_result.v2",
       failureClassifications: ["offline_open_failed"],
       selectedByDefault: true,
-    }],
+    }];
+  const constraints = goalValidationCoverageConstraintsFromPrompt(prompt);
+  return {
+    candidates,
+    ...(constraints.length > 0 ? {
+      candidateCoverageTargets: constraints.flatMap((constraint) => candidates.map((candidate) => ({
+        candidateObjectKey: candidate.objectKey,
+        gapRef: constraint.gapRef,
+        requirementId: constraint.requirementId,
+        criterionIds: constraint.criterionIds,
+      }))),
+    } : {}),
   };
+}
+
+function goalValidationCoverageConstraintsFromPrompt(prompt: string | undefined): Array<{ gapRef: string; requirementId: string; criterionIds: string[] }> {
+  if (!prompt) return [];
+  const marker = "GoalValidationCoverageConstraints:\n";
+  const start = prompt.indexOf(marker);
+  if (start < 0) return [];
+  const line = prompt.slice(start + marker.length).split("\n", 1)[0];
+  if (!line) return [];
+  const value = JSON.parse(line) as unknown;
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is { gapRef: string; requirementId: string; criterionIds: string[] } => Boolean(
+    item && typeof item === "object" && !Array.isArray(item)
+    && typeof (item as any).gapRef === "string"
+    && typeof (item as any).requirementId === "string"
+    && Array.isArray((item as any).criterionIds),
+  ));
 }
 
 function realGoalValidationImportProvider(): LibraryImportLlmProvider {
@@ -3861,31 +3965,7 @@ function realGoalValidationImportProvider(): LibraryImportLlmProvider {
       };
     }
     if (prompt.startsWith("Generate ontology edges")) return { proposedEdges: [] };
-    return validationImportCandidates();
-  };
-}
-
-function partialGoalValidationImportProvider(): LibraryImportLlmProvider {
-  let candidateAttempt = 0;
-  return async ({ prompt }) => {
-    if (prompt.startsWith("Rank only the supplied approved artifact contracts")) {
-      if (!prompt.includes('"ref":"artifact.offline-html"') || !prompt.includes('"ref":"evaluator.offline-html"')) {
-        return { recommendations: [] };
-      }
-      return {
-        recommendations: [{
-          artifactRef: "artifact.offline-html",
-          evaluatorRef: "evaluator.offline-html",
-          verificationMode: "browser_interaction",
-          procedureRef: "procedure.offline-open",
-          expectedEvidenceKinds: ["screenshot"],
-        }],
-      };
-    }
-    if (prompt.startsWith("Generate ontology edges")) return { proposedEdges: [] };
-    candidateAttempt += 1;
-    const all = validationImportCandidates().candidates;
-    return { candidates: candidateAttempt === 1 ? all : all.filter((candidate) => candidate.kind === "evaluator") };
+    return validationImportCandidates(prompt);
   };
 }
 
@@ -4123,7 +4203,7 @@ function graphMetadataOnlyPlan(goalContract: GoalContractV1): WorkflowCompositio
       instructionRefs: ["instruction.react-review"],
       skillRefs: ["skill.react-ui"],
       toolGrantRefs: ["tool.workspace-write"],
-      mcpGrantRefs: ["mcp.filesystem-workspace"],
+      mcpGrantRefs: [],
       vaultLeasePolicyRefs: [],
       inputArtifactRefs: [],
       outputArtifactRefs: ["artifact.vocab_feature"],
@@ -4142,7 +4222,7 @@ function graphMetadataOnlyPlan(goalContract: GoalContractV1): WorkflowCompositio
       instructionRefs: ["instruction.react-review"],
       skillRefs: ["skill.react-ui"],
       toolGrantRefs: ["tool.workspace-write"],
-      mcpGrantRefs: ["mcp.filesystem-workspace"],
+      mcpGrantRefs: [],
       vaultLeasePolicyRefs: [],
       inputArtifactRefs: ["artifact.vocab_feature"],
       outputArtifactRefs: [],
@@ -4163,7 +4243,7 @@ function graphMetadataOnlyPlan(goalContract: GoalContractV1): WorkflowCompositio
         model: "pi-agent-default",
         thinkingLevel: "high",
         harnessRef: "pi",
-        instruction: "Implement the vocabulary learning feature with the selected React UI skill, workspace write tool, filesystem MCP grant, and React review instruction. Produce artifact.vocab_feature.",
+        instruction: "Implement the vocabulary learning feature with the selected React UI skill, workspace write tool, and React review instruction. Produce artifact.vocab_feature.",
         promptTemplateRef: "react-review",
         contextPolicyRef: "context.generated",
         sessionPolicyRef: "session.generated",
@@ -4231,7 +4311,7 @@ async function seedGraphMetadataOnlyWorkflowPrimitives(db: SouthstarDb): Promise
     objectKind: "tool_definition",
     status: "approved",
     headVersionId: "tool.workspace-write@1",
-    state: { scope: "global", title: "Workspace Write", toolName: "workspace_write", proxyToolName: "workspace_write" },
+    state: { scope: "global", title: "Workspace Write", runtimeToolNames: ["edit", "write"] },
   });
   await upsertLibraryObject(db, {
     objectKey: "mcp.filesystem-workspace",
@@ -4277,12 +4357,6 @@ async function seedGraphMetadataOnlyWorkflowPrimitives(db: SouthstarDb): Promise
     fromObjectKey: "skill.react-ui",
     edgeType: "requires_tool",
     toObjectKey: "tool.workspace-write",
-    scope: "software",
-  });
-  await upsertLibraryEdge(db, {
-    fromObjectKey: "skill.react-ui",
-    edgeType: "allows_mcp_grant",
-    toObjectKey: "mcp.filesystem-workspace",
     scope: "software",
   });
   await upsertLibraryEdge(db, {

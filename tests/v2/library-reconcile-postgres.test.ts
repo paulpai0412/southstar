@@ -496,7 +496,7 @@ async function createMinimalReadyLibraryRoot(input: { extraSkill?: string } = {}
     "skills/composer.skill.md": approvedSkill("skill.composer-any", "composer_guidance"),
     ...(input.extraSkill ? {
       "skills/extra.skill.md": approvedSkill(input.extraSkill, "worker", ["tool.extra"]),
-      "tools/extra.tool.yaml": "schemaVersion: southstar.library.tool_definition_file.v1\nid: tool.extra\ntitle: Extra Tool\nscope: global\nstatus: approved\n",
+      "tools/extra.tool.yaml": "schemaVersion: southstar.library.tool_definition_file.v1\nid: tool.extra\ntitle: Extra Tool\nscope: global\nstatus: approved\nruntimeToolNames:\n  - read\noperations:\n  - read_file\n",
     } : {}),
   });
 }

@@ -80,6 +80,18 @@ test("vault leases and tool proxy calls keep plaintext secrets out of persisted 
     });
     assert.doesNotMatch(JSON.stringify(result), new RegExp(plaintextSecret));
 
+    const proxyWithoutHandler = createToolProxy(db, { vault });
+    await assert.rejects(
+      () => proxyWithoutHandler.execute({
+        runId,
+        sessionId,
+        leaseId: lease.id,
+        toolName: "github.create_issue",
+        input: {},
+      }),
+      /tool proxy handler is not configured: github\.create_issue/,
+    );
+
     await assert.rejects(
       () => proxy.execute({ runId: "other-run", sessionId, leaseId: lease.id, toolName: "github.create_issue", input: {} }),
       /run mismatch/,

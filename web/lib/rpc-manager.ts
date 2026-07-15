@@ -5,6 +5,13 @@ import { cacheSessionPath } from "./session-reader";
 import type { SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import type { AgentSessionLike, ExtensionUiContextLike, ToolInfo } from "./pi-types";
 import type { ExtensionUiRequest, ExtensionUiResponse, ExtensionWidgetItem } from "./types";
+import {
+  APPEND_WORKFLOW_UI_MESSAGE_COMMAND,
+  createPersistedWorkflowUiMessage,
+  SOUTHSTAR_WORKFLOW_UI_MESSAGE_CUSTOM_TYPE,
+  SOUTHSTAR_WORKFLOW_UI_CHECKPOINT_TEXT,
+  summarizeWorkflowUiMessage,
+} from "./workflow/session-message";
 type CreateAgentSessionOptions = NonNullable<Parameters<typeof createAgentSession>[0]>;
 
 // ============================================================================
@@ -109,6 +116,47 @@ export class AgentSessionWrapper {
     const type = command.type as string;
 
     switch (type) {
+      case APPEND_WORKFLOW_UI_MESSAGE_COMMAND: {
+        const persisted = createPersistedWorkflowUiMessage(command.message);
+        const serialized = JSON.stringify(persisted);
+        if (Buffer.byteLength(serialized, "utf8") > 2 * 1024 * 1024) {
+          throw new Error("Workflow UI message exceeds the 2 MiB session persistence limit.");
+        }
+        const sessionManager = this.inner.sessionManager;
+        const entryId = persisted.message.role === "user"
+          ? sessionManager.appendMessage(persisted.message as Parameters<typeof sessionManager.appendMessage>[0])
+          : sessionManager.appendCustomMessageEntry(
+              SOUTHSTAR_WORKFLOW_UI_MESSAGE_CUSTOM_TYPE,
+              summarizeWorkflowUiMessage(persisted.message),
+              false,
+              persisted,
+            );
+        const hasAssistantCheckpoint = sessionManager.getEntries().some((entry) => (
+          entry.type === "message" && entry.message.role === "assistant"
+        ));
+        if (!hasAssistantCheckpoint) {
+          const selectedModel = this.inner.model;
+          sessionManager.appendMessage({
+            role: "assistant",
+            content: [{ type: "text", text: SOUTHSTAR_WORKFLOW_UI_CHECKPOINT_TEXT }],
+            api: "openai-responses",
+            provider: selectedModel?.provider ?? "southstar",
+            model: selectedModel?.id ?? "workflow-session",
+            usage: {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              totalTokens: 0,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+            },
+            stopReason: "stop",
+            timestamp: Date.now(),
+          } as Parameters<typeof sessionManager.appendMessage>[0]);
+        }
+        return { entryId };
+      }
+
       case "prompt": {
         // Fire and forget — events come via subscribe
         const promptImages = command.images as Array<{ type: "image"; data: string; mimeType: string }> | undefined;

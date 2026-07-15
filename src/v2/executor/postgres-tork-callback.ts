@@ -39,6 +39,14 @@ export type PostgresCallbackIngestionOptions = {
   maxDynamicRepairRounds?: number;
 };
 
+type PendingDynamicRepair = Parameters<typeof maybeApplyDynamicRepairRevisionPg>[1];
+
+type PersistedCallbackResult = Omit<PostgresCallbackIngestionResult, "dynamicRepairRevision"> & {
+  pendingDynamicRepair?: PendingDynamicRepair;
+  dynamicRepairHistoryKey?: string;
+  rootSessionId?: string;
+};
+
 export async function ingestTaskRunResultPg(
   db: SouthstarDb,
   result: PostgresTaskRunCallbackResult,
@@ -104,7 +112,7 @@ export async function ingestTaskRunResultPg(
     artifact: result.artifact,
   });
 
-  const ingested = await db.tx(async (tx) => {
+  const ingested: PersistedCallbackResult = await db.tx(async (tx) => {
     const run = await tx.maybeOne<{ status: string }>(
       "select status from southstar.workflow_runs where id = $1 for update",
       [result.runId],
@@ -345,9 +353,9 @@ export async function ingestTaskRunResultPg(
       [accepted ? "completed" : "failed", effectiveResult.runId, effectiveResult.taskId],
     );
 
-    const dynamicRepairRevision = accepted || !options.workflowComposer
+    const pendingDynamicRepair: PendingDynamicRepair | undefined = accepted || !options.workflowComposer
       ? undefined
-      : await safeApplyDynamicRepairRevisionPg(tx, {
+      : {
         runId: effectiveResult.runId,
         failedTaskId: effectiveResult.taskId,
         failedArtifactRefId: artifactRef.artifactRefId,
@@ -362,47 +370,86 @@ export async function ingestTaskRunResultPg(
         failedRequirementIds: requirementEvaluation.failedBlockingRequirementIds,
         workflowComposer: options.workflowComposer,
         maxDynamicRepairRounds: options.maxDynamicRepairRounds,
-      });
-    if (!accepted) {
-      await appendHistoryEventPg(tx, {
-        runId: effectiveResult.runId,
-        taskId: effectiveResult.taskId,
-        sessionId: effectiveResult.rootSessionId,
-        eventType: "workflow.dynamic_repair_revision_evaluated",
-        actorType: "orchestrator",
-        idempotencyKey: `${receipt.idempotencyKey}:dynamic-repair-evaluated`,
-        payload: {
-          ...(dynamicRepairRevision ?? { status: "skipped", reason: "workflow-composer-unavailable" }),
-          artifactRefId: artifactRef.artifactRefId,
-        },
-      });
-    }
-
-    const allTasks = await tx.query<{ status: string }>("select status from southstar.workflow_tasks where run_id = $1", [effectiveResult.runId]);
-    if (
-      dynamicRepairRevision?.status !== "waiting_operator_approval"
-      && allTasks.rows.length > 0
-      && allTasks.rows.every((row) => ["completed", "failed", "cancelled", "lost", "blocked"].includes(row.status))
-    ) {
-      const gateResult = await evaluateRunCompletionGatePg(tx, { runId: effectiveResult.runId });
-      if (gateResult.executionStatus === "completed") {
-        await triggerRunCompletedKnowledgeCardSynthesis(tx, {
-          runId: effectiveResult.runId,
-          actor: "southstar-evolution",
-          reason: "workflow run completed",
-        });
       }
-    }
 
     return {
       accepted,
       artifactResourceId: artifactRef.resourceId,
       artifactRefId: artifactRef.artifactRefId,
-      ...(dynamicRepairRevision ? { dynamicRepairRevision } : {}),
+      ...(pendingDynamicRepair ? { pendingDynamicRepair } : {}),
+      ...(!accepted ? { dynamicRepairHistoryKey: `${receipt.idempotencyKey}:dynamic-repair-evaluated` } : {}),
+      rootSessionId: effectiveResult.rootSessionId,
     };
   });
+  const dynamicRepairRevision = ingested.pendingDynamicRepair
+    ? await safeApplyDynamicRepairRevisionPg(db, ingested.pendingDynamicRepair)
+    : undefined;
+  await finalizeCallbackLifecyclePg(db, {
+    runId: result.runId,
+    taskId: result.taskId,
+    rootSessionId: ingested.rootSessionId,
+    accepted: ingested.accepted,
+    artifactRefId: ingested.artifactRefId,
+    dynamicRepairHistoryKey: ingested.dynamicRepairHistoryKey,
+    dynamicRepairRevision,
+  });
   await advanceExecutionSetForRunIfNeededPg(db, result.runId);
-  return ingested;
+  return {
+    accepted: ingested.accepted,
+    ...(ingested.duplicate ? { duplicate: true } : {}),
+    ...(ingested.artifactResourceId ? { artifactResourceId: ingested.artifactResourceId } : {}),
+    ...(ingested.artifactRefId ? { artifactRefId: ingested.artifactRefId } : {}),
+    ...(ingested.ignoredRunStatus ? { ignoredRunStatus: ingested.ignoredRunStatus } : {}),
+    ...(dynamicRepairRevision ? { dynamicRepairRevision } : {}),
+  };
+}
+
+async function finalizeCallbackLifecyclePg(
+  db: SouthstarDb,
+  input: {
+    runId: string;
+    taskId: string;
+    rootSessionId?: string;
+    accepted: boolean;
+    artifactRefId?: string;
+    dynamicRepairHistoryKey?: string;
+    dynamicRepairRevision?: DynamicRepairRevisionResult;
+  },
+): Promise<void> {
+  await db.tx(async (tx) => {
+    if (!input.accepted && input.dynamicRepairHistoryKey) {
+      await appendHistoryEventPg(tx, {
+        runId: input.runId,
+        taskId: input.taskId,
+        sessionId: input.rootSessionId,
+        eventType: "workflow.dynamic_repair_revision_evaluated",
+        actorType: "orchestrator",
+        idempotencyKey: input.dynamicRepairHistoryKey,
+        payload: {
+          ...(input.dynamicRepairRevision ?? { status: "skipped", reason: "workflow-composer-unavailable" }),
+          ...(input.artifactRefId ? { artifactRefId: input.artifactRefId } : {}),
+        },
+      });
+    }
+    const allTasks = await tx.query<{ status: string }>(
+      "select status from southstar.workflow_tasks where run_id = $1",
+      [input.runId],
+    );
+    if (
+      input.dynamicRepairRevision?.status !== "waiting_operator_approval"
+      && allTasks.rows.length > 0
+      && allTasks.rows.every((row) => ["completed", "failed", "cancelled", "lost", "blocked"].includes(row.status))
+    ) {
+      const gateResult = await evaluateRunCompletionGatePg(tx, { runId: input.runId });
+      if (gateResult.executionStatus === "completed") {
+        await triggerRunCompletedKnowledgeCardSynthesis(tx, {
+          runId: input.runId,
+          actor: "southstar-evolution",
+          reason: "workflow run completed",
+        });
+      }
+    }
+  });
 }
 
 async function advanceExecutionSetForRunIfNeededPg(db: SouthstarDb, runId: string): Promise<void> {
