@@ -889,6 +889,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         await runLibraryChatCommand({
           prompt: trimmedMessage,
           scope: opts.libraryScope ?? "all",
+          sessionId: sessionIdRef.current,
           signal: libraryAbortController.signal,
           onAccepted(sessionId) {
             sessionIdRef.current = sessionId;
@@ -1002,6 +1003,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         }
         await generateWorkflowDagStream({
           prompt: trimmedMessage,
+          sessionId: workflowSessionId,
           draftId: revisionDraftId,
           expectedPackageHash: goalDesignRevisionIdentity?.goalDesignPackageHash,
           expectedDraftHash: requirementRevisionIdentity?.expectedDraftHash,

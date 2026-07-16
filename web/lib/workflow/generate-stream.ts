@@ -129,6 +129,7 @@ export async function createPlannerDraftStream(input: {
 
 export async function generateWorkflowDagStream(input: {
   prompt: string;
+  sessionId?: string | null;
   draftId?: string | null;
   expectedPackageHash?: string | null;
   expectedDraftHash?: string | null;
@@ -150,6 +151,7 @@ export async function generateWorkflowDagStream(input: {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       prompt: input.prompt,
+      ...(input.sessionId ? { sessionId: input.sessionId } : {}),
       ...(input.cwd ? { cwd: input.cwd } : {}),
       ...(input.projectRef ? { projectRef: input.projectRef } : {}),
       ...(!input.draftId ? { idempotencyKey: input.idempotencyKey ?? crypto.randomUUID() } : {}),

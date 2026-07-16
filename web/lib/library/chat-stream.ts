@@ -20,6 +20,7 @@ export function parseLibrarySseFrames(buffer: string): LibrarySseFrame[] {
 export async function runLibraryChatCommand(input: {
   prompt: string;
   scope: string;
+  sessionId?: string | null;
   onFrame: (frame: LibrarySseFrame) => void;
   onAccepted?: (sessionId: string, actionId: string) => void;
   signal?: AbortSignal;
@@ -28,7 +29,11 @@ export async function runLibraryChatCommand(input: {
     method: "POST",
     signal: input.signal,
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ prompt: input.prompt, scope: input.scope }),
+    body: JSON.stringify({
+      prompt: input.prompt,
+      scope: input.scope,
+      ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+    }),
   });
   if (!accepted.ok) throw new Error(await accepted.text());
   const body = await accepted.json() as { result?: { sessionId?: string; actionId?: string } };

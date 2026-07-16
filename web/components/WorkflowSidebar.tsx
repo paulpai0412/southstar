@@ -449,7 +449,7 @@ function WorkflowSessionRow({
   onRename: (session: SessionInfo) => void;
   onDelete: (session: SessionInfo) => void;
 }) {
-  const title = session.name || session.firstMessage || "Untitled workflow";
+  const title = session.journey?.title || session.name || session.firstMessage || "Untitled workflow";
   return (
     <div
       className="southstar-session-row"
@@ -490,6 +490,7 @@ function WorkflowSessionRow({
       <span style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, color: "var(--text-dim)", fontSize: 11 }}>
         <span>{formatRelativeTime(session.modified)}</span>
         <span>{session.messageCount} messages</span>
+        {session.journey ? <span data-testid="workflow-session-journey-stage" style={{ color: "var(--accent)" }}>Goal · {session.journey.currentStage ?? "goal"}</span> : null}
       </span>
     </div>
   );

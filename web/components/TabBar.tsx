@@ -23,7 +23,8 @@ export interface Tab {
     | "operatorStream"
     | "operatorActions"
     | "operatorRecovery"
-    | "operatorDebug";
+    | "operatorDebug"
+    | "goalJourney";
   draftId?: string;
   runId?: string;
   refreshKey?: number;

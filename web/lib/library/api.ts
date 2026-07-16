@@ -135,12 +135,16 @@ export function readinessFromReconcile(result: LibraryReconcileResult): LibraryR
 export async function createLibraryImportDraft(input: {
   source: LibraryImportSource;
   scope: string;
+  sessionId?: string | null;
   requestPrompt?: string;
 }): Promise<LibraryImportDraftResult> {
   return requestLibraryJson<LibraryImportDraftResult>("/api/library/import-drafts", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(input),
+    body: JSON.stringify({
+      ...input,
+      ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+    }),
   });
 }
 

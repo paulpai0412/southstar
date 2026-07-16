@@ -1,5 +1,7 @@
 // Types mirrored from pi-mono coding-agent session-manager
 
+import type { GoalJourneyLink } from "./goal-journey";
+
 export interface SessionHeader {
   type: "session";
   version?: number;
@@ -431,6 +433,7 @@ export interface SessionInfo {
   messageCount: number;
   firstMessage: string;
   parentSessionId?: string; // set if this session was forked from another
+  journey?: GoalJourneyLink;
   agentState?: {
     running: boolean;
     isStreaming: boolean;

@@ -126,10 +126,11 @@ export async function handleLibraryRoute(
   }
 
   if (request.method === "POST" && url.pathname === "/api/v2/library/import-drafts") {
-    const body = await readJsonBody<{ source?: unknown; scope?: unknown; requestPrompt?: unknown }>(request);
+    const body = await readJsonBody<{ source?: unknown; scope?: unknown; requestPrompt?: unknown; sessionId?: unknown }>(request);
     return json("library-import-draft", await createLibraryImportDraft(context.db, {
       source: asImportSource(body.source),
       scope: libraryAuthoringScope(body.scope),
+      sessionId: optionalString(body.sessionId),
       requestPrompt: optionalString(body.requestPrompt),
       sourceFetcher: context.libraryImportSourceFetcher,
       llmProvider: context.libraryImportLlmProvider,
@@ -233,12 +234,13 @@ export async function handleLibraryRoute(
   }
 
   if (request.method === "POST" && url.pathname === "/api/v2/library/import-prompts") {
-    const body = await readJsonBody<{ prompt?: unknown; scope?: unknown }>(request);
+    const body = await readJsonBody<{ prompt?: unknown; scope?: unknown; sessionId?: unknown }>(request);
     const prompt = requiredString(body.prompt, "prompt");
     const scope = libraryAuthoringScope(body.scope);
     const draft = await createLibraryImportDraft(context.db, {
       source: { kind: "paste", label: "Prompt import", content: prompt },
       scope,
+      sessionId: optionalString(body.sessionId),
       sourceFetcher: context.libraryImportSourceFetcher,
       llmProvider: context.libraryImportLlmProvider,
     });
@@ -954,6 +956,7 @@ function libraryChatEventStream(
           const draft = await createLibraryImportDraft(context.db, {
             source: importSourceFromPrompt(input.prompt) ?? { kind: "paste", label: "Library chat prompt", content: input.prompt },
             scope: libraryAuthoringScope(input.scope),
+            sessionId: input.sessionId,
             requestPrompt: input.prompt,
             sourceFetcher: context.libraryImportSourceFetcher,
             llmProvider: context.libraryImportLlmProvider,

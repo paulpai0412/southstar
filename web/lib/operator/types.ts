@@ -1,4 +1,5 @@
 import type { GoalMissionReadModel } from "../workflow/types";
+import type { GoalJourneyLink } from "../goal-journey";
 
 export type OperatorRun = {
   runId: string;
@@ -13,6 +14,7 @@ export type OperatorRun = {
   projectRoot?: string;
   updatedAt?: string;
   commands?: OperatorCommand[];
+  journey?: GoalJourneyLink;
 };
 
 export type OperatorAttentionItem = {

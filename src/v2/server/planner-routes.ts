@@ -90,6 +90,7 @@ export async function handlePlannerRoute(
     const runGoalRequest: RunGoalRequest = {
       goalPrompt: requiredString(body.goalPrompt, "goalPrompt"),
       cwd: requiredString(body.cwd, "cwd"),
+      ...(optionalString(body.sessionId) !== undefined ? { sessionId: optionalString(body.sessionId) } : {}),
       ...(optionalString(body.projectRef) !== undefined ? { projectRef: optionalString(body.projectRef) } : {}),
       idempotencyKey: requiredString(body.idempotencyKey, "idempotencyKey"),
       goalDesignMode: optionalGoalDesignMode(body.goalDesignMode),
@@ -121,6 +122,7 @@ export async function handlePlannerRoute(
   if (request.method === "POST" && url.pathname === "/api/v2/planner/drafts/stream") {
     const body = await readJsonBody<{
       goalPrompt?: unknown;
+      sessionId?: unknown;
       orchestrationMode?: unknown;
       composerMode?: unknown;
       cwd?: unknown;
@@ -301,6 +303,7 @@ export async function handlePlannerRoute(
   if (request.method === "POST" && url.pathname === "/api/v2/planner/drafts") {
     const body = await readJsonBody<{
       goalPrompt?: unknown;
+      sessionId?: unknown;
       orchestrationMode?: unknown;
       composerMode?: unknown;
       cwd?: unknown;

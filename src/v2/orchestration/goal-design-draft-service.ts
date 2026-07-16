@@ -377,6 +377,7 @@ export async function preparePostgresGoalRequirementDraft(
   input: {
     goalPrompt: string;
     cwd: string;
+    sessionId?: string;
     projectRef?: string;
     mode?: GoalDesignMode;
     templatePolicy?: WorkflowTemplatePolicyV1;
@@ -404,6 +405,7 @@ export async function preparePostgresGoalRequirementDraft(
     })
     : [];
   const readiness = goalRequirementReviewReadiness(draft, "requirements_review", uiInteractionContracts);
+  const persistDraft = sessionScopedPlannerDraftPersistence(db, input.sessionId, input.persistDraft);
   await persistGoalRequirementDraftRevisionPg(db, { draftId, draft });
   for (const contract of uiInteractionContracts) {
     await persistUiInteractionContractRevisionPg(db, {
@@ -427,6 +429,7 @@ export async function preparePostgresGoalRequirementDraft(
       plannerRequest: {
         goalPrompt: input.goalPrompt,
         cwd: input.cwd,
+        ...(input.sessionId !== undefined ? { sessionId: input.sessionId } : {}),
         ...(input.projectRef !== undefined ? { projectRef: input.projectRef } : {}),
         ...(input.mode !== undefined ? { goalDesignMode: input.mode } : {}),
         ...(input.templatePolicy !== undefined ? { templatePolicy: input.templatePolicy } : {}),
@@ -460,7 +463,7 @@ export async function preparePostgresGoalRequirementDraft(
         ...(input.templatePolicy !== undefined ? { templatePolicy: input.templatePolicy } : {}),
       },
     },
-  }, input.persistDraft);
+  }, persistDraft);
   const result: GoalRequirementReviewResult = {
     draftId,
     goalRequirementDraftId: draftId,
@@ -1332,6 +1335,7 @@ export async function preparePostgresGoalDesignDraft(
   input: {
     goalPrompt: string;
     cwd: string;
+    sessionId?: string;
     projectRef?: string;
     mode: GoalDesignMode;
     templatePolicy: WorkflowTemplatePolicyV1;
@@ -1344,6 +1348,7 @@ export async function preparePostgresGoalDesignDraft(
   },
 ): Promise<PostgresPlannerDraftResult> {
   input.onProgress?.({ stage: "request.normalized", message: "Goal Design request normalized." });
+  const persistDraft = sessionScopedPlannerDraftPersistence(db, input.sessionId, input.persistDraft);
   const skill = await loadGoalDesignSkillPg(db);
   const workspaceDiscovery = await discoverGoalWorkspace(input.cwd);
   const libraryVocabulary = await loadGoalContractLibraryVocabularyPg(db);
@@ -1362,6 +1367,7 @@ export async function preparePostgresGoalDesignDraft(
     const plannerRequest = {
       goalPrompt: input.goalPrompt,
       cwd: input.cwd,
+      ...(input.sessionId !== undefined ? { sessionId: input.sessionId } : {}),
       ...(input.projectRef !== undefined ? { projectRef: input.projectRef } : {}),
       goalDesignMode: input.mode,
       templatePolicy: input.templatePolicy,
@@ -1375,6 +1381,7 @@ export async function preparePostgresGoalDesignDraft(
           content: input.goalPrompt,
         },
         scope: error.goalContract.domain,
+        ...(input.sessionId !== undefined ? { sessionId: input.sessionId } : {}),
         requestPrompt: [
           "Create Library candidates only for these unresolved Goal vocabulary gaps.",
           JSON.stringify(error.gaps),
@@ -1390,7 +1397,7 @@ export async function preparePostgresGoalDesignDraft(
       error,
       ...(libraryImportDraftId ? { libraryImportDraftId } : {}),
       onProgress: input.onProgress,
-      persistDraft: input.persistDraft,
+      persistDraft,
     });
   }
   const contractHash = goalContractHash(goalContract);
@@ -1399,12 +1406,13 @@ export async function preparePostgresGoalDesignDraft(
     return await persistGoalContractOnlyDraft(db, {
       goalPrompt: input.goalPrompt,
       cwd: input.cwd,
+      ...(input.sessionId !== undefined ? { sessionId: input.sessionId } : {}),
       ...(input.projectRef !== undefined ? { projectRef: input.projectRef } : {}),
       goalContract,
       goalContractHash: contractHash,
       skill,
       workspaceDiscoveryHash: workspaceDiscovery.discoveryHash,
-      persistDraft: input.persistDraft,
+      persistDraft,
       onProgress: input.onProgress,
     });
   }
@@ -1437,6 +1445,7 @@ export async function preparePostgresGoalDesignDraft(
       plannerRequest: {
         goalPrompt: input.goalPrompt,
         cwd: input.cwd,
+        ...(input.sessionId !== undefined ? { sessionId: input.sessionId } : {}),
         ...(input.projectRef !== undefined ? { projectRef: input.projectRef } : {}),
         goalDesignMode: input.mode,
         templatePolicy: input.templatePolicy,
@@ -1468,7 +1477,7 @@ export async function preparePostgresGoalDesignDraft(
         templatePolicy: input.templatePolicy,
       },
     },
-  }, input.persistDraft);
+  }, persistDraft);
   input.onProgress?.({
     stage: "goal_design.persisted",
     ok: true,
@@ -1499,6 +1508,7 @@ async function persistGoalContractOnlyDraft(
   input: {
     goalPrompt: string;
     cwd: string;
+    sessionId?: string;
     projectRef?: string;
     goalContract: GoalContractV1;
     goalContractHash: string;
@@ -1522,6 +1532,7 @@ async function persistGoalContractOnlyDraft(
       plannerRequest: {
         goalPrompt: input.goalPrompt,
         cwd: input.cwd,
+        ...(input.sessionId !== undefined ? { sessionId: input.sessionId } : {}),
         ...(input.projectRef !== undefined ? { projectRef: input.projectRef } : {}),
       },
       goalDesignSkillRef: input.skill.objectKey,
@@ -1562,6 +1573,22 @@ async function persistPlannerDraftResource(
 ): Promise<void> {
   if (persistDraft) return await persistDraft(resource);
   await upsertRuntimeResourcePg(db, resource);
+}
+
+function sessionScopedPlannerDraftPersistence(
+  db: SouthstarDb,
+  sessionId: string | undefined,
+  persistDraft?: PlannerDraftPersistence,
+): PlannerDraftPersistence | undefined {
+  if (!sessionId && !persistDraft) return undefined;
+  return async (resource) => {
+    const scoped = {
+      ...resource,
+      ...(sessionId ? { sessionId } : {}),
+    };
+    if (persistDraft) return await persistDraft(scoped);
+    await upsertRuntimeResourcePg(db, scoped);
+  };
 }
 
 function goalRequirementDraftFromStored(value: unknown): GoalRequirementDraftV1 | undefined {

@@ -4,6 +4,7 @@ import { buildOperatorOverviewReadModelPg } from "../read-models/operator-overvi
 import { buildOperatorTaskDebugReadModelPg } from "../read-models/operator-task-debug.ts";
 import { buildChatCapabilitiesReadModelPg } from "../read-models/chat-capabilities.ts";
 import { buildChatSessionReadModelPg } from "../read-models/chat-session.ts";
+import { listGoalJourneyLinksPg } from "../read-models/goal-journey.ts";
 import type { RuntimeServerContext } from "./runtime-context.ts";
 import type { ApiEnvelope } from "./types.ts";
 
@@ -33,6 +34,14 @@ export async function handleUiRoute(context: RuntimeServerContext, request: Requ
       sessionId: url.searchParams.get("sessionId") ?? undefined,
     }));
   }
+  if (request.method === "GET" && url.pathname === "/api/v2/ui/goal-journeys") {
+    const sessionIds = csvQuery(url, "sessionIds");
+    const runIds = csvQuery(url, "runIds");
+    if (sessionIds.length === 0 && runIds.length === 0) throw new Error("sessionIds or runIds is required");
+    return json("ui-goal-journeys", {
+      journeys: await listGoalJourneyLinksPg(context.db, { sessionIds, runIds }),
+    });
+  }
   if (request.method === "GET" && url.pathname === "/api/v2/ui/operator-overview") {
     return json("ui-operator-overview", await buildOperatorOverviewReadModelPg(context.db, {
       projectRoot: url.searchParams.get("projectRoot") ?? undefined,
@@ -51,6 +60,10 @@ function requiredQuery(url: URL, name: string): string {
   const value = url.searchParams.get(name);
   if (!value) throw new Error(`${name} is required`);
   return value;
+}
+
+function csvQuery(url: URL, name: string): string[] {
+  return [...new Set((url.searchParams.get(name) ?? "").split(",").map((value) => value.trim()).filter(Boolean))];
 }
 
 function json<T>(kind: string, result: T): Response {

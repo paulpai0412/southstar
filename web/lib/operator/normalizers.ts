@@ -1,5 +1,6 @@
 import type { GoalMissionReadModel } from "../workflow/types";
 import type { OperatorAttentionItem, OperatorCommand, OperatorCommandResult, OperatorOverview, OperatorRun } from "./types";
+import type { GoalJourneyLink } from "../goal-journey";
 
 export function normalizeOperatorOverview(input: unknown): OperatorOverview {
   const model = unwrapEnvelope(input);
@@ -41,6 +42,7 @@ function readRun(input: unknown): OperatorRun | null {
   const executionStatus = stringValue(run.executionStatus) || mission?.status.execution || "unknown";
   const outcomeStatus = goalOutcomeStatus(run.outcomeStatus) || mission?.status.outcome || "in_progress";
   const healthStatus = goalHealthStatus(run.healthStatus) || mission?.status.health || "healthy";
+  const journey = readJourneyLink(run.journey);
   return {
     runId,
     status: stringValue(run?.status) || "unknown",
@@ -54,6 +56,25 @@ function readRun(input: unknown): OperatorRun | null {
     ...(projectRoot ? { projectRoot } : {}),
     ...(updatedAt ? { updatedAt } : {}),
     ...(commands.length ? { commands } : {}),
+    ...(journey ? { journey } : {}),
+  };
+}
+
+function readJourneyLink(value: unknown): GoalJourneyLink | undefined {
+  const journey = recordValue(value);
+  if (!journey) return undefined;
+  const id = stringValue(journey.id);
+  const title = stringValue(journey.title);
+  if (!id || !title) return undefined;
+  const currentStage = journey.currentStage;
+  return {
+    id,
+    title,
+    ...(currentStage === "chat" || currentStage === "requirements" || currentStage === "library" || currentStage === "workflow" || currentStage === "operator" || currentStage === "complete" ? { currentStage } : {}),
+    ...(stringValue(journey.chatSessionId) ? { chatSessionId: stringValue(journey.chatSessionId) } : {}),
+    ...(stringValue(journey.workflowSessionId) ? { workflowSessionId: stringValue(journey.workflowSessionId) } : {}),
+    ...(stringValue(journey.librarySessionId) ? { librarySessionId: stringValue(journey.librarySessionId) } : {}),
+    ...(stringValue(journey.runId) ? { runId: stringValue(journey.runId) } : {}),
   };
 }
 

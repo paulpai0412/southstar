@@ -22,6 +22,7 @@ import { LibraryFileSidecarPanel, LibraryGraphNodeSelectionBridge, LibrarySideba
 import type { LibraryGraphChartNode } from "./library/LibraryGraphChart";
 import type { Tab } from "./TabBar";
 import { SidecarShell, type SidecarMode } from "./SidecarShell";
+import { GoalJourneyTimeline } from "./GoalJourneyTimeline";
 import { ModelsConfig } from "./ModelsConfig";
 import { SkillsConfig } from "./SkillsConfig";
 import { McpConfig } from "./McpConfig";
@@ -35,6 +36,7 @@ import type { WorkflowDag, WorkflowDagNode, WorkflowTemplateSummary } from "@/li
 import { confirmGoalRequirementsStream } from "@/lib/workflow/generate-stream";
 import type { ChatInputHandle } from "./ChatInput";
 import type { SessionStatsInfo } from "@/lib/pi-types";
+import { buildGoalJourney, type GoalJourneyStep } from "@/lib/goal-journey";
 import { persistWorkflowUiMessage } from "@/lib/workflow/session-persistence-client";
 
 function goalRequirementContentFromSelection(selection: GoalRequirementSelection): GoalRequirementsContent {
@@ -174,6 +176,7 @@ export function AppShell() {
   const [appMode, setAppMode] = useState<AppMode>("chat");
   const [chatWorkspaceSurface, setChatWorkspaceSurface] = useState<WorkspaceSurface>("chat");
   const [selectedLibraryGraphNode, setSelectedLibraryGraphNode] = useState<{ id: number; node: LibraryGraphChartNode } | null>(null);
+  const [selectedLibrarySession, setSelectedLibrarySession] = useState<SessionInfo | null>(null);
   const [restoredLibrarySession, setRestoredLibrarySession] = useState<SessionInfo | null>(null);
   const [selectedWorkflowTemplate, setSelectedWorkflowTemplate] = useState<WorkflowTemplateSummary | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -1043,7 +1046,56 @@ export function AppShell() {
   const activeSidecarTab = sidecarTabs.find((t) => t.id === activeSidecarTabId) ?? null;
   const activeSidebarSurface: WorkspaceSurface = appMode === "chat" ? chatWorkspaceSurface : appMode;
 
+  const activeJourneyLink = appMode === "chat"
+    ? selectedSession?.journey
+    : appMode === "workflow"
+      ? workflowSelectedSession?.journey
+      : appMode === "library"
+        ? selectedLibrarySession?.journey
+        : operator.model.runs.find((run) => run.runId === operatorSelectedRunId)?.journey
+          ?? operator.model.runs.find((run) => run.journey)?.journey;
+  const activeJourney = activeJourneyLink ? buildGoalJourney(activeJourneyLink) : null;
+
+  const handleJourneyStepSelect = useCallback((step: GoalJourneyStep) => {
+    if (step.mode === "operator") {
+      setAppMode("operator");
+      if (step.runId) {
+        setOperatorSelectedRunId(step.runId);
+        setOperatorSelectedTaskId(null);
+      }
+      return;
+    }
+
+    setAppMode(step.mode);
+    if (!step.sessionId) return;
+    void fetch(`/api/sessions/${encodeURIComponent(step.sessionId)}`, { cache: "no-store" })
+      .then((response) => response.ok ? response.json() as Promise<{ info?: SessionInfo | null }> : null)
+      .then((payload) => {
+        const session = payload?.info;
+        if (!session) return;
+        if (step.mode === "chat") {
+          handleSelectSession(session);
+        } else if (step.mode === "workflow") {
+          handleSelectWorkflowSession(session);
+        } else {
+          setRestoredLibrarySession(session);
+          setSelectedLibrarySession(session);
+        }
+      })
+      .catch(() => undefined);
+  }, [handleSelectSession, handleSelectWorkflowSession]);
+
+  const openGoalJourneySidecar = useCallback(() => {
+    if (!activeJourney) return;
+    openSidecarTab({ id: `goal-journey:${activeJourney.id}`, label: "Journey", filePath: activeJourney.id, kind: "goalJourney" });
+  }, [activeJourney, openSidecarTab]);
+
   const renderSidecarContent = useCallback(() => {
+    if (activeSidecarTab?.kind === "goalJourney") {
+      return activeJourney ? <GoalJourneyTimeline journey={activeJourney} variant="detail" onStepSelect={handleJourneyStepSelect} /> : (
+        <div style={{ padding: 16, color: "var(--text-muted)", fontSize: 12 }}>Select a linked goal session to inspect its journey.</div>
+      );
+    }
     if (!activeSidecarTab?.filePath) {
       return (
         <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-dim)", fontSize: 12 }}>
@@ -1108,7 +1160,7 @@ export function AppShell() {
       );
     }
     return <FileViewer filePath={activeSidecarTab.filePath} cwd={currentCwd ?? undefined} />;
-  }, [activeSidecarTab, currentCwd, handleGoalRequirementChange, handleGoalRequirementInvalidated, handleGoalSlicePackageChange, handleUiContractReviewChange, handleUiInteractionContractSelect, openOperatorTaskSidecar, operator.model.attentionItems, operator.model.commandResults, operator.refresh]);
+  }, [activeJourney, activeSidecarTab, currentCwd, handleGoalRequirementChange, handleGoalRequirementInvalidated, handleGoalSlicePackageChange, handleJourneyStepSelect, handleUiContractReviewChange, handleUiInteractionContractSelect, openOperatorTaskSidecar, operator.model.attentionItems, operator.model.commandResults, operator.refresh]);
 
   const handleWorkflowSidebarNewSession = useCallback(() => {
     if (!workflowCurrentCwd) return;
@@ -1410,6 +1462,7 @@ export function AppShell() {
       onOpenFile={handleOpenLibraryFile}
       defaultCwd={activeCwd}
       onCwdChange={handleCwdChange}
+      onSelectedSessionChange={setSelectedLibrarySession}
       modelsRefreshKey={modelsRefreshKey}
       onAgentEnd={handleAgentEnd}
       onWorkspaceSurfaceChange={handleChatWorkspaceSurfaceChange}
@@ -1838,6 +1891,9 @@ export function AppShell() {
         </div>
 
         {/* Center content */}
+        {activeJourney ? (
+          <GoalJourneyTimeline journey={activeJourney} variant="compact" onStepSelect={handleJourneyStepSelect} onOpen={openGoalJourneySidecar} />
+        ) : null}
         <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>
           <div data-testid="operator-mode-panel" style={modePanelStyle(appMode === "operator")} aria-hidden={appMode !== "operator"}>
             <OperatorWorkspace
