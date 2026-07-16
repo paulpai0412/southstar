@@ -36,6 +36,32 @@ test("tool proxy policy scanner detects credential-shaped keys and tokens with r
   assert.equal(scanForCredentialLeak({ output: "safe artifact", metadata: { status: "ok" } }), null);
 });
 
+test("tool proxy policy scanner permits token-analysis evidence while still detecting actual credentials", () => {
+  const safeEvidence = {
+    localBoundaryEvidence: {
+      forbiddenTokenScan: {
+        source: "src/**/*.mjs",
+        tokens: ["fetch(", "http://", "https://", "stripe", "paypal", "braintree"],
+        matchesFound: 0,
+      },
+    },
+    metrics: { tokens: 44_180 },
+  };
+
+  assert.equal(scanForCredentialLeak(safeEvidence), null);
+  assert.equal(
+    scanForCredentialLeak({
+      ...safeEvidence,
+      localBoundaryEvidence: {
+        forbiddenTokenScan: {
+          tokens: ["github_pat_11AA22BB33CC44DD55EE66FF77GG88HH99II00JJ"],
+        },
+      },
+    })?.reason,
+    "raw_credential_in_envelope",
+  );
+});
+
 test("tool proxy policy scanner treats credential URL query keys as secrets even for short values", () => {
   for (const key of ["token", "access_token", "api_key", "password", "secret"]) {
     const finding = scanForCredentialLeak({ url: `https://example.test/result?${key}=x&view=summary` });

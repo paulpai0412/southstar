@@ -49,7 +49,7 @@ export async function runCompositionRepairLoop(input: RunCompositionRepairLoopIn
     try {
       input.onProgress?.({ stage: "composer.started", attempt, message: `Starting workflow composition attempt ${attempt + 1}.` });
       composition = await input.composer.compose({
-        goalPrompt: renderRepairGoal(input.goalPrompt, previousAttempt),
+        goalPrompt: renderRepairGoal(input.goalPrompt, previousAttempt, input.runtimeBindingCapabilities),
         goalContract: input.goalContract,
         goalDesignPackage: input.goalDesignPackage,
         candidatePacket: input.candidatePacket,
@@ -107,15 +107,22 @@ export async function runCompositionRepairLoop(input: RunCompositionRepairLoopIn
   };
 }
 
-function renderRepairGoal(goalPrompt: string, previousAttempt: CompositionRepairAttempt | null): string {
-  if (!previousAttempt) {
-    return goalPrompt;
+function renderRepairGoal(
+  goalPrompt: string,
+  previousAttempt: CompositionRepairAttempt | null,
+  runtimeBindingCapabilities?: RuntimeBindingCapabilities,
+): string {
+  const lines = [goalPrompt];
+  if (runtimeBindingCapabilities) {
+    lines.push(
+      "",
+      "Runtime host advertised bindings (authoritative; use exact values):",
+      JSON.stringify(runtimeBindingCapabilities),
+      "For every advertised field, select one exact listed value in each generated agent profile. Do not invent aliases or fallback bindings.",
+    );
   }
-  const lines = [
-    goalPrompt,
-    "",
-    "Previous composition failed validation. Repair the composition and return a valid plan.",
-  ];
+  if (!previousAttempt) return lines.join("\n");
+  lines.push("", "Previous composition failed validation. Repair the composition and return a valid plan.");
   if (previousAttempt.composition) {
     lines.push("Previous composition JSON:");
     lines.push(JSON.stringify(previousAttempt.composition));

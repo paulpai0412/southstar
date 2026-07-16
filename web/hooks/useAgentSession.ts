@@ -173,8 +173,31 @@ type NoticeAction =
 export type AgentPhase =
   | { kind: "waiting_model" }
   | { kind: "running_command" }
-  | { kind: "running_tools"; tools: { id: string; name: string }[] }
+  | { kind: "running_tools"; tools: { id: string; name: string; progress?: string }[] }
   | null;
+
+export function updateRunningToolProgress(
+  phase: AgentPhase,
+  event: { toolCallId?: unknown; toolName?: unknown; partialResult?: unknown },
+): AgentPhase {
+  if (typeof event.toolCallId !== "string") return phase;
+  const tools = phase?.kind === "running_tools" ? [...phase.tools] : [];
+  const index = tools.findIndex((tool) => tool.id === event.toolCallId);
+  const name = typeof event.toolName === "string" ? event.toolName : tools[index]?.name ?? "tool";
+  const progress = toolProgressText(event.partialResult);
+  const next = { id: event.toolCallId, name, ...(progress ? { progress } : {}) };
+  if (index < 0) tools.push(next);
+  else tools[index] = { ...tools[index], ...next };
+  return { kind: "running_tools", tools };
+}
+
+function toolProgressText(value: unknown): string | undefined {
+  if (!value || typeof value !== "object" || !("content" in value) || !Array.isArray(value.content)) return undefined;
+  const block = value.content.find((entry) => entry && typeof entry === "object" && "type" in entry && entry.type === "text" && "text" in entry && typeof entry.text === "string");
+  if (!block || typeof block !== "object" || !("text" in block) || typeof block.text !== "string") return undefined;
+  const text = block.text.replace(/\s+/g, " ").trim();
+  return text.length > 180 ? `${text.slice(0, 179)}…` : text || undefined;
+}
 
 export interface SlashCommandInfo {
   name: string;
@@ -762,6 +785,13 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         });
         break;
       }
+      case "tool_execution_update":
+        setAgentPhase((prev) => updateRunningToolProgress(prev, {
+          toolCallId: event.toolCallId,
+          toolName: event.toolName,
+          partialResult: event.partialResult,
+        }));
+        break;
       case "tool_execution_end": {
         const id = event.toolCallId as string;
         setAgentPhase((prev) => {

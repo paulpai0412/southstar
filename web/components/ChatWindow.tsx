@@ -50,8 +50,10 @@ interface Props {
   onWorkspaceSurfaceChange?: (surface: WorkspaceSurface) => void;
 }
 
-function phaseLabel(phase: AgentPhase): string {
+export function phaseLabel(phase: AgentPhase): string {
   if (phase?.kind === "running_tools") {
+    const latestProgress = phase.tools.findLast((tool) => tool.progress);
+    if (latestProgress?.progress) return `Running ${latestProgress.name}: ${latestProgress.progress}`;
     const names = phase.tools.map((t) => t.name);
     if (names.length === 0) return "Running tool...";
     if (names.length === 1) return `Running ${names[0]}...`;
@@ -476,7 +478,13 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
 
             {agentRunning && !streamState.streamingMessage && (
               <div className="py-2 text-[13px] text-text-muted">
-                <span className="animate-[pulse_1.5s_infinite]">{phaseLabel(agentPhase)}</span>
+                <span
+                  className="animate-[pulse_1.5s_infinite]"
+                  data-testid="agent-progress"
+                  data-live-progress={agentPhase?.kind === "running_tools" && agentPhase.tools.some((tool) => tool.progress) ? "true" : "false"}
+                >
+                  {phaseLabel(agentPhase)}
+                </span>
               </div>
             )}
 

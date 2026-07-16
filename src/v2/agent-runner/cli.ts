@@ -158,20 +158,27 @@ export function parseAgentRunnerArgs(argv: string[], env: Record<string, string 
 }
 
 function createAgentHarness(options: ReturnType<typeof parseAgentRunnerArgs>, envelope: AnyTaskEnvelope): AgentHarness {
+  if (options.harnessKind === "builtin") return createBuiltinAgentHarness();
+  if (options.harnessEndpoint) return createHttpHarness(options.harnessEndpoint);
   const harnessKind = options.harnessKind ?? defaultHarnessKindFromEnvelope(envelope);
-  if (harnessKind === "builtin") return createBuiltinAgentHarness();
-  return options.harnessEndpoint
-    ? createHttpHarness(options.harnessEndpoint)
-    : createPiSdkAgentHarness({
-      timeoutMs: options.harnessTimeoutMs ?? timeoutFromEnvelope(envelope),
-      ...(options.liveEventUrl ? { onDelta: (text) => postLiveDelta(options, envelope, text) } : {}),
-    });
+  if (harnessKind !== "pi-sdk") {
+    const harness = envelope.schemaVersion === "southstar.task-envelope.v2"
+      ? `${envelope.harness.id} (${envelope.harness.kind})`
+      : "legacy task envelope";
+    throw new Error(
+      `No executable harness adapter is configured for ${harness}; custom harnesses require SOUTHSTAR_HARNESS_ENDPOINT or an explicit supported SOUTHSTAR_HARNESS_KIND`,
+    );
+  }
+  return createPiSdkAgentHarness({
+    timeoutMs: options.harnessTimeoutMs ?? timeoutFromEnvelope(envelope),
+    ...(options.liveEventUrl ? { onDelta: (text) => postLiveDelta(options, envelope, text) } : {}),
+  });
 }
 
 function defaultHarnessKindFromEnvelope(envelope: AnyTaskEnvelope): string | undefined {
-  if (envelope.schemaVersion !== "southstar.task-envelope.v2") return undefined;
+  if (envelope.schemaVersion !== "southstar.task-envelope.v2") return "pi-sdk";
   if (envelope.harness.kind === "pi-agent" || envelope.agentProfile.provider === "pi") return "pi-sdk";
-  return "builtin";
+  return undefined;
 }
 
 function createHttpHarness(endpoint: string): AgentHarness {

@@ -689,6 +689,76 @@ test("RequirementEvaluatorResultV2 passes only when every frozen criterion has v
   });
 });
 
+test("a shared evaluator artifact may report frozen criteria for every covered requirement", async () => {
+  await withDb(async (db) => {
+    const runId = "run-requirement-shared-criteria-artifact";
+    const requirementIds = ["req-membership", "req-authorization"];
+    const fixture = await seedRequirementEvidenceRun(db, runId, { requirementIds });
+    const coverage = requirementCoverage(requirementIds, fixture.goalContractHash);
+    for (const entry of coverage.entries) {
+      Object.assign(entry, {
+        evaluatorProfileVersionRefs: ["evaluator.software-verification-quality@2"],
+        validationBindingId: `binding-${entry.requirementId}`,
+        criterionIds: [`criterion-${entry.requirementId}`],
+        acceptanceCriteria: [`${entry.requirementId} is independently verified`],
+        requiredEvidenceKinds: ["artifact-ref"],
+      });
+      entry.evaluatorProfileRefs = ["evaluator.software-verification-quality"];
+    }
+    await replaceRequirementCoverage(db, runId, coverage);
+    await db.query(
+      `update southstar.workflow_runs
+          set workflow_manifest_json = workflow_manifest_json || $2::jsonb
+        where id = $1`,
+      [runId, JSON.stringify({
+        evaluatorPipelines: [{
+          id: "software-verification-quality",
+          libraryObjectRef: "evaluator.software-verification-quality",
+          libraryVersionRef: "evaluator.software-verification-quality@2",
+          validationBindingIds: requirementIds.map((requirementId) => `binding-${requirementId}`),
+          evaluators: requirementIds.map((requirementId) => ({
+            id: `check-${requirementId}`,
+            kind: "checker-agent",
+            required: true,
+            config: {
+              validationBindingId: `binding-${requirementId}`,
+              requirementId,
+              criterionId: `criterion-${requirementId}`,
+              acceptanceCriterion: `${requirementId} is independently verified`,
+              expectedEvidenceKinds: ["artifact-ref"],
+            },
+          })),
+          onFailure: { defaultStrategy: "request-workflow-revision" },
+        }],
+      })],
+    );
+
+    const result = await recordRequirementEvaluatorResultsPg(db, {
+      runId,
+      taskId: "task-verify",
+      artifactRefId: "artifact-ref:shared-criteria-verification",
+      artifact: {
+        verdict: "passed",
+        verifiedArtifactRefs: [fixture.producerArtifactRefId],
+        criteriaResults: requirementIds.map((requirementId) => ({
+          criterionId: `criterion-${requirementId}`,
+          verdict: "passed",
+          evidenceRefs: [fixture.producerArtifactRefId],
+          findings: [],
+        })),
+      },
+      callbackOk: true,
+      rootSessionId: "session-1",
+      attemptId: "attempt-1",
+      handExecutionId: `hand-execution:${runId}:task-verify:attempt-1`,
+    });
+
+    assert.equal(result.ok, true, result.findings.join("\n"));
+    assert.equal((await latestRequirementResultPg(db, runId, "req-membership"))?.status, "passed");
+    assert.equal((await latestRequirementResultPg(db, runId, "req-authorization"))?.status, "passed");
+  });
+});
+
 test("frozen coverage scopes a shared evaluator pipeline by validation binding", async () => {
   await withDb(async (db) => {
     const runId = "run-requirement-shared-evaluator";

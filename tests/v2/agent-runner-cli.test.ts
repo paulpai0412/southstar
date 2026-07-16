@@ -61,6 +61,33 @@ test("agent runner CLI reads envelope, calls HTTP harness, and writes task resul
   }
 });
 
+test("agent runner CLI fails closed when a custom harness has no executable adapter", async () => {
+  const root = await mkdtemp(join(tmpdir(), "southstar-agent-runner-custom-harness-"));
+  const envelopePath = join(root, "envelope-v2.json");
+  const resultPath = join(root, "result-v2.json");
+  const value = envelopeV2();
+  value.agentProfile.provider = "github-copilot";
+  value.agentProfile.model = "gpt-5.3-codex";
+  value.agentProfile.harnessRef = "harness.docker-host-adapter";
+  value.harness.id = "harness.docker-host-adapter";
+  value.harness.kind = "custom";
+  await writeFile(envelopePath, JSON.stringify(value), "utf8");
+  const errors: string[] = [];
+
+  const exitCode = await runAgentRunnerCli([
+    "--envelope",
+    envelopePath,
+    "--result",
+    resultPath,
+  ], {
+    writeError: (message) => errors.push(message),
+  });
+
+  assert.equal(exitCode, 1);
+  assert.match(errors.join("\n"), /custom harness.*requires.*adapter|executable harness/i);
+  await assert.rejects(readFile(resultPath, "utf8"), /ENOENT/);
+});
+
 test("agent runner CLI refreshes v2 context packet before harness run", async () => {
   const root = await mkdtemp(join(tmpdir(), "southstar-agent-runner-refresh-"));
   const envelopePath = join(root, "envelope-v2.json");

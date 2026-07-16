@@ -52,6 +52,7 @@
     "test:e2e:postgres:32": "tsx tests/e2e-postgres/cases/32-one-prompt-goal-contract-article.test.ts",
     "test:e2e:browser:07": "tsx tests/e2e-browser/07-real-ui-postgres-browser.test.ts",
     "test:e2e:browser:32": "tsx tests/e2e-browser/32-goal-vocabulary-browser.test.ts",
+    "test:e2e:browser:33": "tsx tests/e2e-browser/33-southstar-chat-goal-outcome-browser.test.ts",
     "web:dev": "npm --prefix web run dev",
     "web:build": "npm --prefix web run build",
     "web:start": "npm --prefix web run start",

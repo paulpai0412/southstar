@@ -663,6 +663,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
         {/* CWD picker */}
         <div ref={dropdownRef} style={{ position: "relative" }}>
           <button
+            data-testid="chat-project-scope-button"
             onClick={() => setDropdownOpen((v) => !v)}
             style={{
               width: "100%",
@@ -778,6 +779,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
               {/* Custom path entry */}
               {!customPathOpen ? (
                 <button
+                  data-testid="chat-project-scope-custom"
                   onClick={(e) => {
                     e.stopPropagation();
                     setCustomPathOpen(true);
@@ -806,6 +808,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
               ) : (
                 <div style={{ padding: "6px 8px", borderTop: recentCwds.length > 0 ? "none" : undefined }}>
                   <input
+                    data-testid="chat-project-scope-custom-path"
                     ref={customPathInputRef}
                     value={customPathValue}
                     onChange={(e) => {
@@ -845,6 +848,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                   )}
                   <div style={{ display: "flex", gap: 5, marginTop: 5 }}>
                     <button
+                      data-testid="chat-project-scope-open"
                       onClick={() => { void commitCustomPath(); }}
                       disabled={customPathValidating}
                       style={{

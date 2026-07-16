@@ -9,11 +9,11 @@ Use the Southstar Pi tools to turn the user's goal into a durable runtime execut
 
 ## Invocation
 
-The project prompt template `.pi/prompts/southstar.md` maps the exact `/southstar <goal>` command to this skill. The native skill command is also available as `/skill:southstar`.
+The loaded prompt template maps the exact `/southstar <goal>` command to this skill. The native skill command is also available as `/skill:southstar`.
 
 Treat all text after the command as one goal prompt. If no goal is supplied, ask the user for one. Use the current Pi session workspace as `cwd`; use an explicitly requested project path when supplied.
 
-The runtime registry uses canonical MCP names such as `southstar.workflow.run_goal`; the existing Pi custom-tool bridge exposes the same tools with dots normalized to underscores, so the callable Pi name is `southstar_workflow_run_goal` (and, for example, `southstar_workflow_confirm_requirements`). Use the names visible in the current Pi tool list; the canonical names below identify the backing API.
+The runtime registry uses canonical MCP names such as `southstar.workflow.run_goal`; the existing Pi custom-tool bridge exposes the same tools with dots normalized to underscores, so the callable Pi name is `southstar_workflow_run_goal` (and, for example, `southstar_workflow_confirm_requirements` and `southstar_workflow_confirm_goal_design`). Use the names visible in the current Pi tool list; the canonical names below identify the backing API.
 
 ## Complete execution
 
@@ -37,18 +37,20 @@ Goal Contract → Requirement Draft → Library coverage/import → Slice Plan
 → callbacks/artifacts/evaluation → read model and terminal status
 ```
 
-Use `goalDesignMode: "auto_until_blocked"` for the one-command flow. The runtime still persists each stage and returns a blocking result when user input, Library approval, template selection, or recovery approval is required.
+Use `goalDesignMode: "auto_until_blocked"` for the one-command flow. This mode still returns a persisted requirements review before execution. When the returned draft is confirmable, has no blockers, and the requirements faithfully represent the user's command, continue without stopping: call `southstar_workflow_confirm_requirements` with the returned `draftId` and `expectedDraftHash`, read the resulting goal-design package/hash, then call `southstar_workflow_confirm_goal_design_stream` (canonical API: `southstar.workflow.confirm_goal_design_stream`) with `draftId` and `expectedPackageHash`. Keep that streaming tool call active through composition; its planner-stage and heartbeat events are user-visible progress. Its final result includes the DAG orchestration and starts scheduling.
+
+Do not treat `requirements_review` as terminal merely because an API call completed. The `/southstar` command authorizes this ordinary Goal-to-Outcome continuation for the stated goal. It does not authorize installing Library candidates, choosing an incompatible template, granting new capabilities, or approving recovery; those remain explicit blockers.
 
 ## Blocking results and continuation
 
 Never invent requirements, Library objects, agents, skills, tools, profiles, templates, artifacts, or execution status. Stop and explain the persisted blocker when `draftStatus` is one of:
 
 - `needs_input`: show `goalRequirementDraft`, `blockers`, and `validationIssues`; ask only for the missing clarification.
-- `needs_library_input`: inspect the returned `libraryImportDraftId`; use `southstar.library.get_graph` and the Library import tools, present candidates, and install only candidates the user approves. Then call `southstar.workflow.run_goal` again with the same goal and a new idempotency key.
+- `needs_library_input` or `library_review`: inspect the returned `libraryImportDraftId` with Pi tool `southstar_library_get_import_draft` (canonical API: `southstar.library.get_import_draft`), present its exact candidate and edge IDs, and install only the IDs the user explicitly approves. The install response resumes the same persisted Goal validation flow; do not rerun the Goal unless that response explicitly directs you to do so.
 - `template_incompatible` or `invalid`: report the persisted issue; do not silently choose another template or synthesize a fix.
 - `awaiting_approval`: show the `approvalId`; use the runtime approval API only after the user gives the decision.
 
-For a requirements review that must be interactive, use `southstar.workflow.get_draft`, `southstar.workflow.revise_requirement`, and `southstar.workflow.confirm_requirements`. Pass the returned `expectedDraftHash` on every revision/confirmation; do not overwrite a newer draft after a concurrency error.
+For a requirements review that needs correction, use `southstar.workflow.get_draft`, `southstar.workflow.revise_requirement`, and `southstar.workflow.confirm_requirements`. Pass the returned `expectedDraftHash` on every revision/confirmation; do not overwrite a newer draft after a concurrency error. After confirmation, use `southstar.workflow.confirm_goal_design_stream` (Pi: `southstar_workflow_confirm_goal_design_stream`) with the exact returned package hash instead of falling back to `run_draft`, repeatedly polling with sleeps, or calling an untracked route.
 
 ## Monitoring the run
 
@@ -71,9 +73,9 @@ Progress updates should be short and factual: current lifecycle stage, persisted
 
 Use the existing Southstar tools instead of shelling out or calling an untracked endpoint:
 
-- `southstar.library.*`: workspace/graph lookup, import drafts, candidate installation, object lifecycle, files, profiles, validation, and sync;
+- `southstar.library.*`: workspace/graph lookup, import draft creation and `get_import_draft` review, candidate installation, object lifecycle, files, profiles, validation, and sync;
 - `southstar.workflow.run_goal`: complete one-prompt Goal → Executor flow;
-- `southstar.workflow.create_draft*`, `get_draft`, `revise_draft*`, `revise_requirement`, `confirm_requirements`, proposal and template tools: explicit draft and Library/template work;
+- `southstar.workflow.create_draft*`, `get_draft`, `revise_draft*`, `revise_requirement`, `confirm_requirements`, `confirm_goal_design_stream`, proposal and template tools: explicit draft and Library/template work;
 - `southstar.workflow.run_draft`, `inspect_run`, `get_artifact`: run and result access;
 - `southstar.runtime.*`: read models, task envelopes, actions, pause/resume/cancel, recovery, artifacts, sessions, memory, executions, logs, approvals, steering, and event streams.
 

@@ -1101,7 +1101,10 @@ function isLibraryGraphTool(mcpToolName: string | undefined, piToolName: string 
 }
 
 function isLibraryImportTool(mcpToolName: string | undefined, piToolName: string | undefined): boolean {
-  return mcpToolName === "southstar.library.import_from_source" || piToolName === "southstar_library_import_from_source";
+  return mcpToolName === "southstar.library.import_from_source"
+    || mcpToolName === "southstar.library.get_import_draft"
+    || piToolName === "southstar_library_import_from_source"
+    || piToolName === "southstar_library_get_import_draft";
 }
 
 function inferSouthstarWorkspaceSurface(mcpToolName: string | undefined, piToolName: string | undefined): WorkspaceSurface | null {

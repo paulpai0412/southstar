@@ -356,7 +356,14 @@ test("Pi SDK agent harness prompts verification tasks for top-level artifact fie
     }),
   });
 
-  await harness.run({ envelope: envelopeV2WithVerificationReport(), attempt: 1 });
+  const envelope = envelopeV2WithVerificationReport();
+  envelope.evaluatorPipeline.evaluators = [{
+    id: "local-only-policy",
+    kind: "checker-agent",
+    required: true,
+    config: { expectedEvidenceKinds: ["policy-decision"] },
+  }];
+  await harness.run({ envelope, attempt: 1 });
 
   assert.match(prompts[0], /Runner output contract:/);
   assert.match(prompts[0], /artifact must contain these fields at top level: verdict, checks, evidenceRefs, summary, pass, safeToSave, verifiedArtifactRefs, commandsRun, testResults, remainingFailures/);
@@ -366,6 +373,7 @@ test("Pi SDK agent harness prompts verification tasks for top-level artifact fie
   assert.match(prompts[0], /commandsRun\.status allowed values: passed, failed, blocked/);
   assert.match(prompts[0], /testResults\.status allowed values: passed, failed, failed_non_gating, blocked, not-verified, not-run, skipped, pass_with_environment_gap/);
   assert.match(prompts[0], /gating allowed values: blocking, non-gating/);
+  assert.match(prompts[0], /policy-decision evidence records must include allowed: true or status: "passed"/);
   assert.match(prompts[0], /Do not put the report under artifact\.verification_report/);
   assert.match(prompts[0], /Do not return \{"verification_report": \.\.\.\}/);
 });

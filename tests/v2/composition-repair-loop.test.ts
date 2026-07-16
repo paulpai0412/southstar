@@ -75,13 +75,27 @@ test("composition repair loop retry prompt includes previous composition JSON an
       composer,
       scope: "software",
       maxRepairAttempts: 1,
+      runtimeBindingCapabilities: {
+        providers: ["pi"],
+        models: ["pi-agent-default"],
+        harnesses: ["pi"],
+        executionEngines: ["tork"],
+        images: ["southstar/pi-agent:local"],
+      },
     });
+    const initialPrompt = prompts[0] ?? "";
     const retryPrompt = prompts[1] ?? "";
     const firstIssueCode = result.attempts[0]?.validation.issues[0]?.code ?? "";
 
     assert.equal(result.validation.ok, true, JSON.stringify(result.validation.issues, null, 2));
     assert.equal(prompts.length, 2);
+    assert.match(initialPrompt, /Runtime host advertised bindings \(authoritative; use exact values\):/);
+    assert.match(initialPrompt, /"providers":\["pi"\]/);
+    assert.match(initialPrompt, /"models":\["pi-agent-default"\]/);
+    assert.match(initialPrompt, /"harnesses":\["pi"\]/);
+    assert.match(initialPrompt, /"images":\["southstar\/pi-agent:local"\]/);
     assert.match(retryPrompt, /Previous composition JSON:/);
+    assert.match(retryPrompt, /"providers":\["pi"\]/);
     assert.match(retryPrompt, /Latest validation issues:/);
     assert.match(retryPrompt, new RegExp(firstIssueCode));
     assert.match(retryPrompt, /\"title\":\"Invalid Plan\"/);

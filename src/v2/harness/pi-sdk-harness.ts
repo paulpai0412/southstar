@@ -164,6 +164,7 @@ function runnerOutputContractDirective(envelope: HarnessRunInput["envelope"]): s
   // verdict/checks/evidenceRefs instead of summary/pass).
   const fields = contract?.requiredFields ?? [];
   const fieldSet = new Set(fields);
+  const expectedEvidenceKinds = expectedEvidenceKindsFromEnvelope(envelope);
   return [
     "Runner output contract:",
     "Return exactly one JSON object. Do not wrap it in markdown.",
@@ -194,9 +195,25 @@ function runnerOutputContractDirective(envelope: HarnessRunInput["envelope"]): s
     ...(fieldSet.has("remainingFailures")
       ? ["remainingFailures must be an array; use [] only when every blocking check passed."]
       : []),
+    ...(expectedEvidenceKinds.has("policy-decision")
+      ? [
+        `Policy evidence item schema: {"id":"ev-policy-1","evidenceKind":"policy-decision","allowed":true,"decision":"bounded explanation"}.`,
+        `policy-decision evidence records must include allowed: true or status: "passed"; a descriptive decision string alone is not valid evidence.`,
+      ]
+      : []),
     `Do not put the report under artifact.${contractId}.`,
     `Do not return {"${contractId}": ...} as the primary artifact shape.`,
   ];
+}
+
+function expectedEvidenceKindsFromEnvelope(envelope: HarnessRunInput["envelope"]): Set<string> {
+  if (envelope.schemaVersion !== "southstar.task-envelope.v2") return new Set();
+  return new Set(envelope.evaluatorPipeline.evaluators.flatMap((evaluator) => {
+    const config = isRecord(evaluator.config) ? evaluator.config : {};
+    return Array.isArray(config.expectedEvidenceKinds)
+      ? config.expectedEvidenceKinds.filter((kind): kind is string => typeof kind === "string")
+      : [];
+  }));
 }
 
 function resolvedSkillInstructions(skills: Array<{ skillId: string; version?: string; instructions: string }>): string[] {

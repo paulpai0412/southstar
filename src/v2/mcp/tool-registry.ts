@@ -27,6 +27,7 @@ export type SouthstarMcpRuntimeClient = {
   getLibraryWorkspace(body?: { scope?: string }): Promise<ApiEnvelope<unknown>>;
   getLibraryGraph(body?: { scope?: string; objectKey?: string; depth?: number; kind?: string; status?: string; edgeType?: string }): Promise<ApiEnvelope<unknown>>;
   createLibraryImportDraft(body: { source: unknown; scope?: string; requestPrompt?: string }): Promise<ApiEnvelope<unknown>>;
+  getLibraryImportDraft(draftId: string): Promise<ApiEnvelope<unknown>>;
   installLibraryImportCandidates(body: { draftId: string; selectedCandidateIds: string[]; selectedEdgeIds?: string[]; actor?: string; reason: string }): Promise<ApiEnvelope<unknown>>;
   installLibraryImportCandidatesStream(body: { draftId: string; selectedCandidateIds: string[]; selectedEdgeIds?: string[]; actor?: string; reason: string }, onEvent: (event: SouthstarMcpStreamEvent) => void, signal?: AbortSignal): Promise<unknown>;
   getLibraryObject(objectKey: string): Promise<ApiEnvelope<unknown>>;
@@ -45,6 +46,8 @@ export type SouthstarMcpRuntimeClient = {
   revisePlannerDraft(body: { draftId: string; prompt: string; orchestrationMode?: "llm-constrained"; composerMode?: "llm" }): Promise<ApiEnvelope<unknown>>;
   reviseGoalRequirement(body: { draftId: string; requirementId: string; expectedDraftHash: string; patch: unknown; actor?: string }): Promise<ApiEnvelope<unknown>>;
   confirmGoalRequirements(body: { draftId: string; expectedDraftHash: string; actor?: string }): Promise<ApiEnvelope<unknown>>;
+  confirmGoalDesign(body: { draftId: string; expectedPackageHash: string }): Promise<ApiEnvelope<unknown>>;
+  confirmGoalDesignStream(body: { draftId: string; expectedPackageHash: string }, onEvent: (event: SouthstarMcpStreamEvent) => void, signal?: AbortSignal): Promise<unknown>;
   revisePlannerDraftStream(body: { draftId: string; prompt: string; orchestrationMode?: "llm-constrained"; composerMode?: "llm" }, onEvent: (event: SouthstarMcpStreamEvent) => void, signal?: AbortSignal): Promise<unknown>;
   searchWorkflowTemplates(body: { prompt: string; domain?: string; limit?: number }): Promise<ApiEnvelope<unknown>>;
   getWorkflowTemplate(templateRef: string): Promise<ApiEnvelope<unknown>>;
@@ -143,25 +146,26 @@ export function createSouthstarMcpToolRegistry(input: { client: SouthstarMcpRunt
       const body = asRecord(value);
       return unwrap(await c.createLibraryImportDraft({ source: requiredValue(body.source, "source"), ...optionalScope(body), ...(optionalString(body.requestPrompt) ? { requestPrompt: optionalString(body.requestPrompt) } : {}) }));
     }),
+    tool("southstar.library.get_import_draft", "Read reviewable candidates and proposed edges for a Library import draft.", { draftId: stringSchema("Import draft id.") }, ["draftId"], async (value) => unwrap(await c.getLibraryImportDraft(requiredString(asRecord(value).draftId, "draftId")))),
     tool("southstar.library.install_import_candidates", "Install selected Library import candidates.", { draftId: stringSchema("Import draft id."), selectedCandidateIds: arraySchema("Candidate ids."), selectedEdgeIds: arraySchema("Edge ids."), actor: optionalStringSchema("Actor id."), reason: stringSchema("Reason.") }, ["draftId", "selectedCandidateIds", "reason"], async (value) => {
       const body = asRecord(value);
-      return unwrap(await c.installLibraryImportCandidates({
+      return withInstalledGoalDesign(unwrap(await c.installLibraryImportCandidates({
         draftId: requiredString(body.draftId, "draftId"),
         selectedCandidateIds: stringArray(body.selectedCandidateIds, "selectedCandidateIds"),
         ...(Array.isArray(body.selectedEdgeIds) ? { selectedEdgeIds: stringArray(body.selectedEdgeIds, "selectedEdgeIds") } : {}),
         ...(optionalString(body.actor) ? { actor: optionalString(body.actor) } : {}),
         reason: requiredString(body.reason, "reason"),
-      }));
+      })));
     }),
     tool("southstar.library.install_import_candidates_stream", "Install selected Library import candidates and stream progress.", { draftId: stringSchema("Import draft id."), selectedCandidateIds: arraySchema("Candidate ids."), selectedEdgeIds: arraySchema("Edge ids."), actor: optionalStringSchema("Actor id."), reason: stringSchema("Reason.") }, ["draftId", "selectedCandidateIds", "reason"], async (value, context) => {
       const body = asRecord(value);
-      return await c.installLibraryImportCandidatesStream({
+      return withInstalledGoalDesign(await c.installLibraryImportCandidatesStream({
         draftId: requiredString(body.draftId, "draftId"),
         selectedCandidateIds: stringArray(body.selectedCandidateIds, "selectedCandidateIds"),
         ...(Array.isArray(body.selectedEdgeIds) ? { selectedEdgeIds: stringArray(body.selectedEdgeIds, "selectedEdgeIds") } : {}),
         ...(optionalString(body.actor) ? { actor: optionalString(body.actor) } : {}),
         reason: requiredString(body.reason, "reason"),
-      }, context.onEvent ?? noopEvent, context.signal);
+      }, context.onEvent ?? noopEvent, context.signal));
     }),
     tool("southstar.library.get_object", "Read a Library object.", { objectKey: stringSchema("Library object key.") }, ["objectKey"], async (value) => unwrap(await c.getLibraryObject(requiredString(asRecord(value).objectKey, "objectKey")))),
     tool("southstar.library.set_object_lifecycle", "Approve, deprecate, or block a Library object.", { objectKey: stringSchema("Object key."), action: stringSchema("approve, deprecate, or block."), actor: optionalStringSchema("Actor."), reason: stringSchema("Reason.") }, ["objectKey", "action", "reason"], async (value) => {
@@ -201,7 +205,9 @@ export function createSouthstarMcpToolRegistry(input: { client: SouthstarMcpRunt
     tool("southstar.workflow.create_draft_stream", "Create a planner draft from a prompt and stream backend progress.", plannerDraftSchema(), ["goalPrompt"], async (value, context) => await c.createPlannerDraftStream(plannerDraftBody(asRecord(value)), context.onEvent ?? noopEvent, context.signal)),
     tool("southstar.workflow.run_goal", "Execute a complete natural-language Southstar goal through Goal, Requirements, Library coverage, Slices, DAG, Executor, and persisted runtime evaluation.", runGoalSchema(), ["goalPrompt", "cwd", "idempotencyKey"], async (value, context) => runGoal(c, asRecord(value), context)),
     tool("southstar.workflow.revise_requirement", "Revise one goal requirement with optimistic draft-hash concurrency protection.", { draftId: stringSchema("Goal requirement draft id."), requirementId: stringSchema("Requirement id."), expectedDraftHash: stringSchema("Expected draft hash."), patch: optionalObjectSchema("Requirement patch."), actor: optionalStringSchema("Actor id.") }, ["draftId", "requirementId", "expectedDraftHash", "patch"], async (value) => unwrap(await c.reviseGoalRequirement(reviseGoalRequirementBody(asRecord(value))))),
-    tool("southstar.workflow.confirm_requirements", "Confirm a goal requirement draft and continue composition.", { draftId: stringSchema("Goal requirement draft id."), expectedDraftHash: stringSchema("Expected draft hash."), actor: optionalStringSchema("Actor id.") }, ["draftId", "expectedDraftHash"], async (value) => unwrap(await c.confirmGoalRequirements({ draftId: requiredString(asRecord(value).draftId, "draftId"), expectedDraftHash: requiredString(asRecord(value).expectedDraftHash, "expectedDraftHash"), ...(optionalString(asRecord(value).actor) ? { actor: optionalString(asRecord(value).actor) } : {}) }))),
+    tool("southstar.workflow.confirm_requirements", "Confirm a goal requirement draft and continue composition.", { draftId: stringSchema("Goal requirement draft id."), expectedDraftHash: stringSchema("Expected draft hash."), actor: optionalStringSchema("Actor id.") }, ["draftId", "expectedDraftHash"], async (value) => confirmRequirements(c, asRecord(value))),
+    tool("southstar.workflow.confirm_goal_design", "Confirm the validated goal-design package, create its workflow run, and start scheduling.", { draftId: stringSchema("Planner draft id."), expectedPackageHash: stringSchema("Expected goal-design package hash.") }, ["draftId", "expectedPackageHash"], async (value) => confirmGoalDesign(c, asRecord(value))),
+    tool("southstar.workflow.confirm_goal_design_stream", "Confirm the validated goal-design package while streaming composition progress, then return its DAG and workflow run.", { draftId: stringSchema("Planner draft id."), expectedPackageHash: stringSchema("Expected goal-design package hash.") }, ["draftId", "expectedPackageHash"], async (value, context) => confirmGoalDesignStream(c, asRecord(value), context)),
     tool("southstar.workflow.search_templates", "Search approved workflow templates.", { prompt: stringSchema("Prompt."), domain: optionalStringSchema("Domain."), limit: optionalNumberSchema("Limit.") }, ["prompt"], async (value) => {
       const body = asRecord(value);
       return unwrap(await c.searchWorkflowTemplates({ prompt: requiredString(body.prompt, "prompt"), ...(optionalString(body.domain) ? { domain: optionalString(body.domain) } : {}), ...(optionalNumber(body.limit) !== undefined ? { limit: optionalNumber(body.limit) } : {}) }));
@@ -279,6 +285,23 @@ function unwrap(envelope: ApiEnvelope<unknown>): unknown {
   return envelope.result;
 }
 
+function withInstalledGoalDesign(value: unknown): Record<string, unknown> {
+  const result = asRecord(value);
+  const resume = asRecord(result.goalValidationResume);
+  const continued = asRecord(resume.continued);
+  if (typeof continued.draftId !== "string" || !isRecord(continued.goalDesignPackage)) return result;
+  return {
+    ...result,
+    goalDesign: {
+      type: "goalDesign",
+      draftId: continued.draftId,
+      status: continued.status,
+      goalDesignPackageHash: continued.goalDesignPackageHash,
+      package: continued.goalDesignPackage,
+    },
+  };
+}
+
 async function runGoal(
   client: SouthstarMcpRuntimeClient,
   body: Record<string, unknown>,
@@ -328,6 +351,79 @@ async function runGoal(
     }
   }
   return output;
+}
+
+async function confirmRequirements(
+  client: SouthstarMcpRuntimeClient,
+  body: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const result = asRecord(unwrap(await client.confirmGoalRequirements({
+    draftId: requiredString(body.draftId, "draftId"),
+    expectedDraftHash: requiredString(body.expectedDraftHash, "expectedDraftHash"),
+    ...(optionalString(body.actor) ? { actor: optionalString(body.actor) } : {}),
+  })));
+  const goalDesignPackage = asRecord(result.goalDesignPackage);
+  return {
+    ...result,
+    ...(goalDesignPackage && typeof result.draftId === "string" ? {
+      goalDesign: {
+        type: "goalDesign",
+        draftId: result.draftId,
+        status: result.status,
+        goalDesignPackageHash: result.goalDesignPackageHash,
+        package: goalDesignPackage,
+      },
+    } : {}),
+  };
+}
+
+async function confirmGoalDesign(
+  client: SouthstarMcpRuntimeClient,
+  body: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const result = asRecord(unwrap(await client.confirmGoalDesign({
+    draftId: requiredString(body.draftId, "draftId"),
+    expectedPackageHash: requiredString(body.expectedPackageHash, "expectedPackageHash"),
+  })));
+  if (typeof result.draftId !== "string") return result;
+  try {
+    return {
+      ...result,
+      orchestration: unwrap(await client.getPlannerDraftOrchestration(result.draftId)),
+    };
+  } catch (error) {
+    return {
+      ...result,
+      orchestrationError: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+async function confirmGoalDesignStream(
+  client: SouthstarMcpRuntimeClient,
+  body: Record<string, unknown>,
+  context: SouthstarMcpToolCallContext,
+): Promise<Record<string, unknown>> {
+  const draftId = requiredString(body.draftId, "draftId");
+  const summary = asRecord(await client.confirmGoalDesignStream({
+    draftId,
+    expectedPackageHash: requiredString(body.expectedPackageHash, "expectedPackageHash"),
+  }, context.onEvent ?? noopEvent, context.signal));
+  const result = asRecord(summary.result);
+  const orchestrationDraftId = typeof result.draftId === "string" ? result.draftId : draftId;
+  try {
+    const orchestration = unwrap(await client.getPlannerDraftOrchestration(orchestrationDraftId));
+    return {
+      ...summary,
+      orchestration,
+      result: { ...result, orchestration },
+    };
+  } catch (error) {
+    return {
+      ...summary,
+      orchestrationError: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 function inspectRun(client: SouthstarMcpRuntimeClient, body: Record<string, unknown>): Promise<unknown> {

@@ -1,5 +1,6 @@
 import { createAgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "crypto";
+import { basename, resolve } from "node:path";
 import { createSouthstarPiAgentToolsFromEnv } from "../../src/v2/mcp/pi-agent-tools.ts";
 import { cacheSessionPath } from "./session-reader";
 import type { SlashCommandInfo } from "@earendil-works/pi-coding-agent";
@@ -602,8 +603,18 @@ export async function startRpcSession(
   if (inflight) return inflight;
 
   const starting = (async () => {
-    const { SessionManager, getAgentDir } = await import("@earendil-works/pi-coding-agent");
+    const { DefaultResourceLoader, SessionManager, getAgentDir } = await import("@earendil-works/pi-coding-agent");
     const agentDir = getAgentDir();
+    const configuredWebAppDir = process.env.SOUTHSTAR_WEB_APP_DIR?.trim();
+    const webAppDir = resolve(configuredWebAppDir || process.cwd());
+    const southstarAppDir = basename(webAppDir) === "web" ? resolve(webAppDir, "..") : webAppDir;
+    const resourceLoader = new DefaultResourceLoader({
+      cwd,
+      agentDir,
+      additionalSkillPaths: [resolve(southstarAppDir, ".pi", "skills", "southstar")],
+      additionalPromptTemplatePaths: [resolve(southstarAppDir, ".pi", "prompts", "southstar.md")],
+    });
+    await resourceLoader.reload();
 
     const sessionManager = sessionFile
       ? SessionManager.open(sessionFile, undefined)
@@ -629,6 +640,7 @@ export async function startRpcSession(
       agentDir,
       sessionManager,
       customTools,
+      resourceLoader,
       ...(toolsOption !== undefined ? { tools: toolsOption } : {}),
     });
 

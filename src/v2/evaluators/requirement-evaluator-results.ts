@@ -131,6 +131,7 @@ export async function recordRequirementEvaluatorResultsPg(
   const entries = context.coverage.entries.filter((entry) => entry.evaluatorTaskIds.includes(input.taskId));
   if (entries.length === 0) return { ok: true, failedBlockingRequirementIds: [], evidenceRefs: [], evaluatorResultRefs: [], findings: [] };
   await assertExecutionIdentityPg(db, input, context, entries);
+  const evaluatorCriterionIds = new Set(entries.flatMap((entry) => entry.criterionIds));
 
   const evidenceRefs: string[] = [];
   const evaluatorResultRefs: string[] = [];
@@ -139,7 +140,7 @@ export async function recordRequirementEvaluatorResultsPg(
   const failedBlockingRequirementIds: string[] = [];
 
   for (const entry of entries) {
-    const evaluation = await evaluateEntry(db, input, entry, context.manifest, context.workspaceRoot);
+    const evaluation = await evaluateEntry(db, input, entry, context.manifest, context.workspaceRoot, evaluatorCriterionIds);
     await persistEvidencePacket(db, evaluation.evidence);
     await persistValidatorResult(db, evaluation.validator);
     await persistRequirementResult(db, input, evaluation.result, evaluation.resourceKey);
@@ -182,6 +183,7 @@ async function evaluateEntry(
   entry: CoverageEntry,
   manifest: SouthstarWorkflowManifest,
   workspaceRoot: string | undefined,
+  evaluatorCriterionIds: ReadonlySet<string>,
 ): Promise<{
   evidence: EvidencePacket;
   validator: ValidatorResult;
@@ -248,6 +250,7 @@ async function evaluateEntry(
         evaluatorId: resourceKey,
         evidence,
         hostFindings: blockedFindings,
+        evaluatorCriterionIds,
       })
     : {
         schemaVersion: "southstar.requirement_evaluator_result.v1" as const,
@@ -279,6 +282,7 @@ function evaluateCriterionResult(input: {
   evaluatorId: string;
   evidence: EvidencePacket;
   hostFindings: string[];
+  evaluatorCriterionIds: ReadonlySet<string>;
 }): RequirementEvaluatorResultV2 {
   const rawResults = Array.isArray(input.artifact.criteriaResults)
     ? input.artifact.criteriaResults.map(asRecord)
@@ -288,10 +292,11 @@ function evaluateCriterionResult(input: {
   const expectedCriterionIds = new Set(input.entry.criterionIds);
   for (const raw of rawResults) {
     const criterionId = nonEmptyString(raw.criterionId);
-    if (!criterionId || !expectedCriterionIds.has(criterionId)) {
+    if (!criterionId || !input.evaluatorCriterionIds.has(criterionId)) {
       unknownCriterionIds.push(criterionId ?? "<missing>");
       continue;
     }
+    if (!expectedCriterionIds.has(criterionId)) continue;
     const values = rawByCriterion.get(criterionId) ?? [];
     values.push(raw);
     rawByCriterion.set(criterionId, values);

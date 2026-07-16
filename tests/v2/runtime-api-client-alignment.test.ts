@@ -33,6 +33,7 @@ test("runtime server client exposes P0 runtime API methods", () => {
     "tickRuntimeLoop",
     "wakeRuntime",
     "createPlannerDraftStream",
+    "confirmGoalDesignStream",
     "getTaskActions",
     "retryTask",
     "resetTaskSession",
@@ -321,13 +322,15 @@ test("generic read-model API routes core kinds including run control and workflo
 });
 
 test("runtime server client exposes operator route URLs and bodies", async () => {
-  const calls: Array<{ url: string; method?: string; body?: unknown }> = [];
+  const calls: Array<{ url: string; method?: string; body?: unknown; accept?: string }> = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const accept = new Headers(init?.headers).get("accept") ?? undefined;
     calls.push({
       url: String(input),
       method: init?.method,
       body: init?.body ? JSON.parse(String(init.body)) : undefined,
+      ...(accept ? { accept } : {}),
     });
     if (String(input).includes("/stream")) {
       return new Response("event: done\ndata: {}\n\n", { headers: { "content-type": "text/event-stream" } });
@@ -353,6 +356,7 @@ test("runtime server client exposes operator route URLs and bodies", async () =>
       cwd: "/workspace/software",
       idempotencyKey: "goal-client-1",
     });
+    await client.confirmGoalDesignStream({ draftId: "draft/a", expectedPackageHash: "package/a" }, () => {});
     await client.getPlannerDraftOrchestration("draft/a");
     await client.createRunFromPlannerDraft("draft/a");
     await client.patchPlannerDraftTaskProfileOverride("draft/a", "task/a", {
@@ -477,6 +481,12 @@ test("runtime server client exposes operator route URLs and bodies", async () =>
         url: "http://127.0.0.1/api/v2/run-goal",
         method: "POST",
         body: { goalPrompt: "implement calc sum", cwd: "/workspace/software", idempotencyKey: "goal-client-1" },
+      },
+      {
+        url: "http://127.0.0.1/api/v2/planner/drafts/draft%2Fa/confirm-goal-design",
+        method: "POST",
+        body: { expectedPackageHash: "package/a" },
+        accept: "text/event-stream",
       },
       { url: "http://127.0.0.1/api/v2/planner/drafts/draft%2Fa/orchestration", method: undefined, body: undefined },
       { url: "http://127.0.0.1/api/v2/planner/drafts/draft%2Fa/runs", method: "POST", body: {} },

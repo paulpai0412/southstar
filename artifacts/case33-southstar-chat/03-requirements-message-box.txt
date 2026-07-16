@@ -1,0 +1,266 @@
+Southstar
+New
+/tmp/southstar-chat-e2e-workspace-Oox6eV
+WORKFLOW SESSIONS
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+1m ago
+2 messages
+(no messages)
+45m ago
+0 messages
+Use the approved Library Goal Design SOP to design outcome slices from the confirmed Goal Contract and frozen validation bindings. GoalDesignSkillRef: skill.southstar-goal-design G...
+45m ago
+2 messages
+Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+49m ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+50m ago
+2 messages
+(no messages)
+58m ago
+0 messages
+(no messages)
+1h ago
+0 messages
+(no messages)
+1h ago
+0 messages
+Use the approved Library Goal Design SOP to design outcome slices from the confirmed Goal Contract and frozen validation bindings. GoalDesignSkillRef: skill.southstar-goal-design G...
+1h ago
+2 messages
+Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+1h ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+1h ago
+2 messages
+Use the approved Library Goal Design SOP to design outcome slices from the confirmed Goal Contract and frozen validation bindings. GoalDesignSkillRef: skill.southstar-goal-design G...
+1h ago
+2 messages
+Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+1h ago
+2 messages
+Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+1h ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+1h ago
+2 messages
+(no messages)
+2h ago
+0 messages
+Use the approved Library Goal Design SOP to design outcome slices from the confirmed Goal Contract and frozen validation bindings. GoalDesignSkillRef: skill.southstar-goal-design G...
+2h ago
+2 messages
+Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+2h ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+2h ago
+2 messages
+(no messages)
+3h ago
+0 messages
+Use the approved Library Goal Design SOP to design outcome slices from the confirmed Goal Contract and frozen validation bindings. GoalDesignSkillRef: skill.southstar-goal-design G...
+3h ago
+2 messages
+Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+3h ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+3h ago
+2 messages
+Use the approved Library Goal Design SOP to design outcome slices from the confirmed Goal Contract and frozen validation bindings. GoalDesignSkillRef: skill.southstar-goal-design G...
+3h ago
+2 messages
+Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+3h ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+3h ago
+2 messages
+(no messages)
+3h ago
+0 messages
+(no messages)
+3h ago
+0 messages
+(no messages)
+4h ago
+0 messages
+Use the approved Library Goal Design SOP to design outcome slices from the confirmed Goal Contract and frozen validation bindings. GoalDesignSkillRef: skill.southstar-goal-design G...
+4h ago
+2 messages
+Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+4h ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+4h ago
+2 messages
+(no messages)
+4h ago
+0 messages
+Use the approved Library Goal Design SOP to design outcome slices from the confirmed Goal Contract and frozen validation bindings. GoalDesignSkillRef: skill.southstar-goal-design G...
+4h ago
+2 messages
+Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+4h ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+4h ago
+2 messages
+(no messages)
+5h ago
+0 messages
+Use the approved Library Goal Design SOP to design outcome slices from the confirmed Goal Contract and frozen validation bindings. GoalDesignSkillRef: skill.southstar-goal-design G...
+5h ago
+2 messages
+Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+5h ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+5h ago
+2 messages
+Use the approved Library Goal Design SOP to design outcome slices from the confirmed Goal Contract and frozen validation bindings. GoalDesignSkillRef: skill.southstar-goal-design G...
+5h ago
+2 messages
+Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+5h ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+5h ago
+2 messages
+Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+5h ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+5h ago
+2 messages
+Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+5h ago
+2 messages
+Use the approved Goal Design skill to turn only the Requirement Draft's declared interactionContractRefs into reviewable UI interaction contracts. GoalDesignSkillRef: skill.southst...
+5h ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+5h ago
+2 messages
+Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+5h ago
+2 messages
+Use the approved Goal Design skill to turn only the Requirement Draft's declared interactionContractRefs into reviewable UI interaction contracts. GoalDesignSkillRef: skill.southst...
+6h ago
+2 messages
+WORKFLOW LIBRARY
+all
+workflows
+Models
+Skills
+MCP
+Chat
+Library
+Workflow
+Operator
+2k
+737
+44k
+$0.02
+
+/southstar Deliver a production-ready local membership subscription module in the workspace, with access control, billing state, immediate cancellation, idempotent full-refund records, and audit reporting; use only the local payment ledger in the repository and do not deploy or charge external accounts.
+
+Copy
+05:31
+gpt-5.3-codex
+Thinking
+2s
+read
+/home/timmypai/apps/southstar/.worktrees/southstar-chat-goal-e2e/.pi/skills/southstar/SKILL.md
+3s
+154 in · 168 out · 13,952 cache · $0.0051
+gpt-5.3-codex
+Thinking
+southstar_workflow_run_goal
+Deliver a production-ready local membership subscription module in the workspace, with access control, billing state, im
+17s
+1,964 in · 346 out · 13,952 cache · $0.0107
+gpt-5.3-codex
+Thinking
+southstar_workflow_run_goal
+Deliver a production-ready local membership subscription module in the workspace, with access control, billing state, im
+63s
+Southstar · Requirements
+Deliver a production-ready local membership subscription module in the workspace that enforces access control, maintains billing lifecycle state, supports immediate cancellation, records idempotent full refunds, and produces audit reporting, while strictly using only the repository’s local payment ledger with no external charging or deployment behavior.
+draft draft-goal-requirements-eea8c21aec9e · requirements_review · rev 1
+7 requirements
+7 explicit
+0 inferred
+7 blocking
+clarification clear
+Production-ready local membership subscription module
+explicit
+blocking
+Implement a local membership subscription module in the workspace that is runnable in the repository and covers subscription lifecycle operations needed for billing, cancellation, refunds, and auditability.
+2 AC
+ready
+coverage unknown
+no visual contract
+Access control enforcement for membership actions
+explicit
+blocking
+Enforce access control so only authorized actors can perform protected membership operations, with unauthorized attempts denied.
+1 AC
+ready
+coverage unknown
+no visual contract
+Billing state lifecycle management
+explicit
+blocking
+Persist and maintain billing state for memberships through lifecycle transitions in the local payment ledger.
+2 AC
+ready
+coverage unknown
+no visual contract
+Immediate cancellation behavior
+explicit
+blocking
+Cancellation must take effect immediately for a membership, with no delayed cancellation window.
+1 AC
+ready
+coverage unknown
+no visual contract
+Idempotent full-refund record handling
+explicit
+blocking
+Support full-refund recording that is idempotent, so repeated equivalent refund requests do not create duplicate financial effects while preserving correct refund history.
+2 AC
+ready
+coverage unknown
+no visual contract
+Audit reporting for subscription and billing events
+explicit
+blocking
+Provide audit reporting that captures membership subscription, access-control-relevant actions, billing transitions, cancellations, and refunds in a reviewable local format.
+1 AC
+ready
+coverage unknown
+no visual contract
+Local payment ledger only with no external charging or deployment
+explicit
+blocking
+All payment and refund behavior must use only the local payment ledger present in the repository, and implementation must not charge external accounts or introduce deployment behavior.
+2 AC
+ready
+coverage unknown
+no visual contract
+
+Non-goals: Integrating third-party payment gateways or any live external billing processor. · Charging real customer or external accounts. · Deploying the module to remote infrastructure as part of this goal. · Implementing unrelated product features outside membership subscription, billing lifecycle, cancellation, refunds, and audit reporting.
+
+Host marked this requirement draft confirmable.
+Confirm requirements
+154 in · 223 out · 16,128 cache · $0.0062
+05:32
+Waiting for model...
+Steer
+Follow-up
+Stop

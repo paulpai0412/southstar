@@ -230,6 +230,9 @@ export function createRuntimeServerClient(input: { baseUrl: string }) {
     createLibraryImportDraft(body: LibraryImportDraftRequest) {
       return post(`${baseUrl}/api/v2/library/import-drafts`, body);
     },
+    getLibraryImportDraft(draftId: string) {
+      return get(`${baseUrl}/api/v2/library/import-drafts/${encodeURIComponent(draftId)}`);
+    },
     installLibraryImportCandidates(body: LibraryImportInstallRequest) {
       return post(`${baseUrl}/api/v2/library/import-drafts/${encodeURIComponent(body.draftId)}/install`, {
         selectedCandidateIds: body.selectedCandidateIds,
@@ -306,6 +309,25 @@ export function createRuntimeServerClient(input: { baseUrl: string }) {
           expectedDraftHash: body.expectedDraftHash,
           ...(body.actor !== undefined ? { actor: body.actor } : {}),
         },
+      );
+    },
+    confirmGoalDesign(body: { draftId: string; expectedPackageHash: string }) {
+      return post(
+        `${baseUrl}/api/v2/planner/drafts/${encodeURIComponent(body.draftId)}/confirm-goal-design`,
+        { expectedPackageHash: body.expectedPackageHash },
+      );
+    },
+    confirmGoalDesignStream(
+      body: { draftId: string; expectedPackageHash: string },
+      onEvent: RuntimeSseListener,
+      signal?: AbortSignal,
+    ) {
+      return postSse(
+        `${baseUrl}/api/v2/planner/drafts/${encodeURIComponent(body.draftId)}/confirm-goal-design`,
+        { expectedPackageHash: body.expectedPackageHash },
+        onEvent,
+        signal,
+        { accept: "text/event-stream" },
       );
     },
     revisePlannerDraftStream(body: RevisePlannerDraftRequest, onEvent: RuntimeSseListener, signal?: AbortSignal) {

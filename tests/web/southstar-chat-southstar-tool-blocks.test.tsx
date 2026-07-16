@@ -209,18 +209,18 @@ test("Chat MessageView renders Southstar import candidates tool results as an in
       content: [{
         type: "toolCall",
         toolCallId: "tool-import",
-        toolName: "southstar_library_import_from_source",
-        input: { source: { kind: "github", url: "https://github.com/example/skills" } },
+        toolName: "southstar_library_get_import_draft",
+        input: { draftId: "draft-import-1" },
       }],
     };
     const toolResults = new Map([["tool-import", {
       role: "toolResult",
       toolCallId: "tool-import",
-      toolName: "southstar_library_import_from_source",
+      toolName: "southstar_library_get_import_draft",
       content: [{ type: "text", text: "{}" }],
       details: {
-        mcpToolName: "southstar.library.import_from_source",
-        piToolName: "southstar_library_import_from_source",
+        mcpToolName: "southstar.library.get_import_draft",
+        piToolName: "southstar_library_get_import_draft",
         structuredContent: {
           draftId: "draft-import-1",
           candidates: [{
@@ -393,6 +393,58 @@ test("Chat MessageView renders Southstar workflow draft tool results as a workfl
   });
 });
 
+test("Chat MessageView renders streamed goal-design confirmation orchestration as a workflow DAG block", async () => {
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { MessageView } from "./web/components/MessageView";
+
+    const message = {
+      role: "assistant",
+      model: "gpt-5",
+      provider: "openai",
+      content: [{
+        type: "toolCall",
+        toolCallId: "tool-confirm-design-stream",
+        toolName: "southstar_workflow_confirm_goal_design_stream",
+        input: { draftId: "draft-wf-stream", expectedPackageHash: "package-wf-stream" },
+      }],
+    };
+    const orchestration = {
+      draftId: "draft-wf-stream",
+      goalPrompt: "build a streamed vocabulary app",
+      workflowId: "generated-streamed-vocabulary-workflow",
+      status: "validated",
+      validationIssues: [],
+      taskSummaries: [
+        { taskId: "implement", taskName: "Implement vocabulary", dependsOn: [], roleRef: "maker", agentProfileRef: "profile.maker" },
+        { taskId: "verify", taskName: "Verify vocabulary", dependsOn: ["implement"], roleRef: "verifier", agentProfileRef: "profile.verifier" },
+      ],
+    };
+    const toolResults = new Map([["tool-confirm-design-stream", {
+      role: "toolResult",
+      toolCallId: "tool-confirm-design-stream",
+      toolName: "southstar_workflow_confirm_goal_design_stream",
+      content: [{ type: "text", text: "{}" }],
+      details: {
+        mcpToolName: "southstar.workflow.confirm_goal_design_stream",
+        piToolName: "southstar_workflow_confirm_goal_design_stream",
+        structuredContent: {
+          eventCount: 3,
+          result: { draftId: "draft-wf-stream", runId: "run-wf-stream", orchestration },
+          orchestration,
+        },
+      },
+    }]]);
+
+    createRoot(document.getElementById("root")).render(<MessageView message={message} toolResults={toolResults} />);
+  `, async (page) => {
+    await page.locator('[data-testid="workflow-dag-block"]').waitFor();
+    await assertText(page, '[data-testid="workflow-dag-block"]', "generated-streamed-vocabulary-workflow");
+    await assertText(page, '[data-testid="workflow-dag-block"]', "Verify vocabulary");
+  });
+});
+
 test("Chat MessageView renders Southstar instantiated template tool results as a workflow DAG block", async () => {
   await withBrowserHarness(`
     import React from "react";
@@ -449,6 +501,28 @@ test("Chat MessageView renders Southstar instantiated template tool results as a
     await assertText(page, '[data-testid="workflow-dag-block"]', "wf-template-1");
     await assertText(page, '[data-testid="workflow-dag-block"]', "Plan Generic Software Harness Template");
     await assertText(page, '[data-testid="workflow-dag-block"]', "Verify Generic Software Harness Template");
+  });
+});
+
+test("Chat surfaces streamed Southstar tool progress while a long run is active", async () => {
+  await withBrowserHarness(`
+    import { phaseLabel } from "./web/components/ChatWindow";
+    import { updateRunningToolProgress } from "./web/hooks/useAgentSession";
+
+    const phase = updateRunningToolProgress({
+      kind: "running_tools",
+      tools: [{ id: "tool-stream", name: "southstar_runtime_stream_run_events" }],
+    }, {
+      toolCallId: "tool-stream",
+      toolName: "southstar_runtime_stream_run_events",
+      partialResult: {
+        content: [{ type: "text", text: "task.started: Implement membership module" }],
+      },
+    });
+
+    document.getElementById("root").textContent = phaseLabel(phase);
+  `, async (page) => {
+    await assertText(page, "#root", "Implement membership module");
   });
 });
 

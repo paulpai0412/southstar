@@ -156,7 +156,11 @@ function stringifyForScanning(value: unknown): string {
   }
 }
 
-function redactSensitiveSubtrees(value: unknown, seen = new WeakSet<object>()): { value: unknown; foundSensitiveKey: boolean } {
+function redactSensitiveSubtrees(
+  value: unknown,
+  seen = new WeakSet<object>(),
+  tokenAnalysisContext = false,
+): { value: unknown; foundSensitiveKey: boolean } {
   if (value === null) return { value: null, foundSensitiveKey: false };
   if (typeof value === "string" && credentialBearingUrl(value)) {
     return { value: "[REDACTED_URL]", foundSensitiveKey: true };
@@ -168,7 +172,7 @@ function redactSensitiveSubtrees(value: unknown, seen = new WeakSet<object>()): 
   if (Array.isArray(value)) {
     let foundSensitiveKey = false;
     const redacted = value.map((item) => {
-      const child = redactSensitiveSubtrees(item, seen);
+      const child = redactSensitiveSubtrees(item, seen, tokenAnalysisContext);
       foundSensitiveKey ||= child.foundSensitiveKey;
       return child.value;
     });
@@ -178,16 +182,42 @@ function redactSensitiveSubtrees(value: unknown, seen = new WeakSet<object>()): 
   const redacted: Record<string, unknown> = {};
   let foundSensitiveKey = false;
   for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    if (isSensitivePolicyKey(key)) {
+    if (isSensitivePayloadKey(key, child, tokenAnalysisContext)) {
       redacted[key] = "[REDACTED]";
       foundSensitiveKey = true;
       continue;
     }
-    const redactedChild = redactSensitiveSubtrees(child, seen);
+    const redactedChild = redactSensitiveSubtrees(child, seen, tokenAnalysisContext || isTokenAnalysisKey(key));
     redacted[key] = redactedChild.value;
     foundSensitiveKey ||= redactedChild.foundSensitiveKey;
   }
   return { value: redacted, foundSensitiveKey };
+}
+
+function isSensitivePayloadKey(key: string, value: unknown, tokenAnalysisContext: boolean): boolean {
+  if (!isSensitivePolicyKey(key)) return false;
+  const parts = policyKeyParts(key);
+  const tokenVocabulary = parts.includes("TOKEN") || parts.includes("TOKENS");
+  if (!tokenVocabulary) return true;
+  if (typeof value === "number" || typeof value === "bigint") return false;
+  if (isTokenAnalysisKey(key)) return false;
+  if (tokenAnalysisContext && parts.length === 1) return false;
+  return true;
+}
+
+function isTokenAnalysisKey(key: string): boolean {
+  const parts = policyKeyParts(key);
+  const tokenVocabulary = parts.includes("TOKEN") || parts.includes("TOKENS");
+  return tokenVocabulary
+    && parts.some((part) => ["SCAN", "COUNT", "USAGE", "BUDGET", "LIMIT", "METRIC", "METRICS"].includes(part));
+}
+
+function policyKeyParts(key: string): string[] {
+  return key
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .toUpperCase()
+    .split(/[^A-Z0-9]+/)
+    .filter(Boolean);
 }
 
 function credentialBearingUrl(

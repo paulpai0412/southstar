@@ -17,6 +17,7 @@ test("createSouthstarMcpToolRegistry exposes workflow and system tools", () => {
     "southstar.library.get_workspace",
     "southstar.library.get_graph",
     "southstar.library.import_from_source",
+    "southstar.library.get_import_draft",
     "southstar.library.install_import_candidates",
     "southstar.library.install_import_candidates_stream",
     "southstar.library.get_object",
@@ -34,6 +35,8 @@ test("createSouthstarMcpToolRegistry exposes workflow and system tools", () => {
     "southstar.workflow.run_goal",
     "southstar.workflow.revise_requirement",
     "southstar.workflow.confirm_requirements",
+    "southstar.workflow.confirm_goal_design",
+    "southstar.workflow.confirm_goal_design_stream",
     "southstar.workflow.search_templates",
     "southstar.workflow.get_template",
     "southstar.workflow.instantiate_template",
@@ -103,11 +106,17 @@ test("MCP registry tools unwrap runtime client envelopes", async () => {
     patch: { title: "Updated requirement" },
     actor: "pi-agent",
   });
-  await registry.callTool("southstar.workflow.confirm_requirements", {
+  const confirmedRequirements = await registry.callTool("southstar.workflow.confirm_requirements", {
     draftId: "draft-goal-a",
     expectedDraftHash: "req-hash-a",
     actor: "pi-agent",
   });
+  assert.equal((confirmedRequirements.structuredContent as { goalDesign?: { type?: string } }).goalDesign?.type, "goalDesign");
+  const confirmedDesign = await registry.callTool("southstar.workflow.confirm_goal_design", {
+    draftId: "draft-goal-a",
+    expectedPackageHash: "pkg-a",
+  });
+  assert.deepEqual((confirmedDesign.structuredContent as { orchestration?: unknown }).orchestration, { draftId: "draft-composed-a" });
 
   await registry.callTool("southstar.workflow.get_template", { templateRef: "template.software" });
   await registry.callTool("southstar.workflow.instantiate_template", {
@@ -128,12 +137,16 @@ test("MCP registry tools unwrap runtime client envelopes", async () => {
     scope: "software",
     requestPrompt: "import skills",
   });
-  await registry.callTool("southstar.library.install_import_candidates", {
+  await registry.callTool("southstar.library.get_import_draft", {
+    draftId: "draft-lib",
+  });
+  const installedCandidates = await registry.callTool("southstar.library.install_import_candidates", {
     draftId: "draft-lib",
     selectedCandidateIds: ["candidate-a"],
     actor: "pi-agent",
     reason: "install candidates",
   });
+  assert.equal((installedCandidates.structuredContent as { goalDesign?: { type?: string } }).goalDesign?.type, "goalDesign");
   await registry.callTool("southstar.library.set_object_lifecycle", {
     objectKey: "agent.frontend",
     action: "approve",
@@ -192,6 +205,8 @@ test("MCP registry tools unwrap runtime client envelopes", async () => {
     { method: "getPlannerDraftOrchestration", body: "draft-goal-a" },
     { method: "reviseGoalRequirement", body: { draftId: "draft-goal-a", requirementId: "requirement-a", expectedDraftHash: "req-hash-a", patch: { title: "Updated requirement" }, actor: "pi-agent" } },
     { method: "confirmGoalRequirements", body: { draftId: "draft-goal-a", expectedDraftHash: "req-hash-a", actor: "pi-agent" } },
+    { method: "confirmGoalDesign", body: { draftId: "draft-goal-a", expectedPackageHash: "pkg-a" } },
+    { method: "getPlannerDraftOrchestration", body: "draft-composed-a" },
     { method: "getWorkflowTemplate", body: "template.software" },
     { method: "instantiateWorkflowTemplate", body: { templateRef: "template.software", goalPrompt: "build vocabulary app", constraints: { mode: "strict" } } },
     { method: "getPlannerDraftOrchestration", body: "draft-a" },
@@ -203,6 +218,7 @@ test("MCP registry tools unwrap runtime client envelopes", async () => {
     { method: "wakeRuntime", body: { runId: "run-a", taskId: "task-a" } },
     { method: "getLibraryGraph", body: { scope: "software", objectKey: "agent.frontend", depth: 1 } },
     { method: "createLibraryImportDraft", body: { source: { kind: "github", url: "https://github.com/example/skills" }, scope: "software", requestPrompt: "import skills" } },
+    { method: "getLibraryImportDraft", body: "draft-lib" },
     { method: "installLibraryImportCandidates", body: { draftId: "draft-lib", selectedCandidateIds: ["candidate-a"], actor: "pi-agent", reason: "install candidates" } },
     { method: "setLibraryObjectLifecycle", body: { objectKey: "agent.frontend", action: "approve", actor: "pi-agent", reason: "approve" } },
     { method: "createPlannerDraft", body: { goalPrompt: "build app", orchestrationMode: "llm-constrained" } },
@@ -274,6 +290,42 @@ test("JSON-RPC tools/call bridges streaming events into MCP progress notificatio
   });
 });
 
+test("goal design confirmation stream reports planner progress and returns DAG orchestration", async () => {
+  const registry = createSouthstarMcpToolRegistry({ client: fakeClient() });
+  const notifications: unknown[] = [];
+  const response = await handleSouthstarMcpMessage(
+    registry,
+    {
+      jsonrpc: "2.0",
+      id: 3,
+      method: "tools/call",
+      params: {
+        name: "southstar.workflow.confirm_goal_design_stream",
+        arguments: { draftId: "draft-goal-a", expectedPackageHash: "pkg-a" },
+        _meta: { progressToken: "progress-goal-design" },
+      },
+    },
+    { onNotification: (notification) => notifications.push(notification) },
+  );
+
+  assert.equal(response?.id, 3);
+  assert.deepEqual(
+    (response?.result as { structuredContent?: { orchestration?: unknown } }).structuredContent?.orchestration,
+    { draftId: "draft-composed-a" },
+  );
+  assert.deepEqual(
+    (response?.result as { structuredContent?: { result?: { orchestration?: unknown } } }).structuredContent?.result?.orchestration,
+    { draftId: "draft-composed-a" },
+  );
+  assert.equal(notifications.length, 1);
+  assert.deepEqual((notifications[0] as { params?: unknown }).params, {
+    progressToken: "progress-goal-design",
+    progress: 1,
+    message: "planner.stage: Workflow composition started.",
+    data: { event: "planner.stage", data: { stage: "composer.started", message: "Workflow composition started." } },
+  });
+});
+
 function fakeClient(calls: Array<{ method: string; body?: unknown }> = []) {
   const record = (method: string, result: unknown = {}, body?: unknown) => {
     calls.push(body === undefined ? { method } : { method, body });
@@ -287,7 +339,19 @@ function fakeClient(calls: Array<{ method: string; body?: unknown }> = []) {
     getLibraryWorkspace: async (body: unknown) => record("getLibraryWorkspace", {}, body),
     getLibraryGraph: async (body: unknown) => record("getLibraryGraph", {}, body),
     createLibraryImportDraft: async (body: unknown) => record("createLibraryImportDraft", {}, body),
-    installLibraryImportCandidates: async (body: unknown) => record("installLibraryImportCandidates", {}, body),
+    getLibraryImportDraft: async (draftId: string) => record("getLibraryImportDraft", {}, draftId),
+    installLibraryImportCandidates: async (body: unknown) => record("installLibraryImportCandidates", {
+      draftId: "draft-lib",
+      status: "installed",
+      goalValidationResume: {
+        continued: {
+          draftId: "draft-goal-a",
+          status: "ready_for_review",
+          goalDesignPackageHash: "pkg-installed-a",
+          goalDesignPackage: { slicePlan: { slices: [{ id: "slice-installed-a" }] } },
+        },
+      },
+    }, body),
     installLibraryImportCandidatesStream: async (body: unknown, onEvent: (event: unknown) => void) => {
       calls.push({ method: "installLibraryImportCandidatesStream", body });
       onEvent({ event: "library.import.install.completed", data: { installed: 1 } });
@@ -340,7 +404,21 @@ function fakeClient(calls: Array<{ method: string; body?: unknown }> = []) {
     },
     revisePlannerDraft: async (body: unknown) => record("revisePlannerDraft", {}, body),
     reviseGoalRequirement: async (body: unknown) => record("reviseGoalRequirement", {}, body),
-    confirmGoalRequirements: async (body: unknown) => record("confirmGoalRequirements", {}, body),
+    confirmGoalRequirements: async (body: unknown) => record("confirmGoalRequirements", {
+      draftId: "draft-goal-a",
+      status: "ready_for_review",
+      goalDesignPackageHash: "pkg-a",
+      goalDesignPackage: { slicePlan: { slices: [{ id: "slice-a" }] } },
+    }, body),
+    confirmGoalDesign: async (body: unknown) => record("confirmGoalDesign", {
+      draftId: "draft-composed-a",
+      runId: "run-goal-a",
+    }, body),
+    confirmGoalDesignStream: async (body: unknown, onEvent: (event: unknown) => void) => {
+      calls.push({ method: "confirmGoalDesignStream", body });
+      onEvent({ event: "planner.stage", data: { stage: "composer.started", message: "Workflow composition started." } });
+      return { result: { draftId: "draft-composed-a", runId: "run-goal-a" } };
+    },
     revisePlannerDraftStream: async (body: unknown, onEvent: (event: unknown) => void) => {
       calls.push({ method: "revisePlannerDraftStream", body });
       onEvent({ event: "done", data: {} });
