@@ -58,7 +58,10 @@ export function WorkflowSidebar({
   }, [cwd, libraryRefreshKey]);
 
   useEffect(() => {
-    fetch("/api/sessions?scope=all&kind=workflow&limit=50&compact=1", { cache: "no-store" })
+    const url = cwd
+      ? `/api/sessions?cwd=${encodeURIComponent(cwd)}&kind=workflow&limit=50&compact=1`
+      : "/api/sessions?scope=all&kind=workflow&limit=50&compact=1";
+    fetch(url, { cache: "no-store" })
       .then((res) => res.json())
       .then((data: { sessions?: SessionInfo[]; error?: string }) => {
         if (data.error) throw new Error(data.error);
@@ -66,7 +69,7 @@ export function WorkflowSidebar({
         setSessionError(null);
       })
       .catch((err) => setSessionError(err instanceof Error ? err.message : String(err)));
-  }, [sessionRefreshKey]);
+  }, [cwd, sessionRefreshKey]);
 
   const templates = useMemo(
     () => library?.domains.flatMap((domain) => domain.workflowTemplates) ?? [],

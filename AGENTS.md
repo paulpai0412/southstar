@@ -1,297 +1,141 @@
 # AGENTS.md
 
-This file guides Codex and other coding agents working in this repository.
+This file is the working contract for agents modifying Southstar.
 
-## What Southstar Is
+## Product and source of truth
 
-Southstar (`@southstar/runtime`) is a Postgres-backed, workflow-driven runtime for long-running multi-agent work. It owns workflow planning, canonical workflow manifests, task scheduling, Tork execution, session recovery, artifacts, memory, operator read models, and recovery actions.
+Southstar (`@southstar/runtime`) is a Postgres-backed, workflow-driven runtime for long-running multi-agent work. It plans goals, composes validated DAG manifests from the Library, schedules tasks, executes through Tork/Pi, persists sessions and artifacts, evaluates outcomes, and exposes operator read models.
 
-Southstar is not just the old Northstar issue-to-PR control plane. The current active architecture is `src/v2/` plus the Next.js web app in `web/`.
+The active implementation is `src/v2/` plus the Next.js app in `web/`. Older Northstar, SQLite, root-Next, and issue-to-PR documents are historical unless current code/tests explicitly use them.
 
-## Runtime And Tooling
+## Non-negotiable engineering rules
 
-- Node `>=22.22.2` is required.
-- The package is ESM (`"type": "module"`).
-- TypeScript is run directly through `tsx` for scripts and tests; there is no compiled `dist/` build for the runtime.
-- Runtime persistence is Postgres under the `southstar` schema. SQLite references are legacy or test-only unless a specific file says otherwise.
-- The active web application is `web/`. The root Next app is retired; do not start or debug the UI from the repository root as a Next app.
-- `@earendil-works/pi-coding-agent` is an optional dependency for Pi-backed planning/agent behavior. Tests should continue to work with fakes unless they explicitly require live integrations.
+- Use the repository's current architecture and public API seams; do not create a parallel workflow/UI/runtime model for a local feature.
+- Production composition is `composerMode: "llm"` and approved Library graph data only. Never add fixture composers, production fake providers, or `llm-with-fixture-fallback`.
+- Do not hardcode domain, agent, skill, tool, MCP, provider, model, image, or candidate-name selection. Runtime capability checks may reject unsupported bindings; they must not substitute defaults.
+- Remove silent or masking fallbacks, invented requirements, invented artifacts, and automatic alternate template selection. Missing required data fails closed with a persisted, diagnosable blocking result.
+- Test doubles belong only in test-owned paths. They must not replace real integration behavior or be presented as E2E evidence.
+- Keep route handlers thin. Put business rules in orchestration, scheduler, executor, stores, exceptions, context, memory, or UI read-model modules.
+- External effects must be persisted as history/resources/snapshots before downstream code assumes them. Never put secrets in prompts, logs, history, ordinary resources, or inspect output.
+- Represent runtime commands as argv arrays. Avoid shell command chaining except in existing lifecycle launchers.
 
-## Common Commands
+## Runtime and commands
+
+- Node `>=22.22.2`, ESM, TypeScript executed with `tsx`; runtime has no compiled `dist/` requirement.
+- Persistence is Postgres under schema `southstar`; SQLite is legacy/test-only unless a file says otherwise.
+- Active UI is `web/`; do not start/debug the retired root Next app.
 
 ```bash
 npm install
 npm test
 npm run test:v2
 npm run test:postgres
-
 npm run southstar:start
 npm run southstar:status
 npm run southstar:stop
-
 npm run southstar -- db:init --database-url postgres://postgres:postgres@127.0.0.1:55432/southstar
 npm run southstar -- run-goal --goal "..."
-```
-
-Web app commands:
-
-```bash
 npm --prefix web install
 npm --prefix web run dev
 npm --prefix web run build
 ```
 
-`npm run southstar:start` starts the managed local stack:
+`npm run southstar:start` manages Postgres (`127.0.0.1:55432`), Tork (`8000`), Tork admin (`8100`), runtime API (`3100`), and web UI (`30141`). Use `SOUTHSTAR_PI_PLANNER_TIMEOUT_MS` for long Pi composition. The web lifecycle prefers `SOUTHSTAR_WEB_APP_DIR`, then `~/apps/southstar/web`, then `./web`.
 
-- Docker Postgres container `southstar-postgres`, using `SOUTHSTAR_DATABASE_URL` or the default `postgres://postgres:postgres@127.0.0.1:55432/southstar`.
-- Tork on `http://127.0.0.1:8000`.
-- Tork Web Admin on `http://127.0.0.1:8100`, using managed Docker container `southstar-tork-web`.
-- Southstar runtime server on `http://127.0.0.1:3100`.
-- Next.js web UI on `http://127.0.0.1:30141`.
+Do not run `test:e2e:*`, `test:live`, or host/GitHub/Tork live scripts unless the task explicitly requests real infrastructure and credentials.
 
-Long local Pi SDK workflow composition can be given more time with
-`SOUTHSTAR_PI_PLANNER_TIMEOUT_MS`, for example `600000` for ten minutes.
+## Code discovery
 
-The web lifecycle prefers `SOUTHSTAR_WEB_APP_DIR` when set, then `~/apps/southstar/web`, then `./web`. In this repo the intended app is `web/`.
+When codebase-memory-mcp is available, index the repository first if needed, then prefer:
 
-Do not run `test:e2e:*`, `test:live`, or host/GitHub/Tork live scripts as routine verification unless the task explicitly calls for real infrastructure and credentials.
+1. `search_graph` / `search_code`
+2. `trace_path`
+3. `get_code_snippet`
+4. `query_graph` / `get_architecture`
 
-## Architecture
+Use `rg` for literals, configs, scripts, and non-code files when graph tools are unavailable or insufficient.
 
-Southstar v2 has four main layers:
+## Architecture map
 
-1. **CLI and lifecycle**: `src/v2/cli.ts`, `src/v2/server/infra-lifecycle.ts`, `runtime-server-lifecycle.ts`, and `web-server-lifecycle.ts` start and stop the local stack.
-2. **Runtime server**: `src/v2/server/http-server.ts` and `src/v2/server/routes.ts` expose `/api/v2/*` endpoints for planning, runs, tasks, execution callbacks, runtime health, UI models, operator commands, and recovery flows.
-3. **Control-plane storage and services**: `src/v2/db/schema.ts`, `stores/`, `work-items/`, `scheduler/`, `executor/`, `session/`, `memory/`, `exceptions/`, `artifacts/`, `context/`, and `evolution/` persist and advance runtime state.
-4. **Web UI**: `web/app` and `web/components` render chat, workflow planning, and operator views. Web API routes proxy or adapt browser requests to the runtime server.
+- `src/v2/cli.ts`: CLI and `serve` entry point.
+- `src/v2/server/`: HTTP server, route families, lifecycle managers, runtime loops, SSE/live events.
+- `src/v2/db/`: Postgres schema and initialization.
+- `src/v2/stores/`: workflow runs/tasks/history/resources and library persistence.
+- `src/v2/orchestration/`: requirement analysis, candidate resolution, LLM composition, validation/repair, compilation, Goal Design/Contract.
+- `src/v2/design-library/`: approved Library objects, graph edges, templates, profiles, validators, and import/sync services.
+- `src/v2/manifests/`: canonical `SouthstarWorkflowManifest` types and validation.
+- `src/v2/scheduler/`: runnable-task claiming, dependency checks, parallelism, context/checkpoints, and dispatch.
+- `src/v2/executor/` and `src/v2/hands/`: Tork provider, bindings, callbacks, reconciliation, and hand adapters.
+- `src/v2/session/`, `context/`, `memory/`: durable session truth, task envelopes/context projections, and memory resources.
+- `src/v2/exceptions/`: runtime exceptions, recovery decisions, approvals, and operator actions.
+- `src/v2/read-models/` and `src/v2/ui-api/`: browser/operator projections; browsers must not reconstruct truth from raw tables.
+- `web/app/`, `web/components/`, `web/lib/`: active Next.js UI and runtime API proxies.
 
-Important directories:
+## Goal to DAG to run
 
-- `src/v2/db/` - Postgres schema initialization and schema validation.
-- `src/v2/stores/` - Postgres workflow run/task/history/resource writes.
-- `src/v2/manifests/` - `SouthstarWorkflowManifest` types, validation, and revision utilities.
-- `src/v2/orchestration/` - prompt-to-workflow orchestration and library-constrained workflow composition.
-- `src/v2/design-library/` - reusable workflow templates, recipes, validators, and library objects.
-- Library authoring uses local files under `library/` plus the Postgres design library graph. Do not add active library content by hardcoding seed files; use the Library file/import/sync path. The old `software-library-seed.ts` and software domain pack runtime path have been removed from `src/v2`.
-- Production workflow composition uses `composerMode: "llm"` only. Do not add `fixture` or `llm-with-fixture-fallback` modes back into runtime routes or `src/v2/orchestration/`; deterministic composers belong in `tests/v2/fixtures/` and must seed explicit graph primitives.
-- `src/v2/executor/` - Tork provider, callbacks, bindings, reconciliation, and provider recovery actions.
-- `src/v2/hands/` - hand providers that materialize workflow tasks into Tork/Pi-agent executions.
-- `src/v2/session/` and `src/v2/session-recovery/` - durable session history, checkpoints, and recovery controller.
-- `src/v2/memory/` and `src/v2/context/` - context packets, memory deltas, memory search, and task envelopes.
-- `src/v2/exceptions/` - runtime exceptions, recovery decisions, approval services, and decision application.
-- `src/v2/read-models/` and `src/v2/ui-api/` - browser/operator-facing projections.
-- `web/` - the active Next.js UI.
+1. Browser workflow APIs under `web/app/api/workflow/*` call runtime routes through `web/lib/workflow/v2-api.ts`.
+2. Planner/orchestration derives a validated Goal Contract and requirement list. A new run requires an explicit contract, requirement acceptance criteria, artifact lineage, and immutable Library/coverage refs.
+3. Candidate resolution reads approved Library graph objects/edges/version refs. Goal domain must not exclude legitimate cross-scope objects.
+4. `llm-composer.ts` proposes slices/tasks/profiles from the candidate packet. LLM output is schema-checked; host runtime capabilities validate provider/model/harness/image/engine compatibility.
+5. `composition-validator.ts`, repair loop, `composition-compiler.ts`, and `manifests/validate.ts` produce a canonical manifest. Missing data blocks; it is not synthesized.
+6. Planner drafts persist in `runtime_resources`; `createPostgresRunFromDraft` materializes only an explicit validated Goal Contract into `workflow_runs` and `workflow_tasks`.
+7. Preferred template incompatibility becomes a persisted blocking selection decision; never silently switch templates.
 
-## Current Program Design Architecture
-
-The current source of truth is the code under `src/v2/`. Some older design docs still mention SQLite or Northstar issue lifecycles; treat those as historical context unless the current code or tests still exercise them.
-
-### 1. Lifecycle And Process Model
-
-`src/v2/cli.ts` is the user-facing command parser. The `start` command composes three lifecycle managers:
-
-- `server/infra-lifecycle.ts` starts managed Postgres and Tork.
-- `server/runtime-server-lifecycle.ts` launches `src/v2/cli.ts serve` as the runtime API process.
-- `server/web-server-lifecycle.ts` launches the active Next.js app.
-
-`serve` builds the runtime process by opening Postgres, creating the Tork executor provider, creating Pi planner/brain providers, wiring hand providers, and registering runtime loops.
-
-### 2. Runtime API Boundary
-
-`server/http-server.ts` owns HTTP server setup. `server/routes.ts` is the main `/api/v2/*` router and delegates to focused route modules:
-
-- `ui-routes.ts` for UI page/read models.
-- `run-lifecycle-routes.ts` for run pause/resume/cancel/commands.
-- `session-routes.ts` for session events, checkpoints, and lineage.
-- `memory-routes.ts` for memory deltas/search/invalidation.
-- `execution-routes.ts` for executor job inspection/actions.
-- `task-command-routes.ts` for retry/fork/reset/rollback/revision commands.
-- `evolution-routes.ts` for learning/evolution control-center surfaces.
-- `chat-routes.ts` for runtime-backed chat surfaces.
-
-Keep route handlers thin. Business rules belong in `orchestration/`, `scheduler/`, `executor/`, `exceptions/`, `memory/`, `context/`, `stores/`, or `ui-api/`.
-
-### 3. Workflow Composition Layer
-
-Workflow creation is library-constrained:
-
-- `orchestration/requirement-analyzer.ts` derives structured requirements.
-- `orchestration/candidate-resolver.ts` finds approved library candidates.
-- `orchestration/llm-composer.ts` asks the configured composer to produce a composition.
-- `orchestration/composition-validator.ts` and `composition-repair-loop.ts` validate and repair composition output.
-- `orchestration/composition-compiler.ts` compiles composition into a `SouthstarWorkflowManifest`.
-- `manifests/validate.ts` validates the canonical manifest.
-- `ui-api/postgres-run-api.ts` persists planner drafts and creates runs.
-
-Generated manifests are not execution truth until validated and persisted.
-The active composer registry fails closed unless an LLM workflow composer is configured. There is no production fixture fallback; tests should inject test-only composers directly and should not depend on `software-library-seed.ts` as runtime planner behavior.
-
-### 3.1 Library Authoring And Dynamic Profiles
-
-The active Library architecture is file-authored and graph-backed:
+The Library authoring flow is:
 
 ```text
-local library file -> parse -> validate -> sync -> library_objects/library_edges
-library chat/import -> import draft -> approve -> file write -> graph sync
-workflow generate -> primitive candidates -> generated node profile -> validation -> planner draft
-workflow DAG save -> generated profiles/template -> version refs -> graph sync
+local library file -> parse -> validate -> sync -> approved graph
+library import -> review/approve -> file write -> graph sync
+goal contract -> requirement/slice coverage -> candidate packet -> LLM composition
+validated composition -> canonical manifest -> planner draft -> workflow run
 ```
 
-Agents and skills are Markdown files with YAML frontmatter. Tools, MCP grants, generated profiles, and saved workflow templates are YAML. The browser edits files through Library APIs; runtime planning and execution read the Postgres graph.
+Agents/skills are Markdown with YAML frontmatter. Tools, MCP grants, generated profiles, and workflow templates are YAML. Generated DAG tasks carry typed `nodePromptSpec` with node type, requirements, boundaries, deliverables, outputs, tests, acceptance criteria, and type-specific checks.
 
-Workflow generation can use approved independent primitives rather than requiring a hand-authored `agent_profile`. Candidate resolution exposes approved agent, skill, tool, MCP, and instruction primitives; the composer may propose generated node profiles; validators ensure selected primitives exist, are graph-backed, and satisfy skill/tool/MCP constraints before compilation.
-
-Each generated DAG task must carry a typed `nodePromptSpec`. This is the
-worker-facing per-node prompt contract and includes `nodeType` (`plan`,
-`implement`, `verify`, `repair`, `review`, `summary`, or `general`),
-requirements, boundaries, deliverable documents, expected outputs, test cases,
-acceptance criteria, and type-specific checks. The compiler writes it into task
-`promptInputs`; managed context renders it into the TaskEnvelope prompt and
-`context-packet.json`.
-
-`POST /api/v2/workflow/drafts/:draftId/save-template` writes generated profile files plus a workflow template file. Saved workflow templates must include `libraryVersionRefs` derived from selected graph objects' `headVersionId` values. Missing graph objects or missing version refs should fail before files are written.
-
-### 4. Workflow Run Materialization
-
-There are two creation paths:
-
-- Planner drafts: `/api/v2/planner/drafts` -> `createPostgresPlannerDraft` -> `createPostgresRunFromDraft`.
-- Work item intake: `/api/v2/work-items/intake` -> `/api/v2/work-items/materialize-run` -> `work-items/run-materialization.ts`.
-
-Both paths converge on Postgres records:
-
-- `workflow_runs` stores run status, current manifest, execution projection, snapshots, runtime context, and metrics.
-- `workflow_tasks` stores each DAG node/task snapshot.
-- `workflow_history` records append-only audit events.
-- `runtime_resources` stores typed runtime resources such as planner drafts, context packets, task envelopes, executor bindings, approvals, recovery decisions, and memory artifacts.
-
-### 5. Scheduling, Context, Brain, And Hand
-
-`server/run-execution-controller.ts` moves a run into `scheduling`. Runtime loops then call scheduler services.
-
-`scheduler/runnable-task-scheduler.ts` is the central task dispatcher:
-
-1. Load the run manifest and task rows.
-2. Skip non-pending tasks.
-3. Check dependency artifacts.
-4. Claim runnable tasks within manifest parallelism limits.
-5. Build managed context using `context/managed-context-assembler.ts`.
-6. Create session checkpoints through the session store.
-7. Persist brain and hand bindings.
-8. Enforce pre-execution tool proxy policy.
-9. Submit work through the configured hand provider.
-
-The brain provider decides intent; the hand provider provisions actual execution. This separation is load-bearing for recovery and provider replacement.
-
-### 6. Tork Execution And Callback
-
-`executor/tork-provider.ts` materializes hand/task execution into Tork jobs. `hands/tork-hand-provider.ts` maps workflow tasks to Tork-compatible task inputs.
-
-The execution loop is:
+## Runtime execution flow
 
 ```text
-scheduler
-  -> hand provider
-  -> Tork job
-  -> southstar-agent-runner
+scheduler -> hand provider -> Tork job -> southstar-agent-runner
   -> /api/v2/executor/heartbeat
   -> /api/v2/tork/callback
-  -> executor/postgres-tork-callback.ts
-  -> history/resources/task snapshots
+  -> callback persistence/reconciliation/evaluation
 ```
 
-Callbacks do not bypass persistence. They append history, update task/run snapshots, write resources/artifacts, and feed completion/recovery gates.
+The scheduler loads the manifest, skips non-pending tasks, checks dependency artifacts, claims runnable tasks within manifest parallelism, builds managed context, creates session checkpoints, persists brain/hand bindings, enforces tool policy, and submits through the configured hand. Brain decides intent; hand provisions execution.
 
-Accepted task artifacts are stored as `artifact_ref` runtime resources backed by
-JSON bodies in `artifact_blobs`. Direct downstream tasks receive accepted
-upstream artifact content through managed context `priorArtifacts`, so verifier,
-repair, review, and summary nodes can inspect producer output instead of relying
-only on summaries.
+Callbacks append history, update run/task snapshots, write resources/artifacts, terminalize bindings, and trigger completion/recovery gates. Accepted task artifacts are `artifact_ref` resources backed by `artifact_blobs`; downstream tasks receive accepted upstream content through managed context `priorArtifacts`.
 
-### 7. Recovery And Operator Control
+## Persistence invariants
 
-Exceptions and recoveries are first-class runtime resources:
+- `workflow_history` is append-only audit truth.
+- `workflow_runs.workflow_manifest_json` is the current canonical manifest.
+- `workflow_tasks` is a per-task snapshot; DAGs may run tasks in parallel, so do not rely on one global current task.
+- `runtime_resources` stores planner drafts, context packets, task envelopes, bindings, approvals, recovery decisions, memory, and artifact references.
+- Run cleanup should delete by `workflow_runs.id`; cascades remove tasks/history/artifact blobs, while run-scoped resources and learning nodes need explicit cleanup where applicable.
+- Read-model conflicts with history/snapshots are projection bugs to investigate, not reasons to rewrite lifecycle truth.
 
-- `exceptions/runtime-exception-controller.ts` records runtime exceptions.
-- `exceptions/postgres-runtime-exceptions.ts` reads and writes exception resources.
-- `exceptions/recovery-approval-service.ts` handles operator approval.
-- `exceptions/recovery-decision-applier.ts` applies approved recovery actions.
-- `executor/postgres-reconciler.ts` reconciles executor bindings with provider observations.
+## Recovery and operator behavior
 
-Operator UI should call runtime command routes rather than mutating data directly.
+Use runtime command routes for pause/resume/cancel/retry/fork/reset/rollback/revision and recovery approval. Do not mutate Postgres directly from operator UI. A failed worktree merge or external effect must become an operator-visible blocking/recovery state; it must not loop indefinitely without a configured retry limit.
 
-### 8. Read Models And UI API
+## Verification and user preferences
 
-The browser should not reconstruct workflow truth from raw tables. Use read models:
+- Before continuing, inspect relevant session/conversation records, rollout summaries, existing plans, git state, and current code. Resume unfinished work instead of restarting.
+- Diagnose from logs, DB state, routes, processes, browser output, and git topology before changing code. Verify the original failure point after a fix.
+- For real E2E requests, use real browser/API/Postgres/Tork/Pi/runtime integrations and verify Goal → Requirement → Slice → DAG → Executor → Evaluator with DB/history/resource/artifact/session/callback evidence. Smoke, mock, fixture, static-file, or token checks are not E2E evidence.
+- During long tests/E2E, report phase, checkpoint, elapsed time, and blockers about every three minutes when practical; confirm a job is active before calling it stuck.
+- Before claiming completion, run appropriate TypeScript/build checks, focused tests, the full relevant suite, `git diff --check`, and explicitly requested real E2E.
+- Let LLMs handle semantic decomposition, ranking, slices, and prompt content; keep schema, state, permissions, retries, persistence, dependency, and safety controls deterministic.
+- Reuse existing workflow layout, routes, read models, contracts, and Library graph. Do not over-design or build a second UI for a local change.
+- Only commit/merge/push/sync when requested. When requested, verify actual local/remote topology and report the result.
 
-- `read-models/postgres-core.ts` for run/task/resource/history basics.
-- `read-models/postgres-run-inspection.ts` for run inspection and runtime exceptions.
-- `read-models/operator-*` for operator surfaces.
-- `ui-api/postgres-task-envelope.ts` for task envelopes.
-- `ui-api/read-models.ts` and `ui-api/page-models/` for page-level models.
+## Optional skill hints
 
-Read models are projections. If projection output conflicts with persisted history/snapshots, investigate the projection before changing lifecycle truth.
+- `ponytail@ponytail` is installed/enabled. For coding, refactoring, or review tasks, use the bundled `ponytail` skill by default (`lite`, `full`, or `ultra`); use `ponytail-review`/`ponytail-audit` for explicit review/audit requests. Read the installed `SKILL.md` first, reuse existing code, apply YAGNI/stdlib/native-first, and never simplify away validation, security, accessibility, error handling, or explicitly requested real E2E.
+- `karpathy-guidelines` is installed at `~/.codex/skills/karpathy-guidelines`. For prompt/agent-quality, simplicity, or surgical refactor work, read its `SKILL.md` and apply its think-before-coding, minimum-change, and verifiable-success guidance; also recognize the possible user spelling `kathpathy`.
 
-## Data Flow
+## Testing guidance
 
-### Goal To Workflow Run
-
-1. The browser calls `web/app/api/workflow/*`.
-2. Web proxy helpers in `web/lib/workflow/v2-api.ts` call the runtime server at `SOUTHSTAR_V2_API_BASE_URL` or `SOUTHSTAR_SERVER_URL`.
-3. Runtime routes call planner/orchestration services.
-4. A canonical `SouthstarWorkflowManifest` is validated by `src/v2/manifests/validate.ts`.
-5. A workflow run is persisted to `southstar.workflow_runs`, with tasks in `southstar.workflow_tasks` and append-only events in `southstar.workflow_history`.
-
-### Run Execution
-
-1. Scheduler/runtime services identify runnable tasks.
-2. `executor/` creates executor bindings and submits work to Tork.
-3. Tork runs `southstar-agent-runner` for individual tasks.
-4. The runner calls back to `/api/v2/tork/callback` and sends heartbeat data to `/api/v2/executor/heartbeat`.
-5. Callback handlers append history, update task/run snapshots, write artifacts/resources, and trigger completion gates.
-
-### Operator And UI Read Models
-
-1. Runtime state is stored in Postgres as normalized snapshots plus append-only history.
-2. Read models in `src/v2/read-models/` and `src/v2/ui-api/` project that state into browser-friendly shapes.
-3. `web/components/operator/*`, workflow canvas components, and resource viewers render those projections.
-
-## Postgres Schema
-
-The runtime schema is defined in `src/v2/db/schema.ts`.
-
-Core tables:
-
-- `southstar.work_items` - intake items and materialized run refs.
-- `southstar.workflow_runs` - run-level snapshot and current manifest.
-- `southstar.workflow_tasks` - task/node snapshots and executor/session refs.
-- `southstar.workflow_history` - append-only runtime events.
-- `southstar.runtime_resources` - context packets, executor bindings, memory deltas, approvals, recovery decisions, and other typed resources.
-- `southstar.artifact_blobs` and `southstar.secure_blobs` - binary artifacts and encrypted secret payloads.
-- `southstar.library_objects`, `library_edges`, `library_history`, `library_similarity_index` - design/workflow library state.
-- `southstar.learning_nodes` and `learning_edges` - evolution and learning graph projections.
-
-When deleting test workflow data, prefer deleting by `workflow_runs.id` and also remove run-scoped `runtime_resources` and `learning_nodes` before deleting runs. `workflow_tasks`, `workflow_history`, and `artifact_blobs` cascade from `workflow_runs`; `runtime_resources.run_id` uses `on delete set null`.
-
-## Runtime Invariants
-
-- `workflow_history` is append-only audit truth for runtime events.
-- `workflow_runs.workflow_manifest_json` is the current canonical workflow manifest for a run.
-- `workflow_tasks` is the task-level snapshot. Do not rely on one global `current_task_id`; workflows can be DAGs and may run tasks in parallel.
-- External effects must be represented by persisted state/history before downstream code assumes them.
-- Projection failures should not destroy lifecycle truth. UI/operator state is a projection over Postgres data.
-- Secrets must not be written to history, logs, inspect output, prompts, or ordinary resources. Use secure blob/vault abstractions for secret material.
-- Represent external commands as argv arrays inside runtime/platform code. Avoid shell-chained command strings except in lifecycle launcher code that already centralizes that behavior.
-
-## Web App Notes
-
-- `web/app/page.tsx` imports `AppShell` from `web/components/AppShell.tsx`. This is intentional: `AppShell` is the active integrated shell for chat, workflow, and operator modes.
-- If Next reports `Module not found: Can't resolve '@/components/AppShell'`, first confirm the command is running from `web/` with `web/tsconfig.json` and `web/node_modules`, not from the retired root Next context.
-- `web/package.json` still exposes the binary name `pi-web` for compatibility, but the app has Southstar-specific workflow and operator surfaces.
-
-## Testing Guidance
-
-- Use focused tests when changing one subsystem, for example `npm run test:postgres` for Postgres store behavior.
-- Use `npm test` as the broad local gate.
-- Use `npm --prefix web run build` when changing web routing, imports, or production-only behavior.
-- Do not run real e2e or live host tests unless the user explicitly asks for those integrations.
+- Use focused tests for a subsystem and `npm run test:v2` for the v2 gate.
+- Use `npm --prefix web run build` for web routing/import/UI changes.
+- Use real infrastructure tests only when explicitly requested; otherwise prefer deterministic tests with test-owned doubles and explicit graph primitives.

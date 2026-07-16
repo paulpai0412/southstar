@@ -80,17 +80,17 @@ test("library sidebar sessions stay on the library workspace session model", () 
   assert.match(librarySidebar, /data-testid="library-session-list"/);
 });
 
-test("workflow sidebar lists workflow sessions even before a project is selected", () => {
+test("workflow sidebar scopes workflow sessions to the selected project", () => {
   const workflowSidebar = source("web/components/WorkflowSidebar.tsx");
   const route = source("web/app/api/sessions/route.ts");
 
-  assert.match(workflowSidebar, /scope=all&kind=workflow&limit=50&compact=1/);
-  assert.doesNotMatch(workflowSidebar, /kind=workflow&cwd=/);
+  assert.match(workflowSidebar, /const url = cwd\s+\?\s+`\/api\/sessions\?cwd=\$\{encodeURIComponent\(cwd\)\}&kind=workflow&limit=50&compact=1`\s+:\s+"\/api\/sessions\?scope=all&kind=workflow&limit=50&compact=1";/);
+  assert.match(workflowSidebar, /\}, \[cwd, sessionRefreshKey\]\);/);
   assert.doesNotMatch(workflowSidebar, /if \(!cwd\) \{\s*setSessions\(\[\]\);/);
   assert.match(route, /compactSession/);
   assert.match(route, /searchParams\.get\("limit"\)/);
-  assert.match(route, /listRecentSessionsByKind/);
-  assert.doesNotMatch(route, /scope === "all" \? await listAllSessions\(\) : await listSessionsForCwd\(cwd\)/);
+  assert.match(route, /scope === "all" && limit\s*\? await listRecentSessionsByKind\(requestedKind, limit\)/);
+  assert.match(route, /: await listSessionsForCwd\(cwd\)/);
 });
 
 test("library import candidate checkboxes update from current selection state", () => {
