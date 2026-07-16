@@ -616,6 +616,15 @@ test("blocking requirements reject empty criteria and unresolved questions", () 
   ]));
 });
 
+test("unresolved draft blocking inputs prevent requirement confirmation", () => {
+  const issues = validateGoalRequirementDraft(validDraft({
+    blockingInputs: ["Which project scope should be used?"],
+  }));
+  assert.deepEqual(issues.filter((issue) => issue.path === "blockingInputs").map((issue) => issue.code), [
+    "blocking_inputs_unresolved",
+  ]);
+});
+
 test("revision operations are immutable and cover lifecycle transitions", () => {
   const first = validDraft();
   const created = reviseGoalRequirementDraft(first, {

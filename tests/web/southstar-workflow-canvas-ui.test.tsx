@@ -1176,6 +1176,23 @@ test("Requirement block renders coverage state and opens the existing sidecar ed
   });
 });
 
+test("Requirement block shows the exact blockers and open questions that must be resolved", async () => {
+  const draft = requirementDraftView();
+  draft.blockingInputs = ["Which project scope should be used?"];
+  draft.requirements[0]!.openQuestions = ["Should progress be stored locally or remotely?"];
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { GoalRequirementListBlock } from "./web/components/GoalRequirementListBlock";
+    const draft = ${JSON.stringify(draft)};
+    createRoot(document.getElementById("root")).render(<GoalRequirementListBlock block={{ type: "goalRequirements", draftId: "draft-goal-1", status: "requirements_review", goalRequirementDraftHash: "hash-1", draft, confirmable: true, validationIssues: [{ path: "blockingInputs", code: "blocking_inputs_unresolved", message: "blocking inputs must be resolved before confirmation" }] }} />);
+  `, async (page) => {
+    assert.match(await page.locator('[data-testid="goal-requirement-blockers"]').textContent() ?? "", /Which project scope should be used\?/);
+    assert.match(await page.locator('[data-testid="goal-requirement-questions-req-review"]').textContent() ?? "", /Should progress be stored locally or remotely\?/);
+    assert.equal(await page.locator('[data-testid="goal-requirements-confirm"]').isDisabled(), true);
+  });
+});
+
 test("visual requirement opens the existing sidecar with structured screen and state controls", async () => {
   const draft = requirementDraftView();
   draft.requirements[0]!.interactionContractRefs = ["ui-review"];

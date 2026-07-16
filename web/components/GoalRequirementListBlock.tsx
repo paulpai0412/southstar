@@ -40,7 +40,8 @@ export function GoalRequirementListBlock({
   }, [block]);
   const draft = currentBlock.draft;
   const coverage = useMemo(() => new Map((currentBlock.coveragePreview ?? []).map((entry) => [entry.requirementId, entry])), [currentBlock.coveragePreview]);
-  const confirmable = currentBlock.confirmable === true;
+  const hasUnresolvedBlockingQuestions = draft.requirements.some((item) => item.status !== "superseded" && item.blocking && item.openQuestions.length > 0);
+  const confirmable = currentBlock.confirmable === true && draft.blockingInputs.length === 0 && !hasUnresolvedBlockingQuestions;
 
   const confirm = async () => {
     if (!confirmable || confirmState === "confirming") return;
@@ -104,6 +105,16 @@ export function GoalRequirementListBlock({
         {draft.blockingInputs.length > 0 ? <span style={{ ...pillStyle, color: "#fbbf24" }}>{draft.blockingInputs.length} clarification{draft.blockingInputs.length === 1 ? "" : "s"}</span> : <span style={pillStyle}>clarification clear</span>}
       </div>
 
+      {draft.blockingInputs.length > 0 ? (
+        <div data-testid="goal-requirement-blockers" style={blockerPanelStyle}>
+          <strong>Resolve before confirmation</strong>
+          <ul style={questionListStyle}>
+            {draft.blockingInputs.map((input, index) => <li key={`${input}-${index}`}>{input}</li>)}
+          </ul>
+          <div style={helperTextStyle}>Answer these clarifications in the editor or Workflow chat, then save the revised requirements.</div>
+        </div>
+      ) : null}
+
       <div style={listStyle}>
         {draft.requirements.filter((item) => item.status !== "superseded").map((requirement) => {
           const entry = coverage.get(requirement.id);
@@ -137,7 +148,14 @@ export function GoalRequirementListBlock({
                 <span style={miniPillStyle}>{coverageLabel(entry)}</span>
                 <span style={miniPillStyle}>{visualStatus}</span>
               </div>
-              {requirement.openQuestions.length > 0 ? <div style={questionStyle}>{requirement.openQuestions.length} open question{requirement.openQuestions.length === 1 ? "" : "s"}</div> : null}
+              {requirement.openQuestions.length > 0 ? (
+                <div data-testid={`goal-requirement-questions-${requirement.id}`} style={questionPanelStyle}>
+                  <strong>Open questions</strong>
+                  <ul style={questionListStyle}>
+                    {requirement.openQuestions.map((question, index) => <li key={`${question}-${index}`}>{question}</li>)}
+                  </ul>
+                </div>
+              ) : null}
             </button>
           );
         })}
@@ -146,7 +164,11 @@ export function GoalRequirementListBlock({
       {draft.nonGoals.length > 0 ? <p style={bodyStyle}><strong>Non-goals:</strong> {draft.nonGoals.join(" · ")}</p> : null}
       <footer style={footerStyle}>
         <div data-testid="goal-validation-progress" data-event={confirmProgress?.event ?? ""} aria-live="polite" style={{ color: confirmState === "error" ? "#f87171" : "var(--text-dim)", fontSize: 11, minWidth: 0, overflowWrap: "anywhere" }}>
-          {confirmMessage ?? (confirmable ? "Host marked this requirement draft confirmable." : "Waiting for host validation readiness.")}
+          {confirmMessage ?? (confirmable
+            ? "Host marked this requirement draft confirmable."
+            : draft.blockingInputs.length > 0 || hasUnresolvedBlockingQuestions
+              ? "Resolve the listed blockers and questions before confirming."
+              : "Waiting for host validation readiness.")}
         </div>
         <button
           type="button"
@@ -453,7 +475,10 @@ const listStyle = { display: "flex", flexDirection: "column", gap: 7, marginTop:
 const itemButtonStyle = { width: "100%", border: "1px solid var(--border)", borderRadius: 7, background: "var(--bg-panel)", padding: 10, cursor: "pointer", textAlign: "left" as const } as const;
 const itemHeadingStyle = { display: "flex", alignItems: "center", flexWrap: "wrap" as const, gap: 5 } as const;
 const statementStyle = { marginTop: 5, color: "var(--text-muted)", fontSize: 12, lineHeight: 1.45 } as const;
-const questionStyle = { marginTop: 6, color: "#fbbf24", fontSize: 11 } as const;
+const blockerPanelStyle = { marginTop: 10, border: "1px solid rgba(251,191,36,0.38)", borderRadius: 7, background: "rgba(251,191,36,0.08)", padding: "8px 10px", color: "#fbbf24", fontSize: 11, lineHeight: 1.45 } as const;
+const questionPanelStyle = { marginTop: 6, borderLeft: "2px solid rgba(251,191,36,0.55)", paddingLeft: 8, color: "#fbbf24", fontSize: 11, lineHeight: 1.45 } as const;
+const questionListStyle = { margin: "4px 0 0", paddingLeft: 17 } as const;
+const helperTextStyle = { marginTop: 6, color: "var(--text-dim)", fontSize: 10 } as const;
 const bodyStyle = { margin: "10px 0 0", color: "var(--text-muted)", fontSize: 11, lineHeight: 1.5 } as const;
 const footerStyle = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginTop: 11 } as const;
 const confirmButtonStyle = { border: "1px solid var(--accent)", borderRadius: 7, background: "var(--accent)", color: "#fff", padding: "8px 10px", cursor: "pointer", fontSize: 12, fontWeight: 700, flexShrink: 0 } as const;

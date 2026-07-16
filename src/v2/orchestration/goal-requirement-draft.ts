@@ -91,6 +91,7 @@ export type GoalRequirementDraftIssueCode =
   | "invalid_requirement_status"
   | "invalid_non_goals"
   | "invalid_blocking_inputs"
+  | "blocking_inputs_unresolved"
   | "blocking_requirement_missing_criteria"
   | "blocking_requirement_has_open_question"
   | "no_active_requirements"
@@ -399,6 +400,7 @@ export function validateGoalRequirementDraft(draft: GoalRequirementDraftV1): Goa
   if (!nonEmptyString(draft.summary)) issues.push(issue("invalid_summary", "summary", "summary must be non-empty"));
   if (!stringArrayValid(draft.nonGoals)) issues.push(issue("invalid_non_goals", "nonGoals", "nonGoals must be an array of non-empty strings"));
   if (!stringArrayValid(draft.blockingInputs)) issues.push(issue("invalid_blocking_inputs", "blockingInputs", "blockingInputs must be an array of non-empty strings"));
+  else if (draft.blockingInputs.length > 0) issues.push(issue("blocking_inputs_unresolved", "blockingInputs", "blocking inputs must be resolved before confirmation"));
   const requirements = Array.isArray(draft.requirements) ? draft.requirements : [];
   if (requirements.length === 0) {
     issues.push(issue("empty_requirements", "requirements", "requirements must contain at least one requirement"));
@@ -598,6 +600,7 @@ const VALID_STATUSES = new Set<GoalRequirementDraftItemV1["status"]>([
 const VALID_EVIDENCE_KINDS = new Set<string>(EVIDENCE_KINDS);
 
 const REVISION_REVIEWABLE_ISSUES = new Set<GoalRequirementDraftIssueCode>([
+  "blocking_inputs_unresolved",
   "blocking_requirement_missing_criteria",
   "blocking_requirement_has_open_question",
   "no_active_requirements",
