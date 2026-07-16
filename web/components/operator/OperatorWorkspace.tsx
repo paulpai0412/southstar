@@ -283,7 +283,8 @@ function WorkflowStateCard({
         <span data-testid="operator-run-outcome">outcome {run.outcomeStatus ?? "in_progress"}</span>
         <span data-testid="operator-run-health">health {run.healthStatus ?? "healthy"}</span>
       </span>
-      <strong>{run.title}</strong>
+      <strong data-testid="operator-run-journey-title">{run.journey?.title || run.title}</strong>
+      {run.journey ? <span data-testid="operator-run-journey-stage" className="operator-workflow-state-card-meta">Goal · {run.journey.currentStage ?? "goal"}</span> : null}
       <span className="operator-workflow-state-card-meta">
         {projectLabel}
         {run.domain ? ` · ${run.domain}` : ""}

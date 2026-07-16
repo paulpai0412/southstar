@@ -56,6 +56,7 @@ export function isGoalDesignConfirmationActive(confirmationId: string): boolean 
 export type RunGoalRequest = {
   goalPrompt: string;
   cwd: string;
+  sessionId?: string;
   projectRef?: string;
   idempotencyKey: string;
   goalDesignMode?: GoalDesignMode;
@@ -158,6 +159,7 @@ export async function submitClaimedGoalPg(
     draft = await createPostgresPlannerDraft(context.db, {
       goalPrompt: request.goalPrompt,
       cwd: request.cwd,
+      ...(request.sessionId ? { sessionId: request.sessionId } : {}),
       goalInterpreter: context.goalInterpreter,
       composer: context.composer,
       async persistDraft(resource) {
@@ -241,6 +243,7 @@ async function submitGoalRequirementDraftPg(
     draft = await preparePostgresGoalRequirementDraft(context.db, {
       goalPrompt: request.goalPrompt,
       cwd: request.cwd,
+      ...(request.sessionId ? { sessionId: request.sessionId } : {}),
       ...(request.projectRef !== undefined ? { projectRef: request.projectRef } : {}),
       mode: request.goalDesignMode ?? "review_before_compose",
       templatePolicy: request.templatePolicy ?? { mode: "auto" },
@@ -300,6 +303,7 @@ async function submitGoalDesignDraftPg(
     draft = await preparePostgresGoalDesignDraft(context.db, {
       goalPrompt: request.goalPrompt,
       cwd: request.cwd,
+      ...(request.sessionId ? { sessionId: request.sessionId } : {}),
       ...(request.projectRef !== undefined ? { projectRef: request.projectRef } : {}),
       mode: goalDesignMode,
       templatePolicy,
@@ -401,6 +405,8 @@ export async function continueGoalDesignToRunPg(
 
   const observedStages: string[] = ["goal_design.ready_to_compose"];
   let composedDraft: Awaited<ReturnType<typeof createPostgresPlannerDraft>>;
+  const sourceDraft = await getResourceByKeyPg(context.db, "planner_draft", input.draftId);
+  const sourceSessionId = sourceDraft?.sessionId;
   try {
     await transitionGoalDesignPhasePg(context.db, {
       draftId: input.draftId,
@@ -471,9 +477,11 @@ export async function continueGoalDesignToRunPg(
       packageHash: prepared.package.packageHash,
       goalContractHash: prepared.package.goalContractHash,
       goalRequirementDraftHash: prepared.goalRequirementDraftHash,
+      ...(sourceSessionId ? { sessionId: sourceSessionId } : {}),
     }) ?? await createPostgresPlannerDraft(context.db, {
         goalPrompt: prepared.goalPrompt,
         cwd: prepared.cwd,
+        ...(sourceSessionId ? { sessionId: sourceSessionId } : {}),
         ...(prepared.projectRef !== undefined ? { projectRef: prepared.projectRef } : {}),
         goalInterpreter: fixedGoalInterpreter(prepared.package.goalContract),
         goalDesignPackage: prepared.package,
@@ -606,7 +614,7 @@ type GoalDesignConfirmationPreparation = {
 
 async function findReusableValidatedGoalDesignDraftPg(
   db: SouthstarDb,
-  input: { packageHash: string; goalContractHash: string; goalRequirementDraftHash?: string },
+  input: { packageHash: string; goalContractHash: string; goalRequirementDraftHash?: string; sessionId?: string },
 ): Promise<PostgresPlannerDraftResult | undefined> {
   const row = await db.maybeOne<{
     resource_key: string;
@@ -619,9 +627,10 @@ async function findReusableValidatedGoalDesignDraftPg(
         and payload_json->>'goalDesignPackageHash' = $1
         and payload_json->>'goalContractHash' = $2
         and ($3::text is null or payload_json->>'goalRequirementDraftHash' = $3)
+        and ($4::text is null or session_id = $4)
       order by updated_at desc
       limit 1`,
-    [input.packageHash, input.goalContractHash, input.goalRequirementDraftHash ?? null],
+    [input.packageHash, input.goalContractHash, input.goalRequirementDraftHash ?? null, input.sessionId ?? null],
   );
   if (!row) return undefined;
   const payload = asRecord(row.payload_json);

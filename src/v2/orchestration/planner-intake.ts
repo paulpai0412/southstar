@@ -4,6 +4,7 @@ import type { RunGoalRequest, RunGoalResult } from "./run-goal-service.ts";
 export type PlannerIntakeBody = {
   goalPrompt?: unknown;
   cwd?: unknown;
+  sessionId?: unknown;
   projectRef?: unknown;
   idempotencyKey?: unknown;
   goalDesignMode?: unknown;
@@ -16,10 +17,12 @@ export function buildRunGoalRequestFromPlannerDraftBody(
 ): RunGoalRequest {
   const goalPrompt = requiredString(body.goalPrompt, "goalPrompt");
   const cwd = optionalString(body.cwd) ?? defaultCwd;
+  const sessionId = optionalString(body.sessionId);
   const projectRef = optionalString(body.projectRef);
   return {
     goalPrompt,
     cwd,
+    ...(sessionId !== undefined ? { sessionId } : {}),
     ...(projectRef !== undefined ? { projectRef } : {}),
     idempotencyKey: optionalString(body.idempotencyKey)
       ?? legacyPlannerDraftIdempotencyKey(goalPrompt, cwd, projectRef),

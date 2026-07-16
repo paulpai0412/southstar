@@ -63,6 +63,8 @@ export async function materializeGoalExecutionSetPg(
   const existing = await loadGoalExecutionSetByDraftPg(context.db, input.draftId);
   if (existing) return existing;
   const pkg = await loadCurrentGoalDesignPackagePg(context.db, input.draftId);
+  const sourceDraft = await getResourceByKeyPg(context.db, "planner_draft", input.draftId);
+  const sourceSessionId = sourceDraft?.sessionId;
   if (pkg.packageHash !== input.expectedPackageHash) throw new Error(`goal_design_package_stale: ${input.draftId}`);
   if (pkg.compositionStrategy.mode !== "per-slice-runs") {
     throw new Error(`goal design package is not per-slice-runs: ${input.draftId}`);
@@ -79,6 +81,7 @@ export async function materializeGoalExecutionSetPg(
     const sliceDraft = await createPostgresPlannerDraft(context.db, {
       goalPrompt: `${pkg.goalContract.originalPrompt}\n\nSlice ${slice.id}: ${slice.outcome}`,
       cwd,
+      ...(sourceSessionId ? { sessionId: sourceSessionId } : {}),
       goalInterpreter: fixedGoalInterpreter(slicePackage.goalContract),
       goalDesignPackage: slicePackage,
       composer: context.composer,

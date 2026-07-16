@@ -160,6 +160,7 @@ export type PlannerDraftLibraryHints = {
 
 export type PlannerDraftRequestContract = {
   goalPrompt: string;
+  sessionId?: string;
   projectRef?: string;
   goalRequirementDraftId?: string;
   goalRequirementDraftHash?: string;
@@ -215,6 +216,7 @@ type InterpretedPlannerDraftInput = CreatePostgresPlannerDraftInput & {
 
 export async function createPostgresPlannerDraft(db: SouthstarDb, input: CreatePostgresPlannerDraftInput): Promise<PostgresPlannerDraftResult> {
   const plannerRequest = plannerRequestSnapshot(input);
+  const persistDraft = scopedPlannerDraftPersistence(db, input.sessionId, input.persistDraft);
   await assertGoalRequirementSourceLineage(db, plannerRequest);
   input.onProgress?.({ stage: "request.normalized", message: "Planner draft request normalized." });
   const libraryVocabulary = await loadGoalContractLibraryVocabularyPg(db);
@@ -232,7 +234,7 @@ export async function createPostgresPlannerDraft(db: SouthstarDb, input: CreateP
         plannerRequest,
         error,
         onProgress: input.onProgress,
-        persistDraft: input.persistDraft,
+        persistDraft,
       });
     }
     throw error;
@@ -244,7 +246,7 @@ export async function createPostgresPlannerDraft(db: SouthstarDb, input: CreateP
   // the host-owned confirmation note for lineage/audit purposes, but it must
   // not send the already-confirmed composition back to `needs_input`.
   if (goalContract.blockingInputs.length > 0 && !input.goalDesignPackage) {
-    return persistNeedsInputPlannerDraft(db, plannerRequest, goalContract, contractHash, input.onProgress, input.persistDraft);
+    return persistNeedsInputPlannerDraft(db, plannerRequest, goalContract, contractHash, input.onProgress, persistDraft);
   }
   const draftInput: InterpretedPlannerDraftInput = {
     ...plannerRequest,
@@ -256,7 +258,7 @@ export async function createPostgresPlannerDraft(db: SouthstarDb, input: CreateP
     onProgress: input.onProgress,
     onGoalContractDelta: input.onGoalContractDelta,
     onLlmDelta: input.onLlmDelta,
-    persistDraft: input.persistDraft,
+    persistDraft,
   };
   if (plannerRequest.compositionPlan) {
     return createPlannerDraftFromComposition(db, draftInput, plannerRequest.compositionPlan);
@@ -402,6 +404,18 @@ async function persistPlannerDraft(
 ): Promise<void> {
   if (persist) return await persist(resource);
   await upsertRuntimeResourcePg(db, resource);
+}
+
+function scopedPlannerDraftPersistence(
+  db: SouthstarDb,
+  sessionId: string | undefined,
+  persist?: PlannerDraftPersistence,
+): PlannerDraftPersistence | undefined {
+  if (!sessionId && !persist) return undefined;
+  return async (resource) => await persistPlannerDraft(db, {
+    ...resource,
+    ...(sessionId ? { sessionId } : {}),
+  }, persist);
 }
 
 async function persistNeedsInputPlannerDraft(
@@ -638,6 +652,7 @@ export async function validatePostgresPlannerDraft(
 function preservedPlannerRequestFields(input: PlannerDraftRequestContract | undefined): Partial<PlannerDraftRequestContract> {
   if (!input) return {};
   return {
+    ...(input.sessionId !== undefined ? { sessionId: input.sessionId } : {}),
     ...(input.projectRef !== undefined ? { projectRef: input.projectRef } : {}),
     ...(input.goalRequirementDraftId !== undefined ? { goalRequirementDraftId: input.goalRequirementDraftId } : {}),
     ...(input.goalRequirementDraftHash !== undefined ? { goalRequirementDraftHash: input.goalRequirementDraftHash } : {}),
@@ -649,6 +664,7 @@ function preservedPlannerRequestFields(input: PlannerDraftRequestContract | unde
 function plannerRequestSnapshot(input: PlannerDraftRequestContract): PlannerDraftRequestContract {
   const snapshot: PlannerDraftRequestContract = {
     goalPrompt: input.goalPrompt,
+    ...(input.sessionId !== undefined ? { sessionId: input.sessionId } : {}),
     ...(input.projectRef !== undefined ? { projectRef: input.projectRef } : {}),
     ...(input.goalRequirementDraftId !== undefined ? { goalRequirementDraftId: input.goalRequirementDraftId } : {}),
     ...(input.goalRequirementDraftHash !== undefined ? { goalRequirementDraftHash: input.goalRequirementDraftHash } : {}),
@@ -690,6 +706,7 @@ function plannerRequestFromStored(value: unknown): PlannerDraftRequestContract |
   if (!goalPrompt) return undefined;
   return plannerRequestSnapshot({
     goalPrompt,
+    sessionId: stringValue(record.sessionId),
     projectRef: stringValue(record.projectRef),
     goalRequirementDraftId: stringValue(record.goalRequirementDraftId),
     goalRequirementDraftHash: stringValue(record.goalRequirementDraftHash),
@@ -1277,6 +1294,8 @@ export async function createPostgresRunFromDraft(db: SouthstarDb, input: { draft
   const manifestHash = contentHashForPayload(workflow);
   const runtimeContext = {
     draftId: input.draftId,
+    ...(draft.sessionId ? { sessionId: draft.sessionId } : {}),
+    ...(draft.sessionId ? { journeyId: `goal-journey:${draft.sessionId}` } : {}),
     ...(stringValue(draftPayload.goalRequirementDraftId) ?? stringValue(sourcePlannerRequest.goalRequirementDraftId)
       ? { goalRequirementDraftId: stringValue(draftPayload.goalRequirementDraftId) ?? stringValue(sourcePlannerRequest.goalRequirementDraftId) }
       : {}),

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { homedir } from "os";
 import { isAbsolute, resolve } from "path";
+import { buildWorkflowV2Url, workflowV2Capabilities } from "@/lib/workflow/v2-api";
 import {
   filterSessionsByKind,
   listAllSessions,
@@ -30,12 +31,31 @@ export async function GET(req: Request) {
         : await listSessionsForCwd(cwd);
     const filtered = filterSessionsByKind(sessions, requestedKind);
     const limited = limit ? filtered.slice(0, limit) : filtered;
-    return NextResponse.json({ sessions: compact ? limited.map(compactSession) : limited });
+    const enriched = await enrichSessionsWithGoalJourneys(limited);
+    return NextResponse.json({ sessions: compact ? enriched.map(compactSession) : enriched });
   } catch (error) {
     return NextResponse.json(
       { error: String(error) },
       { status: 500 }
     );
+  }
+}
+
+async function enrichSessionsWithGoalJourneys<T extends { id: string }>(sessions: T[]): Promise<T[]> {
+  if (sessions.length === 0 || !workflowV2Capabilities().v2Backend) return sessions;
+  try {
+    const upstream = buildWorkflowV2Url("/api/v2/ui/goal-journeys");
+    upstream.searchParams.set("sessionIds", sessions.map((session) => session.id).join(","));
+    const response = await fetch(upstream, { cache: "no-store" });
+    if (!response.ok) return sessions;
+    const payload = await response.json() as { result?: { journeys?: Record<string, unknown> }; journeys?: Record<string, unknown> };
+    const journeys = payload.result?.journeys ?? payload.journeys ?? {};
+    return sessions.map((session) => {
+      const journey = journeys[session.id];
+      return journey && typeof journey === "object" ? { ...session, journey } as T : session;
+    });
+  } catch {
+    return sessions;
   }
 }
 

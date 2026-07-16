@@ -2142,6 +2142,33 @@ test("Postgres run API creates draft, run, tasks, and history without prebuildin
   });
 });
 
+test("Postgres run API persists the originating session in the run journey context", async () => {
+  await withDb(async (db) => {
+    const sessionId = "pi-goal-lineage-1";
+    const contract = softwareGoalContract("implement calc sum");
+    await seedDeterministicWorkflowGraph(db);
+    const draft = await createPostgresPlannerDraft(db, {
+      goalPrompt: "implement calc sum",
+      sessionId,
+      orchestrationMode: "llm-constrained",
+      composerMode: "llm",
+      goalInterpreter: fixedGoalInterpreter(contract),
+      composer: new DeterministicFixtureComposer(),
+    });
+    const storedDraft = await getResourceByKeyPg(db, "planner_draft", draft.draftId);
+    assert.equal(storedDraft?.sessionId, sessionId);
+    assert.equal(draft.status, "validated", JSON.stringify(draft));
+
+    const run = await createPostgresRunFromDraft(db, { draftId: draft.draftId });
+    const runRow = await db.one<{ runtime_context_json: Record<string, string> }>(
+      "select runtime_context_json from southstar.workflow_runs where id = $1",
+      [run.runId],
+    );
+    assert.equal(runRow.runtime_context_json.sessionId, sessionId);
+    assert.equal(runRow.runtime_context_json.journeyId, `goal-journey:${sessionId}`);
+  });
+});
+
 test("missing selected Library version rolls back run creation atomically", async () => {
   await withDb(async (db) => {
     const draft = await createFixturePlannerDraft(db, "reject missing selected Library version");

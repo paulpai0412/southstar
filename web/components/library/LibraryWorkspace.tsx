@@ -73,6 +73,7 @@ export function LibraryWorkspaceProvider({
   onAgentEnd,
   onCwdChange,
   onWorkspaceSurfaceChange,
+  onSelectedSessionChange,
 }: {
   children: ReactNode;
   active?: boolean;
@@ -83,6 +84,7 @@ export function LibraryWorkspaceProvider({
   onAgentEnd?: () => void;
   onCwdChange?: (cwd: string | null) => void;
   onWorkspaceSurfaceChange?: (surface: WorkspaceSurface) => void;
+  onSelectedSessionChange?: (session: SessionInfo | null) => void;
 }) {
   const [model, setModel] = useState<LibraryWorkspaceModel | null>(null);
   const [selectedScope, setSelectedScope] = useState("all");
@@ -178,6 +180,10 @@ export function LibraryWorkspaceProvider({
   const selectedLibrarySession = useMemo<SessionInfo | null>(() => {
     return librarySessions.find((item) => item.id === selectedSessionId) ?? null;
   }, [librarySessions, selectedSessionId]);
+
+  useEffect(() => {
+    onSelectedSessionChange?.(selectedLibrarySession);
+  }, [onSelectedSessionChange, selectedLibrarySession]);
 
   const handleSelectSession = useCallback((session: SessionInfo) => {
     setSelectedSessionId(session.id);

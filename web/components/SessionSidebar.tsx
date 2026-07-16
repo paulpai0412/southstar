@@ -1146,7 +1146,7 @@ function SessionItem({
   const [deleting, setDeleting] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const title = session.name || session.firstMessage.slice(0, 50) || session.id.slice(0, 12);
+  const title = session.journey?.title || session.name || session.firstMessage.slice(0, 50) || session.id.slice(0, 12);
   const runtimeLabel = session.agentState?.isCompacting
     ? "compacting"
     : session.agentState?.isStreaming
@@ -1322,6 +1322,11 @@ function SessionItem({
             <div style={{ marginTop: 2, display: "flex", gap: 8, color: "var(--text-dim)", fontSize: 11, alignItems: "center" }}>
               <span title={session.modified}>{formatRelativeTime(session.modified)}</span>
               <span>{session.messageCount} msgs</span>
+              {session.journey ? (
+                <span data-testid="chat-session-journey-stage" style={{ color: "var(--accent)", fontSize: 10 }}>
+                  Goal · {session.journey.currentStage ?? "goal"}
+                </span>
+              ) : null}
               {runtimeLabel && (
                 <span style={{
                   fontSize: 10,

@@ -11,6 +11,7 @@ import {
 } from "@/lib/session-reader";
 import { allowFileRoot } from "@/lib/file-access";
 import { getRpcSession } from "@/lib/rpc-manager";
+import { buildWorkflowV2Url, workflowV2Capabilities } from "@/lib/workflow/v2-api";
 import type { SessionEntry, SessionHeader, SessionTreeNode } from "@/lib/types";
 
 // BranchNavigator still traverses recursively, so keep the response tree shallow.
@@ -167,6 +168,7 @@ export async function GET(
         : "(no messages)",
       parentSessionId,
     } : null;
+    const journey = info ? await readGoalJourney(id) : undefined;
 
     const url = new URL(req.url);
     let agentState: { running: boolean; state?: unknown } | undefined;
@@ -183,7 +185,7 @@ export async function GET(
     return NextResponse.json({
       sessionId: id,
       filePath,
-      info,
+      info: info ? { ...info, ...(journey ? { journey } : {}) } : info,
       leafId,
       tree,
       context,
@@ -191,6 +193,21 @@ export async function GET(
     });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
+  }
+}
+
+async function readGoalJourney(sessionId: string): Promise<Record<string, unknown> | undefined> {
+  if (!workflowV2Capabilities().v2Backend) return undefined;
+  try {
+    const upstream = buildWorkflowV2Url("/api/v2/ui/goal-journeys");
+    upstream.searchParams.set("sessionIds", sessionId);
+    const response = await fetch(upstream, { cache: "no-store" });
+    if (!response.ok) return undefined;
+    const payload = await response.json() as { result?: { journeys?: Record<string, unknown> }; journeys?: Record<string, unknown> };
+    const journey = payload.result?.journeys?.[sessionId] ?? payload.journeys?.[sessionId];
+    return journey && typeof journey === "object" ? journey as Record<string, unknown> : undefined;
+  } catch {
+    return undefined;
   }
 }
 

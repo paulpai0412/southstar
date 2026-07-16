@@ -1,5 +1,6 @@
 import { isTaskRecoverableStatus } from "../task-recovery.ts";
 import type { GoalMissionReadModel } from "./workflow-ui.ts";
+import type { GoalJourneyLink } from "./goal-journey.ts";
 
 export const ACTIVE_RUN_STATUSES = ["created", "validated", "ready", "awaiting_approval", "scheduling", "running", "paused", "blocked"] as const;
 export const TERMINAL_RUN_STATUSES = ["completed", "passed", "failed", "cancelled"] as const;
@@ -71,6 +72,7 @@ export type ActiveRun = {
   title: string;
   cwd?: string;
   projectRoot?: string;
+  journey?: GoalJourneyLink;
   updatedAt: string;
   commands: OperatorCommand[];
 };

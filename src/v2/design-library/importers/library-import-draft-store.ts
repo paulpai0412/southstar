@@ -136,6 +136,7 @@ export async function createLibraryImportDraft(
   input: {
     source: LibraryImportSource;
     scope: string;
+    sessionId?: string;
     sourceFetcher?: LibraryImportSourceFetcher;
     llmProvider?: LibraryImportLlmProvider;
     localRoot?: string;
@@ -198,6 +199,7 @@ export async function createLibraryImportDraft(
   const resource = await insertRuntimeResourceIfAbsentPg(db, {
     resourceType: LIBRARY_IMPORT_DRAFT_RESOURCE_TYPE,
     resourceKey: draftId,
+    ...(input.sessionId ? { sessionId: input.sessionId } : {}),
     scope: "library",
     status: "draft",
     title: `Library import draft: ${proposal.objectKeys.join(", ") || "proposal"}`,

@@ -365,6 +365,9 @@ test("library chat import streams keepalive progress, candidates, and completes 
     assert.equal((actionResource?.payload as any).result.draftId, candidates?.data.draftId);
     assert.equal((actionResource?.payload as any).result.candidateCount, 2);
     assert.equal((actionResource?.payload as any).result.piSessionId, "pi-agent-import-session-1");
+    const importResource = await getResourceByKeyPg(db, "library_import_draft", candidates?.data.draftId as string);
+    assert.equal(importResource?.sessionId, "library-chat-import-test");
+    assert.equal((importResource?.payload as any).piSessionId, "pi-agent-import-session-1");
 
     const sessionsResponse = await handleRuntimeRoute(
       context,

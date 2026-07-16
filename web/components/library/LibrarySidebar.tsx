@@ -404,7 +404,8 @@ function LibrarySessionRow({
   onRename?: (sessionId: string, title: string) => void;
   onDelete?: (sessionId: string) => void;
 }) {
-  const title = session.name
+  const title = session.journey?.title
+    || session.name
     || (session as SessionInfo & { title?: string }).title
     || session.firstMessage
     || "Untitled Library session";
@@ -458,6 +459,7 @@ function LibrarySessionRow({
       </span>
       <span style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, color: "var(--text-dim)", fontSize: 11 }}>
         <span>{session.kind}</span>
+        {session.journey ? <span data-testid="library-session-journey-stage" style={{ color: "var(--accent)" }}>Goal · {session.journey.currentStage ?? "goal"}</span> : null}
         <span>{formatRelativeTime(session.modified)}</span>
       </span>
     </div>

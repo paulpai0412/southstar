@@ -27,6 +27,7 @@ type SendWorkflowGenerateEvent = (event: string, data: unknown) => void;
 export async function POST(request: NextRequest) {
   const body = await request.json() as {
     cwd?: string | null;
+    sessionId?: string | null;
     projectRef?: string | null;
     prompt?: string;
     idempotencyKey?: string;
@@ -52,6 +53,7 @@ export async function POST(request: NextRequest) {
     },
     body: JSON.stringify({
       goalPrompt: prompt,
+      ...(body.sessionId?.trim() ? { sessionId: body.sessionId.trim() } : {}),
       cwd,
       idempotencyKey,
       ...(projectRef ? { projectRef } : {}),

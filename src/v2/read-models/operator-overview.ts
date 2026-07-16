@@ -16,9 +16,10 @@ import {
   type OperatorRunRow,
 } from "./operator-attention.ts";
 import { buildGoalMissionReadModelsPg } from "./workflow-ui.ts";
+import { listGoalJourneyLinksPg } from "./goal-journey.ts";
 
 export async function buildOperatorOverviewReadModelPg(db: SouthstarDb, input: { projectRoot?: string } = {}) {
-  const baseRuns = (await db.query<OperatorRunRow>(
+  const baseRunRows = (await db.query<OperatorRunRow>(
     `select id, status, domain, goal_prompt, runtime_context_json, updated_at
        from southstar.workflow_runs
       where (
@@ -43,9 +44,19 @@ export async function buildOperatorOverviewReadModelPg(db: SouthstarDb, input: {
       order by updated_at desc, id
       limit 50`,
     [[...ACTIVE_RUN_STATUSES], [...TERMINAL_RUN_STATUSES], [...TERMINAL_RESOURCE_STATUSES], [...RECENT_RESOLVED_RUN_STATUSES], [...NORMAL_EXECUTOR_RESOURCE_STATUSES], input.projectRoot ?? null],
-  )).rows.map(activeRunFromRow);
+  )).rows;
+  const baseRuns = baseRunRows.map(activeRunFromRow);
 
   const activeRunIds = baseRuns.map((run) => run.runId);
+  const journeyLinks = await listGoalJourneyLinksPg(db, {
+    runIds: activeRunIds,
+    sessionIds: baseRunRows.flatMap((run) => {
+      const context = run.runtime_context_json;
+      return context && typeof context === "object" && !Array.isArray(context) && typeof (context as { sessionId?: unknown }).sessionId === "string"
+        ? [(context as { sessionId: string }).sessionId]
+        : [];
+    }),
+  });
   const [resourceRows, taskRows, commandRows] = await Promise.all([
     input.projectRoot && activeRunIds.length === 0 ? Promise.resolve([]) : readAttentionResourceRows(db, input.projectRoot ? activeRunIds : undefined),
     activeRunIds.length > 0 ? readAttentionTaskRows(db, activeRunIds) : Promise.resolve([]),
@@ -61,6 +72,7 @@ export async function buildOperatorOverviewReadModelPg(db: SouthstarDb, input: {
     )) ? "degraded" as const : "healthy" as const;
     return {
       ...run,
+      ...(journeyLinks[`run:${run.runId}`] ? { journey: journeyLinks[`run:${run.runId}`] } : {}),
       commands: [
         ...run.commands,
         ...(mission?.approval?.status === "pending"
