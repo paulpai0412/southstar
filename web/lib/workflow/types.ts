@@ -113,6 +113,7 @@ export type GoalContractV1 = {
     id: string;
     statement: string;
     acceptanceCriteria: string[];
+    semanticTags?: string[];
     blocking: boolean;
     source: "explicit" | "inferred";
   }>;
@@ -136,8 +137,12 @@ export type GoalMissionReadModel = {
       requirementId: string;
       producerTaskIds: string[];
       artifactRefs: string[];
+      artifactContractRefs?: string[];
       evaluatorTaskIds: string[];
       evaluatorProfileRefs: string[];
+      evaluatorProfileVersionRefs?: string[];
+      validationBindingId?: string;
+      semanticTags?: string[];
       requiredEvidenceKinds: string[];
     }>;
   };
@@ -188,6 +193,11 @@ export interface WorkflowDagNode {
   profileResourcePath: string;
   provider: string;
   model: string;
+  requirementIds?: string[];
+  sliceId?: string;
+  purpose?: string;
+  nodeType?: string;
+  expectedOutputs?: string[];
   level: number;
   state: "ready" | "blocked" | "warning";
 }
@@ -209,6 +219,11 @@ export type PlannerDraftTaskSummary = {
   dependsOn: string[];
   roleRef?: string;
   agentProfileRef?: string;
+  requirementIds?: string[];
+  sliceId?: string;
+  purpose?: string;
+  nodeType?: string;
+  expectedOutputs?: string[];
 };
 
 export type PlannerDraftResult = {

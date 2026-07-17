@@ -199,6 +199,66 @@ test("requirement review revise stream is phase-aware and returns a goal_require
   }
 });
 
+test("requirement revision needs_input keeps the current Goal Requirements block", async () => {
+  const db = await createTestPostgresDb();
+  const cwd = process.cwd();
+  try {
+    await seedGoalDesignSkill(db);
+    const draft = finalizeGoalRequirementDraft({
+      goalPrompt: "Create a review flow",
+      cwd,
+      summary: "Review flow",
+      requirements: [{
+        title: "Review flow",
+        statement: "A learner can review a word.",
+        source: "explicit",
+        blocking: true,
+        userVisibleBehaviors: ["Show a word"],
+        businessRules: [],
+        acceptanceCriteria: [{ statement: "A review is persisted", evidenceIntent: ["artifact-ref"] }],
+        expectedOutcomeArtifacts: [{ description: "review UI", mediaType: "text/html" }],
+        verificationIntent: ["complete one review"],
+        assumptions: [],
+        openQuestions: [],
+        riskTags: [],
+        interactionContractRefs: [],
+      }],
+      nonGoals: [],
+      blockingInputs: ["Which project scope should be used?"],
+    });
+    const prepared = await preparePostgresGoalRequirementDraft(db, {
+      goalPrompt: draft.originalPrompt,
+      cwd,
+      requirementInterpreter: {
+        async interpret() { return draft; },
+        async revise() { return { kind: "needs_input" as const, question: "Please answer the project scope." }; },
+      },
+    });
+    const requirementId = prepared.goalRequirementDraft.requirements[0]!.id;
+    const response = await handleRuntimeRoute({
+      db,
+      goalRequirementInterpreter: {
+        async interpret() { return draft; },
+        async revise() { return { kind: "needs_input" as const, question: "Please answer the project scope." }; },
+      },
+      plannerClient: { generate: async () => { throw new Error("planner not used"); } },
+      executorProvider: { executorType: "tork" as const, submit: async () => { throw new Error("executor not used"); } },
+    }, new Request(`http://127.0.0.1/api/v2/planner/drafts/${prepared.draftId}/revise/stream`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Use the current workspace.", expectedDraftHash: prepared.goalRequirementDraftHash, selectedRequirementId: requirementId }),
+    }));
+    const frames = parseSse(await response.text());
+    const block = frames.find((frame) => frame.event === "goal_requirements")?.data as { status?: string; goalRequirementDraft?: { blockingInputs?: string[] } } | undefined;
+    assert.equal(block?.status, "requirements_review");
+    assert.deepEqual(block?.goalRequirementDraft?.blockingInputs, ["Which project scope should be used?"]);
+    assert.equal(frames.at(-1)?.event, "done");
+    assert.equal((frames.at(-1)?.data as { kind?: string }).kind, "needs_input");
+  } finally {
+    await db.close();
+  }
+});
+
 test("planner draft requirement SSE exposes host confirmable state", async () => {
   const db = await createTestPostgresDb();
   const cwd = process.cwd();

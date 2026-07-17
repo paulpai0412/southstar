@@ -49,6 +49,29 @@ test("resolver binds only approved artifact and evaluator versions", async () =>
   });
 });
 
+test("resolver blocks an approved but semantically mismatched artifact/evaluator pair before DAG composition", async () => {
+  await withDb(async (db) => {
+    await approvedArtifact(db, "artifact.article-html", "artifact.article-html@1", ["screenshot"], ["vocabulary", "accuracy"]);
+    await approvedEvaluator(db, "evaluator.offline-browser", "evaluator.offline-browser@2", ["screenshot"], ["vocabulary", "accuracy"]);
+    await validatesArtifactEdge(db, "evaluator.offline-browser", "artifact.article-html");
+    const result = await resolveGoalValidationPg(db, {
+      goalContract: confirmedContract("screenshot", ["riddle", "answer-feedback"]),
+      requirementDraft: confirmedRequirementDraft("screenshot", ["riddle", "answer-feedback"]),
+      ranker: fixedRanker({
+        artifactRef: "artifact.article-html",
+        evaluatorRef: "evaluator.offline-browser",
+        verificationMode: "browser_interaction",
+        procedureRef: "procedure.offline-open",
+        expectedEvidenceKinds: ["screenshot"],
+      }),
+    });
+
+    assert.equal(result.bindings.length, 0);
+    assert.equal(result.ready, false);
+    assert.equal(result.gaps.some((gap) => gap.kind === "semantic" && gap.message.includes("riddle")), true);
+  });
+});
+
 test("resolver keeps approved validation pairs when object and edge scopes cross the Goal domain", async () => {
   await withDb(async (db) => {
     await upsertLibraryObject(db, {
@@ -605,7 +628,7 @@ async function withDb(run: (db: SouthstarDb) => Promise<void>): Promise<void> {
   }
 }
 
-function confirmedRequirementDraft(evidenceIntent = "screenshot"): GoalRequirementDraftV1 {
+function confirmedRequirementDraft(evidenceIntent = "screenshot", semanticTags?: string[]): GoalRequirementDraftV1 {
   return finalizeGoalRequirementDraft({
     goalPrompt: "Build an offline article viewer",
     cwd: "/workspace/article",
@@ -613,6 +636,7 @@ function confirmedRequirementDraft(evidenceIntent = "screenshot"): GoalRequireme
     requirements: [{
       title: "Offline article",
       statement: "The article opens offline and remains readable",
+      ...(semanticTags ? { semanticTags } : {}),
       source: "explicit",
       blocking: true,
       userVisibleBehaviors: ["article content is readable"],
@@ -633,8 +657,8 @@ function confirmedRequirementDraft(evidenceIntent = "screenshot"): GoalRequireme
   });
 }
 
-function confirmedContract(evidenceIntent = "screenshot"): GoalContractV1 {
-  const draft = confirmedRequirementDraft(evidenceIntent);
+function confirmedContract(evidenceIntent = "screenshot", semanticTags?: string[]): GoalContractV1 {
+  const draft = confirmedRequirementDraft(evidenceIntent, semanticTags);
   return confirmGoalRequirementDraft(draft, {
     domain: "article",
     intent: "build_offline_article",
@@ -655,13 +679,14 @@ async function approvedArtifact(
   objectKey: string,
   headVersionId: string,
   evidenceKinds = ["screenshot"],
+  semanticTags?: string[],
 ): Promise<void> {
   await upsertLibraryObject(db, {
     objectKey,
     objectKind: "artifact_contract",
     status: "approved",
     headVersionId,
-    state: artifactState(evidenceKinds),
+    state: artifactState(evidenceKinds, semanticTags),
   });
 }
 
@@ -670,13 +695,14 @@ async function approvedEvaluator(
   objectKey: string,
   headVersionId: string,
   evidenceKinds = ["screenshot"],
+  semanticTags?: string[],
 ): Promise<void> {
   await upsertLibraryObject(db, {
     objectKey,
     objectKind: "evaluator_profile",
     status: "approved",
     headVersionId,
-    state: evaluatorState(evidenceKinds),
+    state: evaluatorState(evidenceKinds, semanticTags),
   });
 }
 
@@ -691,7 +717,7 @@ async function validatesArtifactEdge(db: SouthstarDb, evaluatorRef: string, arti
   });
 }
 
-function artifactState(evidenceKinds: string[]): Record<string, unknown> {
+function artifactState(evidenceKinds: string[], semanticTags?: string[]): Record<string, unknown> {
   return {
     scope: "article",
     title: "Article HTML",
@@ -702,10 +728,11 @@ function artifactState(evidenceKinds: string[]): Record<string, unknown> {
     evidenceKinds,
     schemaRef: "schema.article-html.v1",
     provenanceRequirements: ["workspace-artifact"],
+    ...(semanticTags ? { semanticTags } : {}),
   };
 }
 
-function evaluatorState(evidenceKinds: string[]): Record<string, unknown> {
+function evaluatorState(evidenceKinds: string[], semanticTags?: string[]): Record<string, unknown> {
   return {
     scope: "article",
     title: "Offline browser evaluator",
@@ -722,5 +749,6 @@ function evaluatorState(evidenceKinds: string[]): Record<string, unknown> {
     resultSchemaRef: "southstar.requirement_evaluator_result.v2",
     independencePolicy: "independent",
     failureClassifications: ["network_dependency", "unreadable_content"],
+    ...(semanticTags ? { semanticTags } : {}),
   };
 }

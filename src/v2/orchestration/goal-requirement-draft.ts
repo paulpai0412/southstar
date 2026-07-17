@@ -28,6 +28,8 @@ export type GoalRequirementDraftItemV1 = {
   id: string;
   title: string;
   statement: string;
+  /** LLM/user-confirmed outcome vocabulary; never host-hardcoded. */
+  semanticTags?: string[];
   source: "explicit" | "inferred";
   blocking: boolean;
   userVisibleBehaviors: string[];
@@ -580,6 +582,7 @@ export function confirmGoalRequirementDraft(
         id: requirement.id,
         statement: requirement.statement,
         acceptanceCriteria: requirement.acceptanceCriteria.map((criterion) => criterion.statement),
+        ...(requirement.semanticTags !== undefined ? { semanticTags: [...requirement.semanticTags] } : {}),
         blocking: requirement.blocking,
         source: requirement.source,
         expectedArtifacts: requirement.expectedOutcomeArtifacts,
@@ -619,6 +622,7 @@ function materializeRequirement(
   const semantic = {
     title: input.title,
     statement: input.statement,
+    ...(input.semanticTags !== undefined ? { semanticTags: [...input.semanticTags] } : {}),
     source: input.source,
     blocking: input.blocking,
     userVisibleBehaviors: [...input.userVisibleBehaviors],
@@ -680,6 +684,7 @@ function validateRequirementInputShape(requirement: unknown): boolean {
   return Boolean(
     nonEmptyString(requirement.title)
     && nonEmptyString(requirement.statement)
+    && (requirement.semanticTags === undefined || stringArrayValid(requirement.semanticTags))
     && (requirement.source === "explicit" || requirement.source === "inferred")
     && typeof requirement.blocking === "boolean"
     && stringArrayValid(requirement.userVisibleBehaviors)
@@ -771,6 +776,7 @@ function toRequirementInput(requirement: GoalRequirementDraftItemV1): GoalRequir
     id: requirement.id,
     title: requirement.title,
     statement: requirement.statement,
+    ...(requirement.semanticTags !== undefined ? { semanticTags: [...requirement.semanticTags] } : {}),
     source: requirement.source,
     blocking: requirement.blocking,
     userVisibleBehaviors: [...requirement.userVisibleBehaviors],
@@ -827,6 +833,7 @@ const MAX_REQUIREMENT_RESPONSE_CHARS = 40_000;
 const REQUIREMENT_SEMANTIC_KEYS = [
   "title",
   "statement",
+  "semanticTags",
   "source",
   "blocking",
   "userVisibleBehaviors",
@@ -876,6 +883,7 @@ function renderRequirementInterpretationPrompt(input: {
       requirements: [{
         title: "string",
         statement: "string",
+        semanticTags: ["lower-case outcome or domain tag"],
         source: "explicit | inferred",
         blocking: "boolean",
         userVisibleBehaviors: ["string"],
@@ -894,13 +902,15 @@ function renderRequirementInterpretationPrompt(input: {
     "Return JSON only with exactly these top-level keys: summary, requirements, nonGoals, blockingInputs.",
     "Return exactly the requirement fields shown above. Every array item must be a non-empty string unless it is an object shown in the schema.",
     "Use [] for empty arrays. Do not use null, false, objects, or empty strings as array entries.",
-    "Requirements must describe independently verifiable observable outcomes, including user-visible behaviors, rules, acceptance criteria, expected artifacts, and verification intent.",
+    "Requirements must describe independently verifiable observable outcomes, including user-visible behaviors, rules, acceptance criteria, expected artifacts, verification intent, and semanticTags. semanticTags are short lower-case or kebab-case outcome/domain concepts; do not use technical ids or vocabulary supplied by host code.",
     `Every acceptanceCriteria.evidenceIntent value must be one of these exact host evidence kinds: ${EVIDENCE_KINDS.join(", ")}. Translate semantic evidence requests into these values; never put prose in evidenceIntent.`,
     "Set interactionContractRefs only when that requirement's acceptance depends on reviewing a visual layout, visible UI state, responsive behavior, accessibility behavior, or an interactive screen transition.",
     "Do not attach interactionContractRefs to persistence, data integrity, offline operation, implementation, automated testing, packaging, or other non-visual requirements merely because the overall goal includes a UI. Use [] for those requirements.",
     "Do not return Library object references, workflow plans, graph nodes, agent assignments, tool grants, or execution sequencing.",
     "Do not return host-owned fields: schemaVersion, originalPrompt, workspace, projectRef, id, revision, parentRevision, status, draftHash, or any hash.",
     "blockingInputs are only unavailable decisions that require the user; do not use them for local workspace facts discoverable below.",
+    "For every openQuestions or blockingInputs item with a finite decision set, include 2-4 concise answer options in the same string using this format: Question? Options: A) ...; B) ...; C) ... . Use a short-answer question only when finite options are not reasonable.",
+    "Keep each answer option short and grounded in the GoalPrompt, workspace discovery, or Library facts; do not invent unsupported choices.",
     `GoalPrompt: ${input.goalPrompt}`,
     `WorkspaceCwd: ${input.cwd}`,
     ...(input.projectRef !== undefined ? [`ProjectRef: ${input.projectRef}`] : []),
@@ -939,6 +949,8 @@ function renderRequirementRevisionPrompt(input: {
     "For kind=revision, return exactly kind, summary, and either draft or operation. Draft contains exactly summary, requirements, nonGoals, blockingInputs. Operation contains semantic fields only; the host chooses target ids from the host selections below.",
     "For kind=needs_input, return exactly kind and question.",
     `Every revised acceptanceCriteria.evidenceIntent value must remain one of these exact host evidence kinds: ${EVIDENCE_KINDS.join(", ")}. Never put prose in evidenceIntent.`,
+    "For every remaining openQuestions or blockingInputs item with a finite decision set, include 2-4 concise answer options in the same string using: Question? Options: A) ...; B) ...; C) ... . Use a short-answer question only when finite options are not reasonable.",
+    "When the user answers a question, apply the answer and remove that question only when the decision is fully resolved; preserve answer options for any remaining question.",
     "Preserve the interaction-contract policy: only requirements whose acceptance depends on visual layout, visible UI state, responsive/accessibility behavior, or interactive screen transitions may have interactionContractRefs. Non-visual requirements must use [].",
     "Do not return requirement ids, status, revision, parentRevision, draftHash, hashes, library references, orchestration fields, or execution fields.",
     `SelectedRequirementId (host context only): ${input.selectedRequirementId ?? ""}`,
@@ -1113,6 +1125,7 @@ function parseSemanticPatch(value: unknown, path: string): GoalRequirementDraftS
   const patch: GoalRequirementDraftSemanticPatchV1 = {};
   if ("title" in object) patch.title = requiredString(object.title, `${path}.title`);
   if ("statement" in object) patch.statement = requiredString(object.statement, `${path}.statement`);
+  if ("semanticTags" in object) patch.semanticTags = requiredStringArray(object.semanticTags, `${path}.semanticTags`);
   if ("source" in object) {
     if (object.source !== "explicit" && object.source !== "inferred") throw new Error(`${path}.source must be explicit or inferred`);
     patch.source = object.source;
@@ -1152,7 +1165,10 @@ function parseSemanticPatch(value: unknown, path: string): GoalRequirementDraftS
 function parseSemanticRequirement(value: unknown, index: number, prefix = "requirements"): GoalRequirementDraftItemInputV1 {
   const path = `${prefix}.${index}`;
   const object = parseJsonObject(value, path);
-  exactSemanticKeys(object, REQUIREMENT_SEMANTIC_KEYS, path);
+  const semanticKeys = "semanticTags" in object
+    ? REQUIREMENT_SEMANTIC_KEYS
+    : REQUIREMENT_SEMANTIC_KEYS.filter((key) => key !== "semanticTags");
+  exactSemanticKeys(object, semanticKeys, path);
   const acceptanceCriteria = requiredArray(object.acceptanceCriteria, `${path}.acceptanceCriteria`).map((criterion, criterionIndex) => {
     const criterionPath = `${path}.acceptanceCriteria.${criterionIndex}`;
     const criterionObject = parseJsonObject(criterion, criterionPath);
@@ -1175,6 +1191,7 @@ function parseSemanticRequirement(value: unknown, index: number, prefix = "requi
   return {
     title: requiredString(object.title, `${path}.title`),
     statement: requiredString(object.statement, `${path}.statement`),
+    ...(object.semanticTags !== undefined ? { semanticTags: requiredStringArray(object.semanticTags, `${path}.semanticTags`) } : {}),
     source: object.source === "explicit" || object.source === "inferred"
       ? object.source
       : fail(`${path}.source must be explicit or inferred`),

@@ -220,6 +220,14 @@ export function WorkflowDagBlock({
       </button>
       {expanded && (
         <div style={{ padding: 10, background: "var(--bg)" }}>
+          <details data-testid="workflow-dag-guide" style={dagGuideStyle}>
+            <summary style={dagGuideSummaryStyle}>How to review and run this DAG</summary>
+            <div style={dagGuideBodyStyle}>
+              <div><strong>Each node:</strong> read its purpose, covered requirements, produced slice, and expected outputs before relying on its technical task ID.</div>
+              <div><strong>Review mode:</strong> Draft creates a persisted planner draft; Validate checks bindings; Create Run materializes the run; Execute starts work. Operator approval may still be required.</div>
+              <div>Click a node to inspect its Agent Profile. Runtime status and evaluator evidence are refreshed from the existing read model while the run proceeds.</div>
+            </div>
+          </details>
           {mission ? (
             <GoalContractCard
               mission={mission}
@@ -441,6 +449,11 @@ function workflowDagToCanvasModel(dag: WorkflowDag, selectedNodeId: string | nul
     roleRef: node.role,
     agentProfileRef: node.profileRef,
     artifactKind: "implementation_report",
+    requirementIds: node.requirementIds ?? [],
+    sliceId: node.sliceId ?? null,
+    purpose: node.purpose ?? null,
+    nodeType: node.nodeType ?? null,
+    expectedOutputs: node.expectedOutputs ?? [],
     badges: [
       { label: node.provider, tone: node.provider === "pi" ? "good" : "neutral" },
       { label: node.model, tone: "neutral" },
@@ -487,6 +500,19 @@ function actionButtonStyle(disabled: boolean) {
     lineHeight: 1.2,
   } as const;
 }
+
+const dagGuideStyle = {
+  marginBottom: 10,
+  border: "1px solid var(--border)",
+  borderRadius: 6,
+  background: "var(--bg-panel)",
+  color: "var(--text-muted)",
+  fontSize: 11,
+  lineHeight: 1.45,
+} as const;
+
+const dagGuideSummaryStyle = { cursor: "pointer", padding: "7px 9px", color: "var(--text)" } as const;
+const dagGuideBodyStyle = { display: "grid", gap: 5, padding: "0 9px 9px" } as const;
 
 function renderDraftBadgeLabel(state: ReturnType<typeof useWorkflowLifecycle>["state"]) {
   if (state.phase === "validated" || state.canRun) return "Draft validated";

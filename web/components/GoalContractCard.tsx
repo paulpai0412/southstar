@@ -33,6 +33,14 @@ export function GoalContractCard({
         </div>
         <span data-testid="goal-coverage-count">{mission.coverage.covered}/{mission.coverage.total} covered</span>
       </header>
+      <details data-testid="goal-contract-guide" className="goal-contract-guide">
+        <summary>How to read the Goal Contract</summary>
+        <div>
+          <p><strong>Goal Contract</strong> is the approved mission-level promise: what the goal should achieve, within which boundaries, and with which evidence.</p>
+          <p><strong>Acceptance</strong> is what the evaluator checks. <strong>Deliverables</strong> are the product artifacts expected at the end. Coverage shows whether each requirement has a producer, artifact, and evaluator path.</p>
+          <p>If the contract says <strong>Needs input</strong>, choose one of the offered decisions or revise the goal. Approve only after the revised contract matches the intended outcome.</p>
+        </div>
+      </details>
       <div className="goal-contract-card-grid">
         <GoalFact label="Workspace" values={[contract.workspace.cwd, contract.domain]} />
         <GoalFact label="Acceptance" values={acceptanceCriteria} />
@@ -40,6 +48,24 @@ export function GoalContractCard({
         <GoalFact label="Assumptions" values={contract.assumptions} />
         <GoalFact label="Risk / effects" values={[...contract.riskTags, ...contract.requestedSideEffects]} />
       </div>
+      <details data-testid="goal-requirement-chain" className="goal-contract-guide">
+        <summary>Requirement → artifact → evaluator chain</summary>
+        <div style={{ display: "grid", gap: 7, marginTop: 8 }}>
+          {mission.coverage.entries.map((entry) => {
+            const requirement = contract.requirements.find((candidate) => candidate.id === entry.requirementId);
+            return (
+              <div key={entry.requirementId} style={{ display: "grid", gap: 3 }} data-testid={`goal-requirement-chain-${entry.requirementId}`}>
+                <strong>{requirement?.statement ?? entry.requirementId}</strong>
+                <span>{entry.semanticTags && entry.semanticTags.length > 0 ? `Semantic tags: ${entry.semanticTags.join(" · ")}` : "Semantic tags: not recorded (legacy contract)"}</span>
+                <span>Producer: {entry.producerTaskIds.join(", ") || "not bound"}</span>
+                <span>Artifact contract: {(entry.artifactContractRefs ?? []).join(", ") || "not bound"}</span>
+                <span>Artifact output: {entry.artifactRefs.join(", ") || "not emitted"}</span>
+                <span>Evaluator: {entry.evaluatorProfileRefs.join(", ") || "not bound"} · task {entry.evaluatorTaskIds.join(", ") || "not scheduled"}</span>
+              </div>
+            );
+          })}
+        </div>
+      </details>
       {needsInput ? (
         <div className="goal-contract-blocking" data-testid="goal-contract-clarifications">
           <strong>Needs input</strong>

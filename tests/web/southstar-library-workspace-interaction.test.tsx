@@ -477,12 +477,14 @@ test("Goal-linked Library proposal shows Requirement coverage and installs the c
       title: "Validation Evidence",
       scope: "software",
       selectedByDefault: false,
+      semanticTags: ["riddle", "answer-feedback"],
     }, {
       objectKey: "evaluator.validation-evidence",
       kind: "evaluator",
       title: "Validation Evidence Evaluator",
       scope: "software",
       selectedByDefault: false,
+      semanticTags: ["riddle", "answer-feedback"],
     }];
     const candidateCoverageTargets = candidates.map((candidate) => ({
       candidateObjectKey: candidate.objectKey,
@@ -507,6 +509,8 @@ test("Goal-linked Library proposal shows Requirement coverage and installs the c
     assert.equal(await block.getAttribute("data-draft-id"), "library-import-goal-complete");
     await assertText(page, '[data-testid="library-proposal-completeness"]', "all candidates required");
     await assertText(page, '[data-testid="library-candidate-coverage-artifact.validation-evidence"]', "Covers R1 · AC1, AC2");
+    await assertText(page, '[data-testid="library-candidate-semantic-tags-artifact.validation-evidence"]', "riddle · answer-feedback");
+    await assertText(page, '[data-testid="library-candidate-semantic-tags-evaluator.validation-evidence"]', "riddle · answer-feedback");
     assert.equal(await block.getByRole("checkbox", { name: /Validation Evidence artifact/ }).isChecked(), true);
     assert.equal(await block.getByRole("checkbox", { name: /Validation Evidence artifact/ }).isDisabled(), true);
     assert.equal(await block.getByRole("button", { name: "Unselect all candidates" }).isDisabled(), true);

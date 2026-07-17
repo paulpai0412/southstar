@@ -28,6 +28,7 @@ import {
   type GoalRequirementDraftItemV1,
   type GoalRequirementDraftV1,
 } from "./goal-requirement-draft.ts";
+import { missingSemanticTags, normalizeSemanticTags } from "./semantic-tags.ts";
 
 export type GoalValidationCandidateRecommendationV1 = {
   artifactRef: string;
@@ -418,6 +419,16 @@ async function resolveRequirementAttempt(input: {
       }));
       continue;
     }
+    const semanticResult = validateSemanticCompatibility({
+      contractRequirement: input.contractRequirement,
+      requirement: input.requirement,
+      artifact,
+      evaluator,
+    });
+    if (semanticResult.gaps.length > 0) {
+      gaps.push(...semanticResult.gaps);
+      continue;
+    }
     const bindingResult = buildBinding({
       contractRequirement: input.contractRequirement,
       requirement: input.requirement,
@@ -570,6 +581,7 @@ function buildBinding(input: {
     requiredEvidenceKinds: expectedEvidenceKinds,
     independence: "independent" as const,
     failureClassifications: stringArray(input.evaluator.state.failureClassifications),
+    semanticCoverage: semanticCoverageFor(input.contractRequirement, input.requirement, input.artifact, input.evaluator),
   };
   return {
     gaps: [],
@@ -577,6 +589,86 @@ function buildBinding(input: {
       ...bindingWithoutId,
       id: `binding-${contentHashForPayload(bindingWithoutId).slice(0, 16)}`,
     },
+  };
+}
+
+function validateSemanticCompatibility(input: {
+  contractRequirement: GoalRequirementV1;
+  requirement: GoalRequirementDraftItemV1;
+  artifact: LibraryObjectSummary;
+  evaluator: LibraryObjectSummary;
+}): { gaps: GoalValidationGapV1[] } {
+  const requiredTags = normalizeSemanticTags(input.contractRequirement.semanticTags ?? input.requirement.semanticTags);
+  const artifactTags = normalizeSemanticTags(input.artifact.state.semanticTags);
+  const evaluatorTags = normalizeSemanticTags(input.evaluator.state.semanticTags);
+  const base = {
+    requirementId: input.contractRequirement.id,
+    blocking: input.contractRequirement.blocking,
+  } as const;
+
+  // Legacy contracts without semantic metadata remain readable, but as soon
+  // as a candidate declares semantic metadata we fail closed rather than
+  // silently treating the requirement as universally compatible.
+  if (requiredTags.length === 0) {
+    if (artifactTags.length === 0 && evaluatorTags.length === 0) return { gaps: [] };
+    return {
+      gaps: [gap({
+        kind: "semantic",
+        ...base,
+        message: "Requirement semanticTags are missing; confirm the outcome vocabulary before reusing a tagged Library validation pair",
+        candidateRefs: [input.artifact.objectKey, input.evaluator.objectKey],
+      })],
+    };
+  }
+
+  const gaps: GoalValidationGapV1[] = [];
+  const missingArtifactTags = missingSemanticTags(requiredTags, artifactTags);
+  if (artifactTags.length === 0 || missingArtifactTags.length > 0) {
+    gaps.push(gap({
+      kind: "semantic",
+      ...base,
+      requestedRef: input.artifact.objectKey,
+      message: artifactTags.length === 0
+        ? `Artifact ${input.artifact.objectKey} has no semanticTags for the confirmed Requirement`
+        : `Artifact ${input.artifact.objectKey} does not cover Requirement semanticTags: ${missingArtifactTags.join(", ")}`,
+      candidateRefs: [input.artifact.objectKey],
+    }));
+  }
+  const missingEvaluatorTags = missingSemanticTags(requiredTags, evaluatorTags);
+  if (evaluatorTags.length === 0 || missingEvaluatorTags.length > 0) {
+    gaps.push(gap({
+      kind: "semantic",
+      ...base,
+      requestedRef: input.evaluator.objectKey,
+      message: evaluatorTags.length === 0
+        ? `Evaluator ${input.evaluator.objectKey} has no semanticTags for the confirmed Requirement`
+        : `Evaluator ${input.evaluator.objectKey} does not cover Requirement semanticTags: ${missingEvaluatorTags.join(", ")}`,
+      candidateRefs: [input.evaluator.objectKey],
+    }));
+  }
+  return { gaps };
+}
+
+function semanticCoverageFor(
+  contractRequirement: GoalRequirementV1,
+  requirement: GoalRequirementDraftItemV1,
+  artifact: LibraryObjectSummary,
+  evaluator: LibraryObjectSummary,
+): {
+  requiredTags: string[];
+  artifactTags: string[];
+  evaluatorTags: string[];
+  matchedTags: string[];
+} | undefined {
+  const requiredTags = normalizeSemanticTags(contractRequirement.semanticTags ?? requirement.semanticTags);
+  if (requiredTags.length === 0) return undefined;
+  const artifactTags = normalizeSemanticTags(artifact.state.semanticTags);
+  const evaluatorTags = normalizeSemanticTags(evaluator.state.semanticTags);
+  return {
+    requiredTags,
+    artifactTags,
+    evaluatorTags,
+    matchedTags: requiredTags.filter((tag) => artifactTags.includes(tag) && evaluatorTags.includes(tag)),
   };
 }
 

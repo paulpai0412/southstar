@@ -862,8 +862,18 @@ function createPlannerDraftRevisionStreamResponse(
             onDelta(text) { send("message.delta", { text }); },
           });
           if (result.kind === "needs_input") {
+            send("goal_requirements", {
+              draftId: currentRequirementView.draftId,
+              status: "requirements_review",
+              phase: "requirements_review",
+              ...(currentRequirementView.goalRequirementDraftHash ? { goalRequirementDraftHash: currentRequirementView.goalRequirementDraftHash } : {}),
+              ...(currentRequirementView.goalRequirementDraft ? { goalRequirementDraft: currentRequirementView.goalRequirementDraft } : {}),
+              confirmable: currentRequirementView.confirmable ?? false,
+              validationIssues: currentRequirementView.validationIssues,
+              blockers: currentRequirementView.blockers,
+            });
             send("message.delta", { text: result.question });
-            send("done", result);
+            send("done", { ...result, draftId: currentRequirementView.draftId, goalRequirementDraftHash: currentRequirementView.goalRequirementDraftHash });
             return;
           }
           send("goal_requirements", {

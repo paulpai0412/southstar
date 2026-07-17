@@ -80,6 +80,7 @@ export interface GoalRequirementView {
   id: string;
   title: string;
   statement: string;
+  semanticTags?: string[];
   source: "explicit" | "inferred";
   blocking: boolean;
   userVisibleBehaviors: string[];

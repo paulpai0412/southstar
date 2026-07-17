@@ -38,6 +38,11 @@ export type WorkflowTaskNodeModel = {
   roleRef?: string | null;
   agentProfileRef?: string | null;
   artifactKind?: string | null;
+  requirementIds?: string[];
+  sliceId?: string | null;
+  purpose?: string | null;
+  nodeType?: string | null;
+  expectedOutputs?: string[];
   badges: WorkflowTaskBadge[];
   attention?: WorkflowTaskAttention | null;
 };

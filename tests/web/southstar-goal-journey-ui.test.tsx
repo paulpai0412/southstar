@@ -125,6 +125,9 @@ test("Goal Journey timeline links Chat, Library, Workflow, and Operator selectio
     await page.getByTestId("goal-journey-open").click();
     await page.getByTestId("goal-journey-detail").waitFor();
     assert.equal(await page.getByTestId("goal-journey-detail").getByTestId("goal-journey-title").textContent(), journey.title);
+    const compactBox = await page.getByTestId("goal-journey-compact").boundingBox();
+    assert.ok(compactBox && compactBox.height <= 42, "compact journey should stay one row high");
+    await page.getByTestId("goal-journey-toggle").click();
     if (process.env.SOUTHSTAR_GOAL_JOURNEY_SCREENSHOT) {
       await page.screenshot({ path: process.env.SOUTHSTAR_GOAL_JOURNEY_SCREENSHOT, fullPage: false });
     }
@@ -139,6 +142,7 @@ test("Goal Journey timeline links Chat, Library, Workflow, and Operator selectio
     assert.equal(await page.getByTestId("library-session-row").getByText(journey.title).count(), 1);
     assert.equal(await page.getByTestId("library-session-journey-stage").textContent(), "Goal · library");
 
+    await page.getByTestId("goal-journey-toggle").click();
     await page.getByTestId("goal-journey-compact").getByTestId("goal-journey-step-workflow").locator("button").click();
     await page.getByTestId("mode-workflow").waitFor();
     assert.equal(await page.getByTestId("mode-workflow").getAttribute("aria-pressed"), "true");
@@ -146,6 +150,7 @@ test("Goal Journey timeline links Chat, Library, Workflow, and Operator selectio
     assert.equal(await page.getByTestId("workflow-session-workflow-42").getByText(journey.title).count(), 1);
     assert.equal(await page.getByTestId("workflow-session-journey-stage").textContent(), "Goal · library");
 
+    await page.getByTestId("goal-journey-toggle").click();
     await page.getByTestId("goal-journey-compact").getByTestId("goal-journey-step-operator").locator("button").click();
     await page.getByTestId("mode-operator").waitFor();
     assert.equal(await page.getByTestId("mode-operator").getAttribute("aria-pressed"), "true");
@@ -153,6 +158,7 @@ test("Goal Journey timeline links Chat, Library, Workflow, and Operator selectio
     assert.equal(await page.getByTestId("operator-run-journey-title").textContent(), journey.title);
     assert.equal(await page.getByTestId("operator-run-journey-stage").textContent(), "Goal · library");
 
+    await page.getByTestId("goal-journey-toggle").click();
     await page.getByTestId("goal-journey-compact").getByTestId("goal-journey-step-chat").locator("button").click();
     await page.getByTestId("mode-chat").waitFor();
     assert.equal(await page.getByTestId("mode-chat").getAttribute("aria-pressed"), "true");

@@ -31,6 +31,7 @@ export function GoalRequirementEditor({
   onUiContractSelect?: (selection: UiInteractionContractSelection) => void;
 }) {
   const requirement = useMemo(() => selection.draft.requirements.find((item) => item.id === selection.requirementId) ?? null, [selection.draft, selection.requirementId]);
+  const requirementIndex = useMemo(() => selection.draft.requirements.findIndex((item) => item.id === selection.requirementId), [selection.draft, selection.requirementId]);
   const [form, setForm] = useState<RequirementForm>(() => requirement ? formFromRequirement(requirement) : emptyForm());
   const [state, setState] = useState<{ status: "idle" | "saving" | "saved" | "error"; message?: string }>({ status: "idle" });
 
@@ -71,8 +72,22 @@ export function GoalRequirementEditor({
 
   return (
     <div data-testid="goal-requirement-editor" style={shellStyle}>
-      <Header title={requirement.title} subtitle={`${requirement.id} · ${requirement.source}${requirement.blocking ? " · blocking" : ""}`} />
+      <Header title={`${requirementIndex >= 0 ? `R${requirementIndex + 1} · ` : ""}${requirement.title}`} subtitle={`${requirement.id} · ${requirement.source}${requirement.blocking ? " · blocking" : ""}`} />
       <div style={contentStyle}>
+        <details data-testid="goal-requirement-field-guide" style={guideStyle}>
+          <summary style={guideSummaryStyle}>How to edit a requirement</summary>
+          <div style={guideBodyStyle}>
+            <div><strong>Statement:</strong> the user-visible outcome that must be true.</div>
+            <div><strong>User-visible behaviors:</strong> what a person can see or do.</div>
+            <div><strong>Business rules:</strong> decisions or constraints the implementation must obey.</div>
+            <div><strong>Acceptance criteria:</strong> testable conditions for passing; keep each criterion specific.</div>
+            <div><strong>Evidence intent / Expected artifacts:</strong> what proof and product output the evaluator should find.</div>
+            <div><strong>Verification intent:</strong> how the requirement should be checked. <strong>Interaction contract refs:</strong> linked screen/state behavior that must be reviewed visually.</div>
+          </div>
+        </details>
+        <div data-testid="goal-requirement-semantic-tags" style={{ color: "var(--text-muted)", fontSize: 11 }}>
+          <strong>Semantic coverage:</strong> {requirement.semanticTags && requirement.semanticTags.length > 0 ? requirement.semanticTags.join(" · ") : "not recorded; revise the requirement before reusing tagged Library validation"}
+        </div>
         <Field label="Title"><input value={form.title} onChange={(event) => setForm((current) => ({ ...current, title: event.target.value }))} style={inputStyle} /></Field>
         <Field label="Statement"><textarea value={form.statement} onChange={(event) => setForm((current) => ({ ...current, statement: event.target.value }))} rows={4} style={textareaStyle} /></Field>
         <Field label="User-visible behaviors"><ListField value={form.userVisibleBehaviors} onChange={(value) => setForm((current) => ({ ...current, userVisibleBehaviors: value }))} /></Field>
@@ -90,7 +105,7 @@ export function GoalRequirementEditor({
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
               {lines(form.interactionContractRefs).map((contractId) => (
                 <div key={contractId} style={{ display: "flex", gap: 4 }}>
-                  {requirement.interactionContractRefs.includes(contractId) ? <button type="button" data-testid="goal-requirement-open-ui-contract" onClick={() => onUiContractSelect?.({ draftId: selection.draftId, contractId, requirementId: requirement.id })} style={contractButtonStyle}>Open {contractId}</button> : null}
+                  {requirement.interactionContractRefs.includes(contractId) ? <button type="button" data-testid="goal-requirement-open-ui-contract" onClick={() => onUiContractSelect?.({ draftId: selection.draftId, contractId, requirementId: requirement.id })} style={contractButtonStyle}>Open UI contract · {contractId}</button> : null}
                   <button
                     type="button"
                     data-testid={`goal-requirement-remove-ui-contract-${contractId}`}
@@ -209,6 +224,9 @@ const headerStyle = { display: "flex", alignItems: "center", gap: 8, padding: "9
 const headerTitleStyle = { fontSize: 12, fontWeight: 700, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const } as const;
 const headerSubtitleStyle = { marginTop: 2, fontSize: 10, color: "var(--text-dim)", fontFamily: "var(--font-mono)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const } as const;
 const contentStyle = { flex: 1, minHeight: 0, overflow: "auto", padding: 12, display: "flex", flexDirection: "column" as const, gap: 12 } as const;
+const guideStyle = { border: "1px solid color-mix(in srgb, var(--accent) 22%, var(--border))", borderRadius: 7, background: "color-mix(in srgb, var(--accent) 5%, var(--bg-panel))", padding: "7px 9px" } as const;
+const guideSummaryStyle = { color: "var(--text)", cursor: "pointer", fontSize: 11, fontWeight: 700 } as const;
+const guideBodyStyle = { display: "flex", flexDirection: "column" as const, gap: 6, marginTop: 7, color: "var(--text-muted)", fontSize: 11, lineHeight: 1.45 } as const;
 const fieldStyle = { display: "flex", flexDirection: "column" as const, gap: 5 } as const;
 const fieldLabelStyle = { color: "var(--text-dim)", fontSize: 11, fontWeight: 650 } as const;
 const inputStyle = { width: "100%", border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-panel)", color: "var(--text)", padding: "7px 8px", fontSize: 12 } as const;

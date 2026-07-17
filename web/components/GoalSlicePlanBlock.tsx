@@ -67,11 +67,20 @@ export function GoalSlicePlanBlock({
         <span style={pillStyle}>strategy: {strategyMode}</span>
         <span style={pillStyle}>template: {templateMode}</span>
       </div>
+      <details data-testid="goal-slice-plan-guide" style={guideStyle}>
+        <summary style={guideSummaryStyle}>How slices connect the goal to execution</summary>
+        <div style={guideBodyStyle}>
+          <div><strong>Requirement IDs:</strong> the user outcomes this slice must satisfy.</div>
+          <div><strong>Outcome / mutation boundary / owner:</strong> what changes and which slice owns that change.</div>
+          <div><strong>Expected artifact refs:</strong> the product proof produced by the slice. <strong>Evaluator refs:</strong> how that proof is checked.</div>
+          <div><strong>Dependencies:</strong> the required slice order and upstream artifact handoff. Review these bindings before <em>Confirm &amp; Compose DAG</em>.</div>
+        </div>
+      </details>
       {pkg.compositionStrategy?.rationale ? (
         <p style={{ ...bodyStyle, marginTop: 8 }}>{pkg.compositionStrategy.rationale}</p>
       ) : null}
       <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 10 }}>
-        {slices.map((slice) => (
+        {slices.map((slice, index) => (
           <button
             key={slice.id}
             type="button"
@@ -86,17 +95,18 @@ export function GoalSlicePlanBlock({
             style={sliceButtonStyle}
           >
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-              <strong style={{ color: "var(--text)", fontSize: 12 }}>{slice.id}</strong>
+              <strong style={{ color: "var(--text)", fontSize: 12 }}><span style={semanticRefStyle}>S{index + 1}</span> · {slice.outcome}</strong>
               <span style={{ color: "var(--text-dim)", fontSize: 10, fontFamily: "var(--font-mono)" }}>
-                {slice.requirementIds.length} req · {slice.expectedArtifactRefs.length} artifact
+                {slice.id} · {slice.requirementIds.length} req · {slice.expectedArtifactRefs.length} artifact
               </span>
             </div>
-            <div style={{ marginTop: 5, color: "var(--text-muted)", fontSize: 12, lineHeight: 1.45, textAlign: "left" }}>
-              {slice.outcome}
+            <div style={{ marginTop: 5, color: "var(--text-muted)", fontSize: 11, lineHeight: 1.45, textAlign: "left" }}>
+              Covers requirement{slice.requirementIds.length === 1 ? "" : "s"}: {slice.requirementIds.join(", ") || "none"}
             </div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: 7 }}>
               {slice.dependsOnSliceIds.length > 0 ? <span style={miniPillStyle}>after {slice.dependsOnSliceIds.join(", ")}</span> : <span style={miniPillStyle}>no slice deps</span>}
               <span style={miniPillStyle}>{slice.stateOrArtifactOwner}</span>
+              <span style={miniPillStyle}>{slice.evaluatorContractRefs.length} evaluator{slice.evaluatorContractRefs.length === 1 ? "" : "s"}</span>
             </div>
           </button>
         ))}
@@ -208,6 +218,21 @@ const pillStyle = {
   fontSize: 10,
   fontFamily: "var(--font-mono)",
 } as const;
+
+const semanticRefStyle = { color: "var(--accent)", fontFamily: "var(--font-mono)", fontSize: 10 } as const;
+
+const guideStyle = {
+  marginTop: 10,
+  border: "1px solid var(--border)",
+  borderRadius: 6,
+  background: "var(--bg-panel)",
+  color: "var(--text-muted)",
+  fontSize: 11,
+  lineHeight: 1.45,
+} as const;
+
+const guideSummaryStyle = { cursor: "pointer", padding: "7px 9px", color: "var(--text)" } as const;
+const guideBodyStyle = { display: "grid", gap: 5, padding: "0 9px 9px" } as const;
 
 const miniPillStyle = {
   ...pillStyle,

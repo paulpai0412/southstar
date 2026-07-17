@@ -296,6 +296,12 @@ export type RequirementValidationBindingV1 = {
   requiredEvidenceKinds: string[];
   independence: "independent";
   failureClassifications: string[];
+  semanticCoverage?: {
+    requiredTags: string[];
+    artifactTags: string[];
+    evaluatorTags: string[];
+    matchedTags: string[];
+  };
 };
 
 export type GoalValidationGapKind =
@@ -308,6 +314,7 @@ export type GoalValidationGapKind =
   | "edge"
   | "procedure"
   | "evidence"
+  | "semantic"
   | "independence"
   | "manual";
 

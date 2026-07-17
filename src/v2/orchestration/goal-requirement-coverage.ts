@@ -14,9 +14,11 @@ export type GoalRequirementCoverageV1 = {
     requirementId: string;
     producerTaskIds: string[];
     artifactRefs: string[];
+    artifactContractRefs?: string[];
     evaluatorTaskIds: string[];
     evaluatorProfileRefs: string[];
     evaluatorProfileVersionRefs: string[];
+    semanticTags?: string[];
     validationBindingId?: string;
     criterionIds: string[];
     acceptanceCriteria: string[];
@@ -51,9 +53,11 @@ export function storedGoalRequirementCoverage(value: unknown): GoalRequirementCo
     requirementIds.add(entry.requirementId);
     if (!isStringArray(entry.producerTaskIds)
       || !isStringArray(entry.artifactRefs)
+      || (entry.artifactContractRefs !== undefined && !isStringArray(entry.artifactContractRefs))
       || !isStringArray(entry.evaluatorTaskIds)
       || !isStringArray(entry.evaluatorProfileRefs)
       || (entry.evaluatorProfileVersionRefs !== undefined && !isStringArray(entry.evaluatorProfileVersionRefs))
+      || (entry.semanticTags !== undefined && !isStringArray(entry.semanticTags))
       || (entry.validationBindingId !== undefined && (typeof entry.validationBindingId !== "string" || entry.validationBindingId.length === 0))
       || (entry.criterionIds !== undefined && !isStringArray(entry.criterionIds))
       || (entry.acceptanceCriteria !== undefined && !isStringArray(entry.acceptanceCriteria))
@@ -62,9 +66,11 @@ export function storedGoalRequirementCoverage(value: unknown): GoalRequirementCo
       requirementId: entry.requirementId,
       producerTaskIds: entry.producerTaskIds,
       artifactRefs: entry.artifactRefs,
+      artifactContractRefs: (entry.artifactContractRefs as string[] | undefined) ?? [],
       evaluatorTaskIds: entry.evaluatorTaskIds,
       evaluatorProfileRefs: entry.evaluatorProfileRefs,
       evaluatorProfileVersionRefs: (entry.evaluatorProfileVersionRefs as string[] | undefined) ?? [],
+      ...(entry.semanticTags !== undefined ? { semanticTags: entry.semanticTags as string[] } : {}),
       validationBindingId: entry.validationBindingId as string | undefined,
       criterionIds: (entry.criterionIds as string[] | undefined) ?? [],
       acceptanceCriteria: (entry.acceptanceCriteria as string[] | undefined) ?? [],
@@ -107,6 +113,7 @@ export function buildGoalRequirementCoverage(input: {
         requirementId: requirement.id,
         producerTaskIds: uniqueSorted(producerTasks.map((task) => task.id)),
         artifactRefs: uniqueSorted(producerTasks.flatMap((task) => task.outputArtifactRefs)),
+        artifactContractRefs: uniqueSorted(frozenBindings.flatMap((binding) => binding.artifactContractRefs)),
         evaluatorTaskIds: uniqueSorted(evaluatorTasks.map((task) => task.id)),
         evaluatorProfileRefs: uniqueSorted(frozenBindings.length > 0
           ? frozenBindings.map((binding) => binding.evaluatorProfileRef)
@@ -120,6 +127,7 @@ export function buildGoalRequirementCoverage(input: {
         requiredEvidenceKinds: uniqueSorted(frozenBindings.length > 0
           ? frozenEvidenceKinds
           : evaluatorTasks.flatMap(requiredEvidenceKindsForTask)) as EvidenceKind[],
+        ...(requirement.semanticTags ? { semanticTags: [...requirement.semanticTags] } : {}),
       };
     }),
   };

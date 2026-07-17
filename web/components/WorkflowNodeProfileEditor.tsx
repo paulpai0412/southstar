@@ -252,6 +252,14 @@ export function WorkflowNodeProfileEditor({
       </div>
 
       <div style={bodyStyle}>
+        <details data-testid="workflow-node-profile-guide" style={guideStyle}>
+          <summary style={guideSummaryStyle}>How to use Agent Profile fields</summary>
+          <div style={guideBodyStyle}>
+            <div><strong>Candidate profile</strong> applies an approved Library profile; it is the safest starting point for a DAG node.</div>
+            <div><strong>Host / model</strong> selects the execution capability. <strong>Skills, MCP, tools, and vault leases</strong> grant runtime access; only values returned by approved candidates and host validation are usable.</div>
+            <div><strong>Instruction / node prompt</strong> describe the work and evidence. Runtime profiles are inspect-only; edit the draft, save, and let validation reject unsupported bindings instead of relying on defaults.</div>
+          </div>
+        </details>
         {!editable && (
           <div style={noticeStyle}>
             Runtime profile is locked to the launched run. Edit the Workflow draft before creating a future run.
@@ -659,6 +667,19 @@ const fieldStyle = {
 } as const;
 
 const labelStyle = { fontSize: 11, color: "var(--text-dim)", fontWeight: 650 } as const;
+
+const guideStyle = {
+  border: "1px solid var(--border)",
+  borderRadius: 6,
+  background: "var(--bg-panel)",
+  color: "var(--text-muted)",
+  fontSize: 11,
+  lineHeight: 1.45,
+  padding: "0 9px 9px",
+} as const;
+
+const guideSummaryStyle = { cursor: "pointer", padding: "7px 0", color: "var(--text)" } as const;
+const guideBodyStyle = { display: "grid", gap: 5 } as const;
 
 const twoColumnGridStyle = {
   display: "grid",

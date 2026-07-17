@@ -167,6 +167,7 @@ function proposalCandidateObject(candidate: LibraryImportCandidate): LibraryObje
       scope: candidate.scope,
       status: "approved",
       artifactType: candidate.artifactType,
+      ...(candidate.semanticTags ? { semanticTags: candidate.semanticTags } : {}),
       mediaTypes: candidate.mediaTypes,
       evidenceKinds: candidate.evidenceKinds,
       validationRules: candidate.validationRules,
@@ -180,6 +181,7 @@ function proposalCandidateObject(candidate: LibraryImportCandidate): LibraryObje
       scope: candidate.scope,
       status: "approved",
       validatesArtifactRefs: candidate.validatesArtifactRefs,
+      ...(candidate.semanticTags ? { semanticTags: candidate.semanticTags } : {}),
       requiredInputs: candidate.requiredInputs,
       evidenceKinds: candidate.evidenceKinds,
       verificationModes: candidate.verificationModes,
@@ -245,6 +247,7 @@ export function buildGoalValidationImportRequest(input: {
         .map((criterion) => ({ criterionId: criterion.id, statement: criterion.statement })) ?? [],
       expectedOutcomeArtifacts: requirement?.expectedOutcomeArtifacts ?? [],
       verificationIntent: requirement?.verificationIntent ?? [],
+      ...(contractRequirement?.semanticTags ? { semanticTags: [...contractRequirement.semanticTags] } : {}),
     };
   });
   const payload = {
@@ -258,6 +261,7 @@ export function buildGoalValidationImportRequest(input: {
       .map((requirement) => ({
         id: requirement.id,
         statement: requirement.statement,
+        ...(requirement.semanticTags ? { semanticTags: [...requirement.semanticTags] } : {}),
         acceptanceCriteria: requirement.acceptanceCriteria,
         expectedOutcomeArtifacts: draftById.get(requirement.id)?.expectedOutcomeArtifacts ?? [],
         criterionIntent: draftById.get(requirement.id)?.acceptanceCriteria.map((criterion) => ({
@@ -276,6 +280,7 @@ export function buildGoalValidationImportRequest(input: {
       "Candidates may be artifact contracts and evaluator profiles required by those gaps, including their necessary validatesArtifactRefs relationship. Reuse one compatible contract across multiple gaps when its governed evidence shape and procedure genuinely cover them.",
       "Do not create unrelated domain, capability, agent, skill, tool, MCP, workflow, or Goal-specific filename candidates.",
       "Preserve the supplied Requirement and criterion meaning. Do not invent Acceptance Criteria or evidence kinds.",
+      "Preserve the supplied Requirement semanticTags. Every targeted artifact and evaluator candidate must declare semanticTags covering every supplied Requirement tag; an existing candidate without compatible tags is not a valid reuse.",
       "Prefer a boundedExistingCandidateRef when it is compatible; otherwise propose reusable domain-scoped candidates.",
       `ConfirmedGapCount: ${input.resolution.gaps.length}`,
     ].join("\n"),
@@ -293,6 +298,7 @@ async function rankGoalValidationCandidatesWithLlm(
     "Allowed verificationMode values: deterministic, browser_interaction, semantic_review, human_approval.",
     "Use only refs and versionRefs supplied below. expectedEvidenceKinds must be a subset of the confirmed criterion evidenceIntent values. Return an empty recommendations array when no compatible approved pair exists.",
     "Compatibility is semantic as well as structural. The artifact schema, required fields, validation rules, evaluator inputs, and selected procedure must be able to verify the Requirement statement and every Acceptance Criterion. Do not select a generic evidence container when the Requirement explicitly demands a domain-specific persisted outcome.",
+    "When Requirement.semanticTags is present, both the selected artifact and evaluator must declare semanticTags covering every Requirement tag. A user-approved Library candidate is not automatically compatible with every Goal. Return an empty recommendations array when semantic metadata is missing or does not cover the Requirement.",
     "Do not create, rename, approve, or repair Library objects. Do not add Requirements or Acceptance Criteria.",
     `GoalContractHash: ${goalContractHash(input.goalContract)}`,
     `Requirement: ${JSON.stringify(input.contractRequirement)}`,

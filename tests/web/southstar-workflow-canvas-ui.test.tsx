@@ -520,7 +520,8 @@ test("workflow generate proxy submits one prompt and adapts persisted mission tr
   const readModel = source("src/v2/read-models/workflow-ui.ts");
   assert.match(route, /buildWorkflowV2Url\("\/api\/v2\/run-goal"\)/);
   assert.match(route, /goalPrompt:\s*prompt/);
-  assert.match(route, /goalPrompt:\s*prompt,\s*cwd,\s*idempotencyKey,/s);
+  assert.match(route, /goalPrompt:\s*prompt,[\s\S]*?cwd,\s*idempotencyKey,/s);
+  assert.match(route, /body\.sessionId/);
   assert.match(route, /\/api\/v2\/ui\/workflow\?/);
   assert.match(route, /projectWorkflowUiReadModel/);
   assert.match(route, /"heartbeat"/);
@@ -536,6 +537,7 @@ test("Workflow renders Goal Contract receipt and hides launch controls until Rev
     'data-testid="goal-contract-card"',
     'data-testid="goal-contract-summary"',
     'data-testid="goal-coverage-count"',
+    'data-testid="goal-requirement-chain"',
     'data-testid="goal-contract-open-details"',
     "Revise goal",
   ]) assert.match(card, new RegExp(token));
@@ -579,6 +581,7 @@ test("Workflow renders Goal Contract receipt and no launch buttons after auto sc
     assert.equal(await page.locator('[data-testid="workflow-action-run"]').count(), 0);
     assert.equal(await page.locator('[data-testid="workflow-action-execute"]').count(), 0);
     assert.match(await page.locator('[data-testid="goal-coverage-count"]').textContent() ?? "", /2\/2/);
+    assert.equal(await page.locator('[data-testid="goal-requirement-chain"]').count(), 1);
     await page.locator(".workflow-review-mode-toggle").click();
     assert.equal(await page.locator('[data-testid="workflow-action-run"]').count(), 1);
     assert.equal(await page.locator('[data-testid="workflow-action-execute"]').count(), 1);
@@ -1179,7 +1182,7 @@ test("Requirement block renders coverage state and opens the existing sidecar ed
 test("Requirement block shows the exact blockers and open questions that must be resolved", async () => {
   const draft = requirementDraftView();
   draft.blockingInputs = ["Which project scope should be used?"];
-  draft.requirements[0]!.openQuestions = ["Should progress be stored locally or remotely?"];
+  draft.requirements[0]!.openQuestions = ["Should progress be stored locally or remotely? Options: A) locally; B) remotely"];
   await withBrowserHarness(`
     import React from "react";
     import { createRoot } from "react-dom/client";
@@ -1189,7 +1192,127 @@ test("Requirement block shows the exact blockers and open questions that must be
   `, async (page) => {
     assert.match(await page.locator('[data-testid="goal-requirement-blockers"]').textContent() ?? "", /Which project scope should be used\?/);
     assert.match(await page.locator('[data-testid="goal-requirement-questions-req-review"]').textContent() ?? "", /Should progress be stored locally or remotely\?/);
+    assert.equal(await page.locator('[data-testid="goal-requirement-question-answer-req-review-0"]').getAttribute("rows"), "2");
     assert.equal(await page.locator('[data-testid="goal-requirements-confirm"]').isDisabled(), true);
+  });
+});
+
+test("Requirement block explains the visual contract gate when requirements are otherwise clear", async () => {
+  const draft = requirementDraftView();
+  draft.requirements[0]!.interactionContractRefs = ["ic-review"];
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { GoalRequirementListBlock } from "./web/components/GoalRequirementListBlock";
+    const draft = ${JSON.stringify(draft)};
+    createRoot(document.getElementById("root")).render(<GoalRequirementListBlock block={{ type: "goalRequirements", draftId: "draft-goal-1", status: "requirements_review", goalRequirementDraftHash: "hash-1", draft, confirmable: false, validationIssues: [{ path: "requirements.0.interactionContractRefs.0", code: "unconfirmed_ui_interaction_contract", message: "UI interaction contract is not confirmed: ic-review" }] }} />);
+  `, async (page) => {
+    assert.match(await page.locator('[data-testid="goal-requirements-block"]').textContent() ?? "", /Review each visual contract and choose Confirm visual contract/);
+    assert.equal(await page.locator('[data-testid="goal-requirements-confirm"]').isDisabled(), true);
+  });
+});
+
+test("Requirement block applies host readiness updates without resetting the displayed draft", async () => {
+  const draft = requirementDraftView();
+  await withBrowserHarness(`
+    import React, { useState } from "react";
+    import { createRoot } from "react-dom/client";
+    import { GoalRequirementListBlock } from "./web/components/GoalRequirementListBlock";
+    const draft = ${JSON.stringify(draft)};
+    function Harness() {
+      const [confirmable, setConfirmable] = useState(false);
+      return <main>
+        <button data-testid="host-readiness" type="button" onClick={() => setConfirmable(true)}>Host confirms visual contract</button>
+        <GoalRequirementListBlock block={{ type: "goalRequirements", draftId: "draft-goal-1", status: "requirements_review", goalRequirementDraftHash: "hash-1", draft, confirmable, validationIssues: confirmable ? [] : [{ path: "requirements.0.interactionContractRefs.0", code: "unconfirmed_ui_interaction_contract", message: "UI interaction contract is not confirmed" }] }} />
+      </main>;
+    }
+    createRoot(document.getElementById("root")).render(<Harness />);
+  `, async (page) => {
+    const confirm = page.locator('[data-testid="goal-requirements-confirm"]');
+    assert.equal(await confirm.isDisabled(), true);
+    await page.getByTestId("host-readiness").click();
+    await page.waitForFunction(() => {
+      const button = document.querySelector('[data-testid="goal-requirements-confirm"]');
+      return button instanceof HTMLButtonElement && !button.disabled;
+    });
+    assert.equal(await confirm.isDisabled(), false);
+  });
+});
+
+test("Requirement block resolves goal blockers through a structured UI answer and revision", async () => {
+  const draft = requirementDraftView();
+  draft.blockingInputs = ["Which project scope should be used?"];
+  draft.requirements[0]!.openQuestions = ["Should progress be stored locally or remotely? Options: A) locally; B) remotely"];
+  const revisedDraft = { ...draft, revision: 2, draftHash: "hash-2", blockingInputs: [], requirements: draft.requirements.map((item) => ({ ...item, openQuestions: [] })) };
+  let requestBody: Record<string, unknown> | null = null;
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { GoalRequirementListBlock } from "./web/components/GoalRequirementListBlock";
+    const draft = ${JSON.stringify(draft)};
+    const revisedDraft = ${JSON.stringify(revisedDraft)};
+    createRoot(document.getElementById("root")).render(<GoalRequirementListBlock block={{ type: "goalRequirements", draftId: "draft-goal-1", status: "requirements_review", goalRequirementDraftHash: "hash-1", draft, confirmable: false, validationIssues: [{ path: "blockingInputs", code: "blocking_inputs_unresolved", message: "blocking inputs must be resolved before confirmation" }] }} />);
+  `, async (page) => {
+    await page.locator('[data-testid="goal-requirement-blocker-answer-0"]').fill("Use the current workspace project only.");
+    await page.locator('[data-testid="goal-requirement-question-answer-req-review-0"]').fill("B");
+    await page.route("**/api/workflow/planner-drafts/draft-goal-1/revise/stream", async (route) => {
+      requestBody = JSON.parse(route.request().postData() ?? "{}");
+      const payload = {
+        draftId: "draft-goal-1",
+        status: "requirements_review",
+        phase: "requirements_review",
+        goalRequirementDraftHash: "hash-2",
+        goalRequirementDraft: revisedDraft,
+        confirmable: true,
+        validationIssues: [],
+      };
+      await route.fulfill({
+        status: 200,
+        contentType: "text/event-stream",
+        body: `event: goal_requirements\ndata: ${JSON.stringify(payload)}\n\nevent: done\ndata: {}\n\n`,
+      });
+    });
+    await page.locator('[data-testid="goal-requirement-resolve"]').click();
+    await page.getByText("clarification clear").waitFor();
+    assert.equal(await page.locator('[data-testid="goal-requirement-blockers"]').count(), 0);
+    assert.equal(await page.locator('[data-testid="goal-requirements-confirm"]').isDisabled(), false);
+    assert.equal(requestBody?.expectedDraftHash, "hash-1");
+    assert.deepEqual(requestBody?.selectedRequirementIds, ["req-review"]);
+    assert.match(String(requestBody?.prompt), /Use the current workspace project only\./);
+    assert.match(String(requestBody?.prompt), /Should progress be stored locally or remotely/);
+    assert.match(String(requestBody?.prompt), /Answer: B/);
+    assert.match(String(requestBody?.prompt), /clarification-only revision/);
+  });
+});
+
+test("Requirement open questions have a compact answer and recheck flow", async () => {
+  const draft = requirementDraftView();
+  draft.requirements[0]!.blocking = false;
+  draft.requirements[0]!.openQuestions = ["Which progress source is authoritative? Options: A) local; B) remote"];
+  const revisedDraft = { ...draft, revision: 2, draftHash: "hash-2", requirements: draft.requirements.map((item) => ({ ...item, openQuestions: [] })) };
+  let requestBody: Record<string, unknown> | null = null;
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { GoalRequirementListBlock } from "./web/components/GoalRequirementListBlock";
+    const draft = ${JSON.stringify(draft)};
+    const revisedDraft = ${JSON.stringify(revisedDraft)};
+    createRoot(document.getElementById("root")).render(<GoalRequirementListBlock block={{ type: "goalRequirements", draftId: "draft-goal-1", status: "requirements_review", goalRequirementDraftHash: "hash-1", draft, confirmable: true }} />);
+  `, async (page) => {
+    assert.equal(await page.locator('[data-testid="goal-requirement-open-question-resolution"]').count(), 1);
+    await page.locator('[data-testid="goal-requirement-question-answer-req-review-0"]').fill("A");
+    await page.route("**/api/workflow/planner-drafts/draft-goal-1/revise/stream", async (route) => {
+      requestBody = JSON.parse(route.request().postData() ?? "{}");
+      await route.fulfill({
+        status: 200,
+        contentType: "text/event-stream",
+        body: `event: goal_requirements\ndata: ${JSON.stringify({ draftId: "draft-goal-1", status: "requirements_review", phase: "requirements_review", goalRequirementDraftHash: "hash-2", goalRequirementDraft: revisedDraft, confirmable: true, validationIssues: [] })}\n\nevent: done\ndata: {}\n\n`,
+      });
+    });
+    await page.locator('[data-testid="goal-requirement-resolve"]').click();
+    await page.getByText("clarification clear").waitFor();
+    assert.equal(requestBody?.expectedDraftHash, "hash-1");
+    assert.match(String(requestBody?.prompt), /Answer: A/);
   });
 });
 
@@ -1239,6 +1362,177 @@ test("visual requirement opens the existing sidecar with structured screen and s
     assert.equal(await page.locator('[data-element-id="element-reveal"]').count(), 1);
     await page.locator('[data-testid="ui-state-answer"]').click();
     assert.equal(await page.locator('[data-element-id="element-reveal"]').count(), 0);
+  });
+});
+
+test("requirement, contract, slice, and DAG labels expose purpose before technical ids", async () => {
+  const draft = requirementDraftView();
+  draft.requirements[0]!.interactionContractRefs = ["ui-review"];
+  const contract = {
+    schemaVersion: "southstar.ui_interaction_contract.v1",
+    id: "ui-review",
+    revision: 2,
+    status: "confirmed",
+    requirementIds: ["req-review"],
+    screens: [{
+      id: "screen-review",
+      title: "Review answer",
+      purpose: "Let the learner submit an answer and see feedback",
+      layout: { regions: [{ id: "main", role: "main", position: "center", childRefs: ["element-submit"] }] },
+      elements: [{ id: "element-submit", type: "button", label: "Submit answer", visibleInStates: ["question"], enabledInStates: ["question"] }],
+      states: ["question"],
+      actions: [],
+      responsiveRules: [],
+      accessibilityRules: [],
+    }],
+    flows: [],
+    criterionBindings: [],
+    contractHash: "a".repeat(64),
+  };
+  const goalDesign = {
+    schemaVersion: "southstar.goal_design_package.v2",
+    revision: 1,
+    packageHash: "package-hash",
+    goalContract: { summary: "Build a vocabulary review flow" },
+    slicePlan: {
+      slices: [{
+        id: "slice-review",
+        requirementIds: ["req-review"],
+        outcome: "Learner submits a review and receives feedback",
+        stateOrArtifactOwner: "review progress store",
+        mutationBoundary: "Only review progress may change",
+        expectedArtifactRefs: ["artifact.review-flow"],
+        evaluatorContractRefs: ["evaluator.review-flow"],
+        dependsOnSliceIds: [],
+        dependencyArtifactRefs: [],
+      }],
+    },
+    compositionStrategy: { mode: "sequential", rationale: "Validate the review flow before reporting completion." },
+  };
+  await withBrowserHarness(`
+    import React, { useState } from "react";
+    import { createRoot } from "react-dom/client";
+    import { GoalRequirementListBlock } from "./web/components/GoalRequirementListBlock";
+    import { GoalRequirementEditor } from "./web/components/GoalRequirementEditor";
+    import { UiInteractionContractViewer } from "./web/components/UiInteractionContractViewer";
+    import { GoalSlicePlanBlock } from "./web/components/GoalSlicePlanBlock";
+    const draft = ${JSON.stringify(draft)};
+    const contract = ${JSON.stringify(contract)};
+    const goalDesign = ${JSON.stringify(goalDesign)};
+    function Harness() {
+      const [view, setView] = useState("requirements");
+      return <main>
+        <button data-testid="show-requirement" onClick={() => setView("requirement")}>requirement</button>
+        <button data-testid="show-contract" onClick={() => setView("contract")}>contract</button>
+        <button data-testid="show-slice" onClick={() => setView("slice")}>slice</button>
+        {view === "requirements" ? <GoalRequirementListBlock block={{ type: "goalRequirements", draftId: "draft-goal-1", status: "requirements_review", goalRequirementDraftHash: "hash-1", draft, confirmable: false }} onRequirementSelect={() => setView("requirement")} /> : null}
+        {view === "requirement" ? <GoalRequirementEditor selection={{ draftId: "draft-goal-1", expectedDraftHash: "hash-1", requirementId: "req-review", draft, status: "requirements_review", confirmable: false }} onUiContractSelect={() => setView("contract")} /> : null}
+        {view === "contract" ? <UiInteractionContractViewer selection={{ draftId: "draft-goal-1", contractId: "ui-review", requirementId: "req-review" }} /> : null}
+        {view === "slice" ? <GoalSlicePlanBlock block={{ type: "goalDesign", draftId: "draft-goal-1", status: "ready_for_review", goalDesignPackageHash: "package-hash", package: goalDesign }} /> : null}
+      </main>;
+    }
+    createRoot(document.getElementById("root")).render(<Harness />);
+  `, async (page) => {
+    assert.match(await page.locator('[data-testid="goal-requirement-item-req-review"]').textContent() ?? "", /Review flow/);
+    await page.locator('[data-testid="goal-requirement-item-req-review"]').click();
+    assert.match(await page.locator('[data-testid="goal-requirement-editor"]').textContent() ?? "", /Review flow/);
+    await page.route("**/api/workflow/planner-drafts/draft-goal-1/ui-contracts/ui-review", async (route) => {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ result: contract }) });
+    });
+    await page.locator('[data-testid="goal-requirement-open-ui-contract"]').click();
+    assert.match(await page.locator('[data-testid="ui-interaction-contract-viewer"]').textContent() ?? "", /Let the learner submit an answer and see feedback/);
+    await page.locator('[data-testid="show-slice"]').click();
+    assert.match(await page.locator('[data-testid="goal-slice-plan-item-slice-review"]').textContent() ?? "", /Learner submits a review and receives feedback/);
+  });
+});
+
+test("DAG node projection carries existing goal purpose and lineage fields", () => {
+  const adapter = source("web/lib/workflow/v2-library-adapter.ts");
+  const block = source("web/components/WorkflowDagBlock.tsx");
+  const node = source("web/components/workflow-canvas/WorkflowTaskNode.tsx");
+  assert.match(adapter, /sliceId: task\.sliceId/);
+  assert.match(adapter, /purpose: task\.purpose/);
+  assert.match(block, /sliceId: node\.sliceId/);
+  assert.match(block, /requirementIds: node\.requirementIds/);
+  assert.match(node, /data-node-field="purpose"/);
+  assert.match(node, /data-node-field="sliceId"/);
+  assert.match(node, /data-node-field="requirementIds"/);
+});
+
+test("workflow generation exposes live stage and heartbeat progress while the stream is open", () => {
+  const hook = source("web/hooks/useAgentSession.ts");
+  const chat = source("web/components/ChatWindow.tsx");
+  assert.match(hook, /workflowProgress/);
+  assert.match(hook, /setWorkflowProgress\(\{[^}]*stage/);
+  assert.match(hook, /elapsedMs: heartbeat\.elapsedMs/);
+  assert.match(chat, /WorkflowProgressBar/);
+  assert.match(chat, /workflowProgress \? <WorkflowProgressBar progress=\{workflowProgress\}/);
+  assert.match(chat, /data-testid="workflow-live-progress"/);
+});
+
+test("workflow review surfaces input, contract, slice, and profile guidance in the current screens", async () => {
+  const draft = requirementDraftView();
+  draft.blockingInputs = ["Which workspace scope should be used? Options: A) current project; B) another project"];
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { GoalRequirementListBlock } from "./web/components/GoalRequirementListBlock";
+    import { GoalRequirementEditor } from "./web/components/GoalRequirementEditor";
+    import { GoalSlicePlanBlock } from "./web/components/GoalSlicePlanBlock";
+    import { WorkflowStaticNodeProfile } from "./web/components/WorkflowStaticNodeProfile";
+    const draft = ${JSON.stringify(draft)};
+    const packageValue = { goalContract: { summary: "Build a review flow" }, slicePlan: { slices: [{ id: "slice-review", requirementIds: ["req-review"], outcome: "Submit a review and persist feedback", stateOrArtifactOwner: "review store", mutationBoundary: "review only", expectedArtifactRefs: ["artifact.review"], evaluatorContractRefs: ["evaluator.review"], dependsOnSliceIds: [], dependencyArtifactRefs: [] }] }, compositionStrategy: { mode: "single-run", rationale: "One requirement boundary." } };
+    function Harness() {
+      return <main>
+        <GoalRequirementListBlock block={{ type: "goalRequirements", draftId: "draft-goal-1", status: "requirements_review", goalRequirementDraftHash: "hash-1", draft, confirmable: false, validationIssues: [{ path: "blockingInputs", code: "blocking_inputs_unresolved", message: "answer required" }] }} />
+        <GoalRequirementEditor selection={{ draftId: "draft-goal-1", expectedDraftHash: "hash-1", requirementId: "req-review", draft, status: "requirements_review", confirmable: false }} />
+        <GoalSlicePlanBlock block={{ type: "goalDesign", draftId: "draft-goal-1", status: "ready_for_review", goalDesignPackageHash: "package-hash", package: packageValue }} />
+        <WorkflowStaticNodeProfile node={{ id: "task-review", taskId: "task-review", label: "Verify review flow", role: "checker", agentRef: "agent.checker", profileRef: "profile.checker", profileResourcePath: "profiles/checker.yaml", provider: "pi", model: "pi-agent-default", level: 0, state: "ready" }} />
+      </main>;
+    }
+    createRoot(document.getElementById("root")).render(<Harness />);
+  `, async (page) => {
+    assert.match(await page.getByTestId("goal-requirements-block").innerText(), /How to answer|Answer and recheck|Confirm requirements/);
+    assert.match(await page.getByTestId("goal-requirement-editor").innerText(), /How to edit a requirement|Acceptance criteria|Expected artifacts/);
+    assert.match(await page.getByTestId("goal-slice-plan-block").innerText(), /How slices connect|requirement|artifact|evaluator/i);
+    assert.match(await page.getByTestId("workflow-static-node-profile").innerText(), /How Agent Profile works|approved|runtime/i);
+  });
+});
+
+test("journey, DAG review, and Library import screens explain the next user action", async () => {
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { GoalJourneyTimeline } from "./web/components/GoalJourneyTimeline";
+    import { WorkflowDagBlock } from "./web/components/WorkflowDagBlock";
+    import { LibraryCandidateMessageBlock } from "./web/components/library/LibraryCandidateMessageBlock";
+    const journey = { id: "goal-1", title: "Build a riddle app", currentStage: "library", steps: [
+      { id: "chat", label: "Chat", description: "Goal intake", status: "complete", mode: "chat" },
+      { id: "requirements", label: "Requirements", description: "Goal contract", status: "complete", mode: "workflow" },
+      { id: "library", label: "Library", description: "Import and coverage", status: "current", mode: "library" },
+      { id: "workflow", label: "Workflow", description: "DAG plan", status: "pending", mode: "workflow" },
+      { id: "operator", label: "Operator", description: "Run and evaluate", status: "pending", mode: "operator" },
+      { id: "complete", label: "Complete", description: "Goal outcome", status: "pending", mode: "operator" },
+    ] };
+    const dag = ${JSON.stringify(scheduledDagWithMission())};
+    dag.runId = undefined;
+    dag.mission = undefined;
+    const candidate = { objectKey: "skill.browser", kind: "skill", title: "Browser verification", scope: "approved", selectedByDefault: true, description: "Browser evidence" };
+    function Harness() {
+      return <main>
+        <GoalJourneyTimeline journey={journey} variant="detail" />
+        <WorkflowDagBlock dag={dag} />
+        <LibraryCandidateMessageBlock draftId="draft-1" candidates={[candidate]} status="draft" onInstall={() => undefined} />
+      </main>;
+    }
+    createRoot(document.getElementById("root")).render(<Harness />);
+  `, async (page) => {
+    assert.equal(await page.getByTestId("goal-journey-guide").count(), 1);
+    assert.match(await page.getByTestId("goal-journey-guide").innerText(), /How to follow|next step|Goal journey/i);
+    assert.equal(await page.getByTestId("workflow-dag-guide").count(), 1);
+    assert.match(await page.getByTestId("workflow-dag-guide").innerText(), /How to review|DAG|Validate|profile/i);
+    assert.equal(await page.getByTestId("library-import-guide").count(), 1);
+    assert.match(await page.getByTestId("library-import-guide").innerText(), /How to choose|coverage|approved|Install/i);
   });
 });
 
@@ -1367,6 +1661,8 @@ test("chat Goal Requirements events replace the AppShell anchor, not only editor
   assert.match(shell, /expectedDraftHash: content\.goalRequirementDraftHash/);
   assert.match(shell, /goalRequirementsContentShouldReplace\(currentOverride, content\)/);
   assert.match(shell, /goalRequirementRevisionAnchorRef\.current = next/);
+  const goalRequirementsHandler = shell.slice(shell.indexOf("const handleGoalRequirementsContent"), shell.indexOf("const handleUiContractReviewChange"));
+  assert.match(goalRequirementsHandler, /persistGoalWorkflowState\(\[content\]\)/);
 });
 
 test("Goal Requirements projection rejects an equal-revision late review frame", async () => {

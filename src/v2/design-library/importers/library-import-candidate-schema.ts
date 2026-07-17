@@ -22,7 +22,7 @@ export const LIBRARY_IMPORT_CANDIDATE_COMMON_FIELDS = [
 ] as const;
 
 const LIBRARY_FILE_CONTRACT_COMMON_FIELDS = [
-  "objectKey", "kind", "title", "scope", "description",
+  "objectKey", "kind", "title", "scope", "description", "semanticTags",
 ] as const;
 
 export type LibraryContractSchemaSurface = "import_candidate" | "library_file";
@@ -36,11 +36,11 @@ export const LIBRARY_IMPORT_CANDIDATE_KIND_FIELDS: Record<LibraryImportCandidate
   capability: ["requiredOperations"],
   artifact: [
     "artifactType", "mediaTypes", "evidenceKinds", "validationRules", "schemaRef", "requiredFields",
-    "provenanceRequirements",
+    "provenanceRequirements", "semanticTags",
   ],
   evaluator: [
     "validatesArtifactRefs", "requiredInputs", "evidenceKinds", "verificationModes", "verificationProcedures",
-    "independencePolicy", "resultSchemaRef", "failureClassifications",
+    "independencePolicy", "resultSchemaRef", "failureClassifications", "semanticTags",
   ],
 };
 
@@ -97,8 +97,10 @@ export function normalizeLibraryImportCandidateKindFields(
   }
   if (kind === "artifact") {
     const evidenceKinds = strictEvidenceKinds(record.evidenceKinds, `candidates.${objectKey}.evidenceKinds`);
+    const semanticTags = optionalStringArray(record.semanticTags, `candidates.${objectKey}.semanticTags`);
     return {
       ...(description ? { description } : {}),
+      ...(semanticTags ? { semanticTags } : {}),
       artifactType: requiredNonEmptyString(record.artifactType, `candidates.${objectKey}.artifactType`),
       mediaTypes: strictStringArray(record.mediaTypes, `candidates.${objectKey}.mediaTypes`),
       evidenceKinds,
@@ -111,6 +113,7 @@ export function normalizeLibraryImportCandidateKindFields(
 
   const verificationModes = strictVerificationModes(record.verificationModes, `candidates.${objectKey}.verificationModes`);
   const evidenceKinds = strictEvidenceKinds(record.evidenceKinds, `candidates.${objectKey}.evidenceKinds`);
+  const semanticTags = optionalStringArray(record.semanticTags, `candidates.${objectKey}.semanticTags`);
   const procedures = normalizeVerificationProcedures(record.verificationProcedures, objectKey, verificationModes, evidenceKinds);
   const validatesArtifactRefs = strictStringArray(record.validatesArtifactRefs, `candidates.${objectKey}.validatesArtifactRefs`);
   if (validatesArtifactRefs.some((ref) => !ref.startsWith("artifact."))) {
@@ -125,6 +128,7 @@ export function normalizeLibraryImportCandidateKindFields(
   }
   return {
     ...(description ? { description } : {}),
+    ...(semanticTags ? { semanticTags } : {}),
     validatesArtifactRefs,
     requiredInputs: strictStringArray(record.requiredInputs, `candidates.${objectKey}.requiredInputs`),
     evidenceKinds,
@@ -209,4 +213,8 @@ function requiredNonEmptyString(value: unknown, label: string): string {
 
 function optionalNonEmptyString(value: unknown, label: string): string | undefined {
   return value === undefined ? undefined : requiredNonEmptyString(value, label);
+}
+
+function optionalStringArray(value: unknown, label: string): string[] | undefined {
+  return value === undefined ? undefined : strictStringArray(value, label);
 }

@@ -43,11 +43,20 @@ export function GoalContractInspector({ draftId, runId, refreshKey = 0 }: { draf
   return (
     <div data-testid="goal-contract-inspector" className="goal-contract-inspector">
       <header><span>Goal Contract</span><strong>{contract.summary}</strong></header>
+      <details data-testid="goal-contract-inspector-guide" className="goal-contract-inspector-guide">
+        <summary>How to use this contract and evaluator view</summary>
+        <div>
+          <p>The Goal Contract is the shared mission definition. It is not the DAG itself: the DAG is the execution plan that must satisfy this contract.</p>
+          <p><strong>Requirement evaluator result</strong> is the pass/fail evidence for a requirement. Artifact refs identify the product output; coverage maps requirement → producer task → artifact → evaluator.</p>
+          <p>Use this view to check persisted runtime truth after refresh. If evidence or coverage is missing, revise the contract or workflow rather than treating a technical ID as proof.</p>
+        </div>
+      </details>
       <InspectorSection title="Requirements">
         <div data-testid="goal-contract-requirements">
           {contract.requirements.map((requirement) => (
             <article key={requirement.id}>
               <strong>{requirement.statement}</strong>
+              {requirement.semanticTags && requirement.semanticTags.length > 0 ? <small>Semantic tags: {requirement.semanticTags.join(" · ")}</small> : null}
               <ul>{requirement.acceptanceCriteria.map((criterion) => <li key={criterion}>{criterion}</li>)}</ul>
             </article>
           ))}
@@ -67,8 +76,10 @@ export function GoalContractInspector({ draftId, runId, refreshKey = 0 }: { draf
             ...mission.coverage.entries.flatMap((entry) => [
               `${entry.requirementId} producers: ${entry.producerTaskIds.join(", ") || "none"}`,
               `${entry.requirementId} artifacts: ${entry.artifactRefs.join(", ") || "none"}`,
+              `${entry.requirementId} artifact contracts: ${(entry.artifactContractRefs ?? []).join(", ") || "none"}`,
               `${entry.requirementId} evaluator tasks: ${entry.evaluatorTaskIds.join(", ") || "none"}`,
               `${entry.requirementId} evaluator profiles: ${entry.evaluatorProfileRefs.join(", ") || "none"}`,
+              `${entry.requirementId} semantic tags: ${(entry.semanticTags ?? []).join(", ") || "legacy / not recorded"}`,
               `${entry.requirementId} evidence kinds: ${entry.requiredEvidenceKinds.join(", ") || "none"}`,
             ]),
           ]} />

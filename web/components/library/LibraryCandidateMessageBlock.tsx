@@ -84,6 +84,15 @@ export function LibraryCandidateMessageBlock({
             <div style={{ fontSize: 12, color: "var(--text-dim)", overflowWrap: "anywhere" }}>{draftId}</div>
           </div>
         </div>
+        <details data-testid="library-import-guide" style={importGuideStyle}>
+          <summary style={importGuideSummaryStyle}>How to choose and import Library candidates</summary>
+          <div style={importGuideBodyStyle}>
+            <div><strong>Candidate title</strong> is the readable capability; the object key is the technical identity used for graph sync.</div>
+            <div><strong>Semantic tags</strong> describe the reusable outcome vocabulary. Confirm them before installing; they are later checked against each confirmed Requirement and are not a blanket approval for every Goal.</div>
+            <div><strong>Covers</strong> lines show which requirement and criterion the candidate closes. Select candidates only when their capability and scope fit the goal.</div>
+            <div>Install selected candidates to write them into the approved Library graph. A complete blocking-gap proposal may require all candidates and will keep selection locked.</div>
+          </div>
+        </details>
         <div
           data-testid="library-import-candidates-controls"
           style={{ display: "flex", alignItems: "center", justifyContent: "flex-start", gap: 6, flexWrap: "wrap" }}
@@ -256,6 +265,15 @@ function CandidateRow({
               {candidate.sourcePath ? (
                 <span style={{ fontSize: 11, color: "var(--text-dim)", overflowWrap: "anywhere" }}>{candidate.sourcePath}</span>
               ) : null}
+              {candidate.semanticTags && candidate.semanticTags.length > 0 ? (
+                <span data-testid={`library-candidate-semantic-tags-${candidate.objectKey}`} style={{ fontSize: 11, color: "var(--text-muted)", overflowWrap: "anywhere" }}>
+                  Semantic coverage: {candidate.semanticTags.join(" · ")}
+                </span>
+              ) : (
+                <span data-testid={`library-candidate-semantic-tags-${candidate.objectKey}`} style={{ fontSize: 11, color: "#fbbf24", overflowWrap: "anywhere" }}>
+                  Semantic coverage: missing — do not install for a tagged Requirement
+                </span>
+              )}
               {coverageTargets && coverageTargets.length > 0 ? (
                 <span data-testid={`library-candidate-coverage-${candidate.objectKey}`} style={{ display: "grid", gap: 2, marginTop: 2 }}>
                   {coverageTargets.map((target) => (
@@ -269,3 +287,15 @@ function CandidateRow({
           </label>
   );
 }
+
+const importGuideStyle = {
+  border: "1px solid var(--border)",
+  borderRadius: 6,
+  background: "var(--bg)",
+  color: "var(--text-muted)",
+  fontSize: 11,
+  lineHeight: 1.45,
+} as const;
+
+const importGuideSummaryStyle = { cursor: "pointer", padding: "6px 8px", color: "var(--text)" } as const;
+const importGuideBodyStyle = { display: "grid", gap: 5, padding: "0 8px 8px" } as const;
