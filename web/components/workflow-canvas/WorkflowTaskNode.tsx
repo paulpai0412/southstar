@@ -10,6 +10,10 @@ export function WorkflowTaskNode(props: NodeProps<WorkflowTaskFlowNode>) {
   const roleRef = props.data.roleRef ?? "unassigned";
   const agentProfileRef = props.data.agentProfileRef ?? "default";
   const artifactKind = props.data.artifactKind ?? "implementation_report";
+  const purpose = props.data.purpose?.trim();
+  const requirementIds = props.data.requirementIds ?? [];
+  const sliceId = props.data.sliceId?.trim();
+  const expectedOutputs = props.data.expectedOutputs ?? [];
   const badges = props.data.badges;
   const attention = props.data.attention;
 
@@ -26,6 +30,17 @@ export function WorkflowTaskNode(props: NodeProps<WorkflowTaskFlowNode>) {
           {status}
         </span>
       </header>
+      {purpose ? <p className="ss-flow-node-purpose" data-node-field="purpose">Does: {purpose}</p> : null}
+      {sliceId || requirementIds.length > 0 ? (
+        <>
+          <p className="ss-flow-node-lineage" data-node-field="requirementIds">
+            Covers requirements: {requirementIds.length > 0 ? requirementIds.join(", ") : "—"}
+          </p>
+          {sliceId ? <p className="ss-flow-node-lineage" data-node-field="sliceId">Produces slice: {sliceId}</p> : null}
+        </>
+      ) : null}
+      {props.data.nodeType ? <p className="ss-flow-node-lineage" data-node-field="nodeType">Work type: {props.data.nodeType}</p> : null}
+      {expectedOutputs.length > 0 ? <p className="ss-flow-node-lineage" data-node-field="expectedOutputs">Produces: {expectedOutputs.join(", ")}</p> : null}
       <p className="ss-flow-node-ref" data-node-field="taskId">
         taskId: {props.data.id}
       </p>

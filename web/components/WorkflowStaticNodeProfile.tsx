@@ -16,6 +16,15 @@ export function WorkflowStaticNodeProfile({ node }: { node: WorkflowDagNode }) {
         </div>
       </div>
       <div style={{ flex: 1, overflow: "auto", padding: 12, display: "flex", flexDirection: "column", gap: 14 }}>
+        <details data-testid="workflow-static-node-profile-guide" style={guideStyle}>
+          <summary style={guideSummaryStyle}>How Agent Profile works</summary>
+          <div style={guideBodyStyle}>
+            <div><strong>Agent Profile</strong> binds this DAG task to its role, approved Library profile, host adapter, model, instructions, and grants.</div>
+            <div><strong>Role</strong> explains responsibility; <strong>Agent / Profile</strong> identify the approved reusable capability; <strong>Host</strong> is the runtime provider/model binding.</div>
+            <div>Not every profile field is freely usable. Candidate approval and host capability validation decide what can run. Missing or unsupported bindings block the workflow; they do not silently become defaults.</div>
+            <div>Use the task purpose and requirement/slice lineage below to check that the profile is doing the intended work.</div>
+          </div>
+        </details>
         <section style={cardStyle}>
           <header style={headerStyle}>
             <h2 style={titleStyle}>Profile summary</h2>
@@ -27,6 +36,10 @@ export function WorkflowStaticNodeProfile({ node }: { node: WorkflowDagNode }) {
             <dt style={termStyle}>Agent</dt><dd style={valueStyle}>{node.agentRef || "agent:auto"}</dd>
             <dt style={termStyle}>Profile</dt><dd style={valueStyle}>{node.profileRef || "profile:auto"}</dd>
             <dt style={termStyle}>Host</dt><dd style={valueStyle}>{[node.provider, node.model].filter(Boolean).join(" / ") || "provider:auto / model:auto"}</dd>
+            <dt style={termStyle}>Does</dt><dd style={valueStyle}>{node.purpose || "Purpose is not attached to this task."}</dd>
+            <dt style={termStyle}>Covers</dt><dd style={valueStyle}>{node.requirementIds?.join(", ") || "requirements not attached"}</dd>
+            <dt style={termStyle}>Slice</dt><dd style={valueStyle}>{node.sliceId || "slice not attached"}</dd>
+            <dt style={termStyle}>Work type</dt><dd style={valueStyle}>{node.nodeType || "task"}</dd>
             <dt style={termStyle}>State</dt><dd style={valueStyle}>{node.state}</dd>
           </dl>
         </section>
@@ -105,3 +118,15 @@ const bodyStyle = {
   fontSize: 12,
   lineHeight: 1.5,
 } as const;
+
+const guideStyle = {
+  border: "1px solid var(--border)",
+  borderRadius: 6,
+  background: "var(--bg-panel)",
+  color: "var(--text-muted)",
+  fontSize: 11,
+  lineHeight: 1.45,
+} as const;
+
+const guideSummaryStyle = { cursor: "pointer", padding: "7px 9px", color: "var(--text)" } as const;
+const guideBodyStyle = { display: "grid", gap: 5, padding: "0 9px 9px" } as const;

@@ -126,6 +126,12 @@ export type PlannerDraftTaskSummary = {
   dependsOn: string[];
   roleRef?: string;
   agentProfileRef?: string;
+  /** Existing task prompt lineage projected for the workflow UI. */
+  requirementIds?: string[];
+  sliceId?: string;
+  purpose?: string;
+  nodeType?: string;
+  expectedOutputs?: string[];
 };
 
 export type PostgresPlannerDraftOrchestrationView = Omit<PostgresPlannerDraftResult, "goalContractHash"> & {
@@ -1929,6 +1935,7 @@ function summarizeWorkflowTasks(workflow: SouthstarWorkflowManifest): PlannerDra
     dependsOn: task.dependsOn,
     ...(task.roleRef ? { roleRef: task.roleRef } : {}),
     ...(task.agentProfileRef ? { agentProfileRef: task.agentProfileRef } : {}),
+    ...taskSemanticSummary(task.promptInputs),
   }));
 }
 
@@ -1945,6 +1952,7 @@ function summarizeWorkflowTasksFromPayload(tasksValue: unknown): PlannerDraftTas
       dependsOn: parseDependsOn(task.dependsOn),
       ...(stringValue(task.roleRef) ? { roleRef: stringValue(task.roleRef) } : {}),
       ...(stringValue(task.agentProfileRef) ? { agentProfileRef: stringValue(task.agentProfileRef) } : {}),
+      ...taskSemanticSummary(task.promptInputs),
     });
   }
   return summaries;
@@ -2007,6 +2015,11 @@ function parseTaskSummaries(value: unknown): PlannerDraftTaskSummary[] {
       dependsOn: parseDependsOn(task.dependsOn),
       ...(stringValue(task.roleRef) ? { roleRef: stringValue(task.roleRef) } : {}),
       ...(stringValue(task.agentProfileRef) ? { agentProfileRef: stringValue(task.agentProfileRef) } : {}),
+      ...(Array.isArray(task.requirementIds) ? { requirementIds: stringArray(task.requirementIds) } : {}),
+      ...(stringValue(task.sliceId) ? { sliceId: stringValue(task.sliceId) } : {}),
+      ...(stringValue(task.purpose) ? { purpose: stringValue(task.purpose) } : {}),
+      ...(stringValue(task.nodeType) ? { nodeType: stringValue(task.nodeType) } : {}),
+      ...(Array.isArray(task.expectedOutputs) ? { expectedOutputs: stringArray(task.expectedOutputs) } : {}),
     });
   }
   return summaries;
@@ -2027,6 +2040,27 @@ function required<T>(value: T | undefined, message: string): T {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.length > 0) : [];
+}
+
+function taskSemanticSummary(promptInputs: unknown): Pick<PlannerDraftTaskSummary, "requirementIds" | "sliceId" | "purpose" | "nodeType" | "expectedOutputs"> {
+  const inputs = asRecord(promptInputs);
+  const nodePromptSpec = asRecord(inputs.nodePromptSpec);
+  const requirementIds = stringArray(inputs.requirementIds);
+  const sliceId = stringValue(inputs.sliceId);
+  const purpose = stringValue(nodePromptSpec.goal);
+  const nodeType = stringValue(nodePromptSpec.nodeType);
+  const expectedOutputs = stringArray(nodePromptSpec.expectedOutputs);
+  return {
+    ...(requirementIds.length > 0 ? { requirementIds } : {}),
+    ...(sliceId ? { sliceId } : {}),
+    ...(purpose ? { purpose } : {}),
+    ...(nodeType ? { nodeType } : {}),
+    ...(expectedOutputs.length > 0 ? { expectedOutputs } : {}),
+  };
 }
 
 function inferDraftOrchestrationMode(summary: Record<string, unknown>): "llm-constrained" {

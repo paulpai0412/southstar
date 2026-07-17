@@ -179,6 +179,7 @@ export type GoalRequirementRevisionInput = {
   expectedDraftHash: string;
   requirementId?: string;
   patch: GoalRequirementDraftRevisionPatchV1 | GoalRequirementDraftRevisionOperation;
+  uiInteractionContracts?: UiInteractionContractV1[];
   actor?: string;
 };
 
@@ -525,7 +526,20 @@ export async function reviseGoalRequirementPg(
     invalidated.slicePlan ||= Boolean(payload.slicePlan || payload.goalDesignPackage || payload.goalDesignPackageHash);
     invalidated.dagDraft ||= Boolean(payload.workflow || payload.workflowManifest || payload.composition);
     const nextPayload = withoutGoalRequirementDerived(payload);
-    const uiInteractionContracts: UiInteractionContractV1[] = [];
+    const currentUiInteractionContracts = uiInteractionContractsFromStored(payload.uiInteractionContracts, current);
+    const uiInteractionContracts = input.uiInteractionContracts
+      ? await rebaseGeneratedUiInteractionContracts(tx, input.draftId, next, currentUiInteractionContracts, input.uiInteractionContracts)
+      : currentUiInteractionContracts.filter((contract) => validateUiInteractionContract(contract, next).length === 0);
+    for (const contract of uiInteractionContracts) {
+      if (!currentUiInteractionContracts.some((entry) => entry.id === contract.id && entry.contractHash === contract.contractHash && entry.revision === contract.revision)) {
+        await persistUiInteractionContractRevisionPg(tx, {
+          draftId: input.draftId,
+          contract,
+          requirementDraft: next,
+          actor: input.actor,
+        });
+      }
+    }
     const readiness = goalRequirementReviewReadiness(next, "requirements_review", uiInteractionContracts);
     const updatedPayload = {
       ...nextPayload,
@@ -533,7 +547,7 @@ export async function reviseGoalRequirementPg(
       goalRequirementDraftHash: next.draftHash,
       goalDesignPhase: "requirements_review" satisfies GoalDesignPhase,
       uiInteractionContracts,
-      uiInteractionContractHashes: {},
+      uiInteractionContractHashes: Object.fromEntries(uiInteractionContracts.map((contract) => [contract.id, contract.contractHash])),
       ...readiness,
     };
     const updatedSummary = {
@@ -605,10 +619,17 @@ export async function reviseGoalRequirementFromChatPg(
     onDelta: input.onDelta,
   });
   if (result.kind === "needs_input") return result;
+  const generatedUiInteractionContracts = input.requirementInterpreter.designUiInteractionContracts
+    ? await input.requirementInterpreter.designUiInteractionContracts({
+      requirementDraft: result.draft,
+      goalDesignSkill: await loadGoalDesignSkillPg(db),
+    })
+    : undefined;
   const persisted = await reviseGoalRequirementPg(db, {
     draftId: input.draftId,
     expectedDraftHash: input.expectedDraftHash,
     patch: { kind: "replace", draft: result.draft },
+    ...(generatedUiInteractionContracts ? { uiInteractionContracts: generatedUiInteractionContracts } : {}),
     actor: input.actor,
   });
   return persisted;
@@ -1649,6 +1670,42 @@ function withoutGoalRequirementDerived(payload: Record<string, unknown>): Record
     ...rest
   } = payload;
   return rest;
+}
+
+async function rebaseGeneratedUiInteractionContracts(
+  db: SouthstarDb,
+  draftId: string,
+  requirementDraft: GoalRequirementDraftV1,
+  current: UiInteractionContractV1[],
+  generated: UiInteractionContractV1[],
+): Promise<UiInteractionContractV1[]> {
+  const currentById = new Map(current.map((contract) => [contract.id, contract]));
+  const ids = new Set<string>();
+  return await Promise.all(generated.map(async (candidate) => {
+    if (ids.has(candidate.id)) throw new Error(`duplicate regenerated UI interaction contract: ${candidate.id}`);
+    ids.add(candidate.id);
+    const previous = currentById.get(candidate.id);
+    const latest = await db.maybeOne<{ revision: number | null }>(
+      `select max((payload_json->>'revision')::int) as revision
+         from southstar.runtime_resources
+        where resource_type = 'ui_interaction_contract_revision'
+          and resource_key like $1`,
+      [`${draftId}:${candidate.id}:revision:%`],
+    );
+    const latestRevision = latest?.revision ?? 0;
+    const parentRevision = Math.max(previous?.revision ?? 0, latestRevision);
+    return finalizeUiInteractionContract({
+      requirementIds: candidate.requirementIds,
+      screens: candidate.screens,
+      flows: candidate.flows,
+      criterionBindings: candidate.criterionBindings,
+    }, requirementDraft, {
+      id: candidate.id,
+      revision: parentRevision + 1,
+      ...(parentRevision > 0 ? { parentRevision } : {}),
+      status: "draft",
+    });
+  }));
 }
 
 async function assertNoMaterializedGoalRequirementRunTx(db: SouthstarDb, draftId: string): Promise<void> {

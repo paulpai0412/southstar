@@ -6,7 +6,7 @@ import type { GoalRequirementsConfirmation, GoalRequirementsConfirmationResult }
 import { MessageView } from "./MessageView";
 import { ChatInput, type ChatInputHandle } from "./ChatInput";
 import { ChatMinimap, useMessageRefs } from "./ChatMinimap";
-import { useAgentSession, type AgentPhase, type NoticeItem } from "@/hooks/useAgentSession";
+import { useAgentSession, type AgentPhase, type NoticeItem, type WorkflowProgress } from "@/hooks/useAgentSession";
 import { useAudio } from "@/hooks/useAudio";
 import { useDragDrop } from "@/hooks/useDragDrop";
 import type { SessionStatsInfo } from "@/lib/pi-types";
@@ -134,6 +134,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
     notices, extensionDialog, extensionStatuses, extensionWidgets, respondToExtensionUi,
     isAutoModelSelection,
     agentPhase,
+    workflowProgress,
     isNew,
     messagesEndRef, scrollContainerRef,
     lastUserMsgRef,
@@ -396,6 +397,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
               }}
             >
               <ExtensionStatusBar statuses={extensionStatuses} />
+              {workflowMode && agentRunning && workflowProgress ? <WorkflowProgressBar progress={workflowProgress} /> : null}
               <ExtensionWidgets widgets={aboveEditorWidgets} />
 
             {(() => {
@@ -446,6 +448,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
                     prevTimestamp={idx > 0 ? (messages[idx - 1] as import("@/lib/types").AgentMessage & { timestamp?: number }).timestamp : undefined}
                     workflowCwd={workflowCwd}
                     onWorkflowDagNodeSelect={onWorkflowDagNodeSelect}
+                    onGoalRequirements={onGoalRequirements}
                     onGoalSliceSelect={onGoalSliceSelect}
                     onConfirmGoalDesign={onConfirmGoalDesign ?? handleConfirmGoalDesign}
                     onGoalRequirementSelect={onGoalRequirementSelect}
@@ -473,7 +476,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
             })()}
 
             {streamState.isStreaming && streamState.streamingMessage && (
-              <MessageView message={streamState.streamingMessage as AgentMessage} isStreaming modelNames={modelNames} workflowCwd={workflowCwd} onWorkflowDagNodeSelect={onWorkflowDagNodeSelect} onGoalSliceSelect={onGoalSliceSelect} onConfirmGoalDesign={onConfirmGoalDesign ?? handleConfirmGoalDesign} onGoalRequirementSelect={onGoalRequirementSelect} onConfirmRequirements={onConfirmRequirements} goalRequirementContentOverride={goalRequirementContentOverride} goalDesignContentOverride={goalDesignContentOverride} goalLibraryImportCandidatesOverride={goalLibraryImportCandidatesOverride} onGoalValidationResume={onGoalValidationResume} onGoalContractSelect={onGoalContractSelect} onWorkflowGoalRevise={onWorkflowGoalRevise} onLibraryGraphNodeSelect={onLibraryGraphNodeSelect} onWorkspaceSurfaceChange={onWorkspaceSurfaceChange} />
+              <MessageView message={streamState.streamingMessage as AgentMessage} isStreaming modelNames={modelNames} workflowCwd={workflowCwd} onWorkflowDagNodeSelect={onWorkflowDagNodeSelect} onGoalRequirements={onGoalRequirements} onGoalSliceSelect={onGoalSliceSelect} onConfirmGoalDesign={onConfirmGoalDesign ?? handleConfirmGoalDesign} onGoalRequirementSelect={onGoalRequirementSelect} onConfirmRequirements={onConfirmRequirements} goalRequirementContentOverride={goalRequirementContentOverride} goalDesignContentOverride={goalDesignContentOverride} goalLibraryImportCandidatesOverride={goalLibraryImportCandidatesOverride} onGoalValidationResume={onGoalValidationResume} onGoalContractSelect={onGoalContractSelect} onWorkflowGoalRevise={onWorkflowGoalRevise} onLibraryGraphNodeSelect={onLibraryGraphNodeSelect} onWorkspaceSurfaceChange={onWorkspaceSurfaceChange} />
             )}
 
             {agentRunning && !streamState.streamingMessage && (
@@ -548,6 +551,34 @@ function ExtensionStatusBar({ statuses }: { statuses: Array<{ key: string; text:
         </div>
       ))}
     </div>
+  );
+}
+
+function WorkflowProgressBar({ progress }: { progress: WorkflowProgress }) {
+  const stage = progress.stage?.replace(/^planner\./, "").replaceAll("_", " ") || "planner";
+  const elapsed = typeof progress.elapsedMs === "number" ? ` · ${Math.max(0, Math.round(progress.elapsedMs / 1000))}s` : "";
+  return (
+    <section
+      data-testid="workflow-live-progress"
+      aria-live="polite"
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        marginBottom: 10,
+        padding: "8px 10px",
+        border: "1px solid color-mix(in srgb, var(--accent) 35%, var(--border))",
+        borderRadius: 7,
+        background: "color-mix(in srgb, var(--accent) 8%, var(--bg-panel))",
+      }}
+    >
+      <span aria-hidden="true" className="animate-[pulse_1.5s_infinite]" style={{ color: "var(--accent)", fontSize: 13 }}>●</span>
+      <div style={{ minWidth: 0, flex: 1 }}>
+        <div style={{ color: "var(--text)", fontSize: 11, fontWeight: 700, textTransform: "capitalize" }}>{stage}{elapsed}</div>
+        <div style={{ marginTop: 2, color: "var(--text-muted)", fontSize: 12, lineHeight: 1.4, overflowWrap: "anywhere" }}>{progress.message}</div>
+      </div>
+      <span style={{ color: "var(--text-dim)", fontSize: 10, flexShrink: 0 }}>live</span>
+    </section>
   );
 }
 

@@ -135,6 +135,7 @@ export async function generateWorkflowDagStream(input: {
   expectedDraftHash?: string | null;
   selectedSliceId?: string | null;
   selectedRequirementId?: string | null;
+  selectedRequirementIds?: string[];
   cwd?: string | null;
   projectRef?: string | null;
   goalDesignMode?: GoalDesignMode;
@@ -161,6 +162,7 @@ export async function generateWorkflowDagStream(input: {
       ...(input.draftId && input.expectedDraftHash ? { expectedDraftHash: input.expectedDraftHash } : {}),
       ...(input.draftId && input.selectedSliceId ? { selectedSliceId: input.selectedSliceId } : {}),
       ...(input.draftId && input.selectedRequirementId ? { selectedRequirementId: input.selectedRequirementId } : {}),
+      ...(input.draftId && input.selectedRequirementIds ? { selectedRequirementIds: input.selectedRequirementIds } : {}),
     }),
   });
 

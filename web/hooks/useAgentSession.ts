@@ -176,6 +176,13 @@ export type AgentPhase =
   | { kind: "running_tools"; tools: { id: string; name: string; progress?: string }[] }
   | null;
 
+export type WorkflowProgress = {
+  stage?: string;
+  message: string;
+  elapsedMs?: number;
+  updatedAt: number;
+};
+
 export function updateRunningToolProgress(
   phase: AgentPhase,
   event: { toolCallId?: unknown; toolName?: unknown; partialResult?: unknown },
@@ -371,6 +378,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const [compactError, setCompactError] = useState<string | null>(null);
   const [compactResult, setCompactResult] = useState<CompactResultInfo | null>(null);
   const [agentPhase, setAgentPhase] = useState<AgentPhase>(null);
+  const [workflowProgress, setWorkflowProgress] = useState<WorkflowProgress | null>(null);
   const [slashCommands, setSlashCommands] = useState<SlashCommandInfo[]>([]);
   const [slashCommandsLoading, setSlashCommandsLoading] = useState(false);
   const [noticeState, dispatchNotice] = useReducer(noticeReducer, { visible: [], pending: [] });
@@ -852,6 +860,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     agentRunningRef.current = true;
     setAgentRunning(true);
     setAgentPhase(isSlashCommandPrompt ? { kind: "running_command" } : { kind: "waiting_model" });
+    setWorkflowProgress(opts.workflowMode && !images?.length && !isSlashCommandPrompt
+      ? { message: "Sending Goal to the planner…", updatedAt: Date.now() }
+      : null);
     dispatch({ type: "start" });
     pendingScrollToUserRef.current = true;
     completionScrollAllowedRef.current = true;
@@ -947,6 +958,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         agentRunningRef.current = false;
         setAgentRunning(false);
         setAgentPhase(null);
+        setWorkflowProgress(null);
         dispatch({ type: "end" });
       }
       return;
@@ -985,11 +997,18 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
             timestamp: Date.now(),
           },
         });
+        if (generatedDag) {
+          setWorkflowProgress({ message: "DAG is ready; review the execution steps below.", stage: "dag", updatedAt: Date.now() });
+        }
       };
       const appendWorkflowText = (text: string, mode: "line" | "message.delta" = "line") => {
         if (!text) return;
         rawStreamedText = appendWorkflowStreamText(rawStreamedText, text, mode);
         updateStreamingMessage();
+      };
+      const updateWorkflowProgress = (message: string, details?: { stage?: string; elapsedMs?: number }) => {
+        if (!message) return;
+        setWorkflowProgress({ message, ...details, updatedAt: Date.now() });
       };
 
       try {
@@ -1015,17 +1034,27 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           templatePolicy: workflowTemplatePolicyFrom(opts.workflowTemplate),
           signal: workflowAbortController.signal,
           onMessage(text, event) {
+            if (event === "message") updateWorkflowProgress(text, { stage: event });
             appendWorkflowText(text, event === "message.delta" ? "message.delta" : "line");
           },
           onStage(stage) {
             const label = stage.message || stage.stage;
-            if (label) appendWorkflowText(`[${stage.stage ?? "planner.stage"}] ${label}`);
+            if (label) {
+              updateWorkflowProgress(label, { stage: stage.stage });
+              appendWorkflowText(`[${stage.stage ?? "planner.stage"}] ${label}`);
+            }
           },
           onHeartbeat(heartbeat) {
-            if (heartbeat.phase) appendWorkflowText(`[heartbeat] ${heartbeat.phase}`);
+            if (heartbeat.phase) {
+              updateWorkflowProgress(`Still working on ${heartbeat.phase}…`, { stage: heartbeat.phase, elapsedMs: heartbeat.elapsedMs });
+              appendWorkflowText(`[heartbeat] ${heartbeat.phase}`);
+            }
           },
           onDraft(draft) {
-            if (draft.draftId) appendWorkflowText(`[draft] ${draft.draftId}${draft.status ? ` ${draft.status}` : ""}`);
+            if (draft.draftId) {
+              updateWorkflowProgress(draft.status ? `Planner draft is ${draft.status}.` : "Planner draft updated.", { stage: "draft" });
+              appendWorkflowText(`[draft] ${draft.draftId}${draft.status ? ` ${draft.status}` : ""}`);
+            }
             if (draft.status === "requirements_review" && draft.draftId && draft.goalRequirementDraft) {
               const block = goalRequirementsContentFromUnknown({
                 ...draft,
@@ -1084,6 +1113,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
               ...(goalDesignPackageHash ? { goalDesignPackageHash } : {}),
               ...(goalDesign.package !== undefined ? { package: goalDesign.package } : {}),
             };
+            updateWorkflowProgress("Goal Design slice plan is ready for review.", { stage: "goal_design" });
             appendWorkflowText(`[goal_design] ${draftId}${goalDesignPackageHash ? ` ${goalDesignPackageHash.slice(0, 12)}` : ""}`);
           },
           onGoalRequirements(goalRequirements) {
@@ -1096,16 +1126,22 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
               status: block.status,
               goalRequirementDraftHash: block.goalRequirementDraftHash,
             };
+            updateWorkflowProgress("Goal Requirements are ready for your review.", { stage: "goal_requirements" });
             appendWorkflowText(`[goal_requirements] ${block.draftId} ${block.goalRequirementDraftHash.slice(0, 12)}`);
           },
           onGoalContract(mission) {
+            updateWorkflowProgress("Goal Contract received; preparing execution coverage.", { stage: "goal_contract" });
             appendWorkflowText(`[goal] ${mission.goalContract.summary}`);
           },
           onCoverage(mission) {
+            updateWorkflowProgress(`Coverage ${mission.coverage.covered}/${mission.coverage.total} resolved.`, { stage: "coverage" });
             appendWorkflowText(`[coverage] ${mission.coverage.covered}/${mission.coverage.total}`);
           },
           onRun(run) {
-            if (run.runStatus) appendWorkflowText(`[run] ${run.runStatus}`);
+            if (run.runStatus) {
+              updateWorkflowProgress(`Workflow run is ${run.runStatus}.`, { stage: "run" });
+              appendWorkflowText(`[run] ${run.runStatus}`);
+            }
           },
           onExecutionSet(executionSet) {
             if (executionSet.executionSetId) {
@@ -1113,14 +1149,19 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
                 executionSetId: executionSet.executionSetId,
                 sliceRunCount: executionSet.sliceRuns?.length ?? 0,
               };
+              updateWorkflowProgress(`Execution set created with ${executionSet.sliceRuns?.length ?? 0} slice runs.`, { stage: "execution_set" });
               appendWorkflowText(`[execution_set] ${executionSet.executionSetId} · ${executionSet.sliceRuns?.length ?? 0} slice runs`);
             }
           },
           onApproval({ command }) {
-            if (command) appendWorkflowText(`[approval] ${command.label}`);
+            if (command) {
+              updateWorkflowProgress(`Approval is ready: ${command.label}.`, { stage: "approval" });
+              appendWorkflowText(`[approval] ${command.label}`);
+            }
           },
           onRecoverable({ result, error }) {
             recoverableIdentity = { draftId: result.draftId, runId: result.runId, error };
+            updateWorkflowProgress(`Saved draft ${result.draftId}; recovering an additional read model step.`, { stage: "recoverable" });
             appendWorkflowText(`[recoverable] draft ${result.draftId}${result.runId ? ` · run ${result.runId}` : ""} · ${error}`);
           },
           onDag(dag) {
@@ -1239,6 +1280,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         agentRunningRef.current = false;
         setAgentRunning(false);
         setAgentPhase(null);
+        setWorkflowProgress(null);
         dispatch({ type: "end" });
       }
       return;
@@ -1311,6 +1353,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       agentRunningRef.current = false;
       setAgentRunning(false);
       setAgentPhase(null);
+      setWorkflowProgress(null);
       dispatch({ type: "end" });
     }
   }, [effectiveNewSessionCwd, isNew, newSessionModel, toolPreset, thinkingLevel, session, messages, agentRunning, connectEvents, ensureNewSession, promoteNewSession, waitForPromptSettlement, sessionKind, opts.workflowMode, opts.workflowCwd, opts.workflowTemplate, opts.libraryScope, opts.goalDesignRevisionAnchor, opts.goalRequirementRevisionAnchor, addNotice, persistWorkflowMessage]);
@@ -1324,6 +1367,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     agentRunningRef.current = true;
     setAgentRunning(true);
     setAgentPhase({ kind: "waiting_model" });
+    setWorkflowProgress({ message: "Confirming the slice plan and composing the DAG…", stage: "goal_design", updatedAt: Date.now() });
     dispatch({ type: "start" });
     let streamedText = "";
     let dag: WorkflowDag | null = null;
@@ -1347,16 +1391,20 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         expectedPackageHash: packageHash,
         signal: controller.signal,
         onStage(stage) {
+          setWorkflowProgress({ message: stage.message || stage.stage || "Planner is working…", stage: stage.stage, updatedAt: Date.now() });
           append(stage.message || stage.stage || "");
         },
         onMessage(text) {
+          setWorkflowProgress({ message: text, stage: "composing", updatedAt: Date.now() });
           append(text);
         },
         onRun(run) {
+          setWorkflowProgress({ message: run.runStatus ? `Workflow run is ${run.runStatus}.` : "Workflow run created.", stage: "run", updatedAt: Date.now() });
           append(run.runId ? `[run] ${run.runId} ${run.runStatus ?? ""}` : "[run] created");
         },
         onDag(nextDag) {
           dag = nextDag;
+          setWorkflowProgress({ message: "DAG is ready; review the execution steps below.", stage: "dag", updatedAt: Date.now() });
           dispatch({
             type: "update",
             message: {
@@ -1407,6 +1455,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       agentRunningRef.current = false;
       setAgentRunning(false);
       setAgentPhase(null);
+      setWorkflowProgress(null);
       dispatch({ type: "end" });
     }
   }, [addNotice, persistWorkflowMessage]);
@@ -1851,6 +1900,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     notices: noticeState.visible, extensionDialog, extensionStatuses, extensionWidgets, respondToExtensionUi,
     isAutoModelSelection: isNew && newSessionModel === null,
     agentPhase,
+    workflowProgress,
     isNew,
     // Refs
     sessionIdRef, eventSourceRef, messagesEndRef, scrollContainerRef,

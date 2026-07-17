@@ -167,6 +167,7 @@ export type LibraryImportCandidate = {
   selectedByDefault: boolean;
   confidence?: number;
   description?: string;
+  semanticTags?: string[];
   aliases?: string[];
   requiredOperations?: string[];
   artifactType?: string;

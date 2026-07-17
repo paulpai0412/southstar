@@ -144,6 +144,11 @@ function buildPlannerDraftResultFromDag(dag: WorkflowDag): PlannerDraftResult {
       dependsOn: dependsOnByNode.get(node.id) ?? [],
       roleRef: node.role,
       agentProfileRef: node.profileRef,
+      ...(node.requirementIds?.length ? { requirementIds: node.requirementIds } : {}),
+      ...(node.sliceId ? { sliceId: node.sliceId } : {}),
+      ...(node.purpose ? { purpose: node.purpose } : {}),
+      ...(node.nodeType ? { nodeType: node.nodeType } : {}),
+      ...(node.expectedOutputs?.length ? { expectedOutputs: node.expectedOutputs } : {}),
     })),
   };
 }

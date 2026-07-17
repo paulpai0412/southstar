@@ -858,6 +858,7 @@ export function AppShell() {
     setGoalRequirementContentOverride(content);
     setGoalDesignContentOverride((current) => current?.draftId === content.draftId ? null : current);
     setGoalLibraryImportCandidatesOverride((current) => current?.draftId === content.libraryImportDraftId ? current : null);
+    persistGoalWorkflowState([content]);
     const current = goalRequirementRevisionAnchorRef.current;
     if (!current || current.draftId !== content.draftId) {
       goalRequirementRevisionAnchorRef.current = null;
@@ -888,13 +889,12 @@ export function AppShell() {
         ? { ...tab, goalRequirementSelection: next, refreshKey: (tab.refreshKey ?? 0) + 1 }
         : tab
     )));
-  }, []);
+  }, [persistGoalWorkflowState]);
 
   const handleUiContractReviewChange = useCallback((value: unknown) => {
     const content = goalRequirementsContentFromUnknown(value);
     if (content) {
       handleGoalRequirementsContent(content);
-      persistGoalWorkflowState([content]);
     }
   }, [handleGoalRequirementsContent, persistGoalWorkflowState]);
 

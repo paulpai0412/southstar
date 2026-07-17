@@ -43,6 +43,8 @@ export type LibraryImportCandidate = {
   selectedByDefault: boolean;
   confidence?: number;
   description?: string;
+  /** Reusable outcome vocabulary supplied by the source/LLM and reviewed by the user. */
+  semanticTags?: string[];
   aliases?: string[];
   requiredOperations?: string[];
   operations?: string[];
@@ -91,6 +93,7 @@ export type LibraryImportCoverageConstraint = {
   criterionStatements?: Array<{ criterionId: string; statement: string }>;
   expectedOutcomeArtifacts?: Array<{ description: string; mediaType?: string }>;
   verificationIntent?: string[];
+  semanticTags?: string[];
 };
 
 export type LibraryImportProposedEdge = {

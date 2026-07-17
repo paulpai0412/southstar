@@ -55,6 +55,7 @@ import {
   reviseGoalDesignFromChatPg,
   reviseGoalSlicePg,
   reviseGoalRequirementPg,
+  reviseGoalRequirementFromChatPg,
   loadCurrentUiInteractionContractPg,
   reviseUiInteractionContractPg,
 } from "../../src/v2/orchestration/goal-design-draft-service.ts";
@@ -256,6 +257,92 @@ test("Requirement preparation persists LLM-designed UI contracts before visual r
     const stored = await loadCurrentUiInteractionContractPg(db, { draftId: result.draftId, contractId: "ui-review" });
     assert.equal(stored.contractHash, generatedContract.contractHash);
     assert.equal(stored.status, "draft");
+  });
+});
+
+test("Requirement revisions preserve reviewable UI contracts when their bindings remain valid", async () => {
+  await withDb(async (db) => {
+    await seedGoalDesignSkill(db);
+    const cwd = process.cwd();
+    const goalPrompt = "Create a review interaction";
+    const semanticDraft = visualRequirementDraft(goalPrompt, cwd);
+    const requirement = semanticDraft.requirements[0]!;
+    const generatedContract = finalizeUiInteractionContract(
+      visualContractInput(requirement.id, requirement.acceptanceCriteria[0]!.id),
+      semanticDraft,
+      { id: "ui-review" },
+    );
+    const draft = await preparePostgresGoalRequirementDraft(db, {
+      goalPrompt,
+      cwd,
+      requirementInterpreter: {
+        async interpret() { return semanticDraft; },
+        async revise() { return { kind: "revision", draft: semanticDraft, summary: "unchanged" }; },
+        async designUiInteractionContracts() { return [generatedContract]; },
+      },
+    });
+
+    const revised = await reviseGoalRequirementPg(db, {
+      draftId: draft.draftId,
+      expectedDraftHash: draft.goalRequirementDraftHash,
+      requirementId: requirement.id,
+      patch: { statement: "A learner can reveal the answer for a card after clarification." },
+    });
+
+    assert.equal(revised.uiInteractionContracts?.length, 1);
+    assert.equal(revised.uiInteractionContracts?.[0]?.id, "ui-review");
+    assert.equal(revised.validationIssues.some((entry) => entry.code === "missing_ui_interaction_contract"), false);
+    assert.equal(revised.validationIssues.some((entry) => entry.code === "unconfirmed_ui_interaction_contract"), true);
+    assert.equal((await loadCurrentUiInteractionContractPg(db, { draftId: draft.draftId, contractId: "ui-review" })).status, "draft");
+    const persisted = await getResourceByKeyPg(db, "planner_draft", draft.draftId);
+    assert.equal((persisted?.payload as { uiInteractionContractHashes?: Record<string, string> }).uiInteractionContractHashes?.["ui-review"], revised.uiInteractionContracts?.[0]?.contractHash);
+  });
+});
+
+test("Chat requirement revisions regenerate missing UI contracts for visual requirements", async () => {
+  await withDb(async (db) => {
+    await seedGoalDesignSkill(db);
+    const cwd = process.cwd();
+    const goalPrompt = "Create a review interaction";
+    const semanticDraft = visualRequirementDraft(goalPrompt, cwd);
+    const requirement = semanticDraft.requirements[0]!;
+    const generatedContract = finalizeUiInteractionContract(
+      visualContractInput(requirement.id, requirement.acceptanceCriteria[0]!.id),
+      semanticDraft,
+      { id: "ui-review" },
+    );
+    let designCalls = 0;
+    const draft = await preparePostgresGoalRequirementDraft(db, {
+      goalPrompt,
+      cwd,
+      requirementInterpreter: {
+        async interpret() { return semanticDraft; },
+        async revise() { return { kind: "revision", draft: semanticDraft, summary: "unchanged" }; },
+        async designUiInteractionContracts() {
+          designCalls += 1;
+          return designCalls === 1 ? [] : [generatedContract];
+        },
+      },
+    });
+    assert.ok(draft.validationIssues.some((entry) => entry.code === "missing_ui_interaction_contract"));
+
+    const revised = await reviseGoalRequirementFromChatPg(db, {
+      draftId: draft.draftId,
+      expectedDraftHash: draft.goalRequirementDraftHash,
+      message: "Keep the requirement and regenerate the visual contract for review.",
+      selectedRequirementId: requirement.id,
+      requirementInterpreter: {
+        async interpret() { return semanticDraft; },
+        async revise() { return { kind: "revision", draft: semanticDraft, summary: "unchanged" }; },
+        async designUiInteractionContracts() { return [generatedContract]; },
+      },
+    });
+
+    if ("kind" in revised) assert.fail("expected a persisted revision");
+    assert.equal(revised.uiInteractionContracts?.length, 1);
+    assert.equal(revised.uiInteractionContracts?.[0]?.id, "ui-review");
+    assert.equal(revised.validationIssues.some((entry) => entry.code === "missing_ui_interaction_contract"), false);
+    assert.equal(revised.validationIssues.some((entry) => entry.code === "unconfirmed_ui_interaction_contract"), true);
   });
 });
 

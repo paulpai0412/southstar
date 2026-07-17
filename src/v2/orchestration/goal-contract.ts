@@ -15,6 +15,8 @@ export type GoalRequirementV1 = {
   id: string;
   statement: string;
   acceptanceCriteria: string[];
+  /** LLM/user-confirmed outcome vocabulary; never host-hardcoded. */
+  semanticTags?: string[];
   blocking: boolean;
   source: "explicit" | "inferred";
   expectedArtifacts: GoalExpectedArtifactV1[];
@@ -163,6 +165,7 @@ const LEGACY_INTERPRETATION_KEYS = [
 ] as const;
 
 const REQUIREMENT_KEYS = ["statement", "acceptanceCriteria", "blocking", "source", "expectedArtifacts"] as const;
+const REQUIREMENT_KEYS_WITH_SEMANTIC_TAGS = [...REQUIREMENT_KEYS, "semanticTags"] as const;
 const LEGACY_REQUIREMENT_KEYS = ["statement", "acceptanceCriteria", "blocking", "source"] as const;
 const REQUIREMENT_KEYS_WITH_ID = ["id", ...REQUIREMENT_KEYS] as const;
 const LEGACY_REQUIREMENT_KEYS_WITH_ID = ["id", ...LEGACY_REQUIREMENT_KEYS] as const;
@@ -285,6 +288,7 @@ export function storedGoalContract(value: unknown): GoalContractV1 | undefined {
       && nonEmptyString(requirement.statement)
       && isStringArray(requirement.acceptanceCriteria)
       && (requirement.acceptanceCriteria as string[]).length > 0
+      && (requirement.semanticTags === undefined || isStringArray(requirement.semanticTags))
       && typeof requirement.blocking === "boolean"
       && (requirement.source === "explicit" || requirement.source === "inferred")
       && Array.isArray(requirement.expectedArtifacts),
@@ -380,7 +384,8 @@ function goalContractInterpretationSchemaPrompt(): string {
     "    acceptanceCriteria: string[],",
     "    blocking: boolean,",
     "    source: \"explicit\" | \"inferred\",",
-    "    expectedArtifacts: [{ description: string, path?: string, mediaType?: string }]",
+    "    semanticTags: string[] (short lower-case outcome/domain tags supplied by semantic interpretation),",
+    "    expectedArtifacts: [{ description: string, path?: string, mediaType?: string }],",
     "  }],",
     "  expectedArtifactRefs: string[],",
     "  requiredCapabilities: string[],",
@@ -402,7 +407,7 @@ function renderInterpreterPrompt(input: InterpretGoalContractWithLlmInput): stri
     INTERPRETER_INSTRUCTION,
     goalContractInterpretationSchemaPrompt(),
     "Return JSON only. Include exactly these fields: domain, intent, workType, summary, requirements, expectedArtifactRefs, requiredCapabilities, nonGoals, assumptions, blockingInputs, riskTags, requestedSideEffects.",
-    "Each requirement must contain statement, acceptanceCriteria, blocking, source, and expectedArtifacts. Every requirement needs at least one observable acceptance criterion. source must be explicit or inferred.",
+    "Each requirement must contain statement, acceptanceCriteria, semanticTags, blocking, source, and expectedArtifacts. semanticTags must be short lower-case or kebab-case concepts describing the product outcome and verification subject; do not use technical ids. Every requirement needs at least one observable acceptance criterion. source must be explicit or inferred.",
     "workType must be one of software_feature, bugfix, research, data_analysis, migration, ops_recovery, or general.",
     "expectedArtifacts are descriptions with optional relative paths and media types, not Library object refs.",
     "Set blocking=true for every requirement needed to satisfy the requested outcome; use blocking=false only when the user explicitly marks that requirement optional.",
@@ -520,7 +525,9 @@ function validateRequirement(
   const object = requiredObject(value, path);
   const hasId = options.allowRequirementIds === true && "id" in object;
   const allowedKeys = "expectedArtifacts" in object
-    ? (hasId ? REQUIREMENT_KEYS_WITH_ID : REQUIREMENT_KEYS)
+    ? ("semanticTags" in object
+      ? (hasId ? [...REQUIREMENT_KEYS_WITH_ID, "semanticTags"] : REQUIREMENT_KEYS_WITH_SEMANTIC_TAGS)
+      : (hasId ? REQUIREMENT_KEYS_WITH_ID : REQUIREMENT_KEYS))
     : (hasId ? LEGACY_REQUIREMENT_KEYS_WITH_ID : LEGACY_REQUIREMENT_KEYS);
   exactKeys(object, allowedKeys, path);
   const acceptanceCriteria = stringArray(object.acceptanceCriteria, `${path}.acceptanceCriteria`);
@@ -535,6 +542,7 @@ function validateRequirement(
     ...(hasId ? { id: requiredString(object.id, `${path}.id`) } : {}),
     statement: requiredString(object.statement, `${path}.statement`),
     acceptanceCriteria,
+    ...(object.semanticTags !== undefined ? { semanticTags: stringArray(object.semanticTags, `${path}.semanticTags`) } : {}),
     blocking: object.blocking,
     source: object.source,
     expectedArtifacts: expectedArtifactsArray(object.expectedArtifacts, `${path}.expectedArtifacts`),

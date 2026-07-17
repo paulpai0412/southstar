@@ -1,0 +1,182 @@
+Southstar
+New
+.../apps/southstar-vocab
+WORKFLOW SESSIONS
+You are Southstar's library-constrained workflow architect. Return exactly one JSON object matching schemaVersion southstar.workflow_composition_plan.v1. Do not return markdown, co...
+6m ago
+2 messages
+Build a small local riddle guessing web app in this workspace. Keep the confirmed requirement list concise: produce exactly two blocking requirements (R1 show a riddle and accept a...
+11m ago
+2 messages
+You are Southstar's library-constrained workflow architect. Return exactly one JSON object matching schemaVersion southstar.workflow_composition_plan.v1. Do not return markdown, co...
+25m ago
+2 messages
+Build a small local riddle guessing web app in this workspace. Keep the confirmed requirement list concise: produce exactly two blocking requirements (R1 show a riddle and accept a...
+35m ago
+2 messages
+You are Southstar's library-constrained workflow architect. Return exactly one JSON object matching schemaVersion southstar.workflow_composition_plan.v1. Do not return markdown, co...
+1h ago
+2 messages
+Build a small local riddle guessing web app in this workspace. Keep the confirmed requirement list concise: produce exactly two blocking requirements (R1 show a riddle and accept a...
+1h ago
+2 messages
+Build a small local riddle guessing web app in this workspace. Keep the confirmed requirement list concise: produce exactly two blocking requirements (R1 show a riddle and accept a...
+1h ago
+2 messages
+Build a small local riddle guessing web app in this workspace. Keep the confirmed requirement list concise: produce exactly two blocking requirements (R1 show a riddle and accept a...
+1h ago
+2 messages
+Build a small local riddle guessing web app in this workspace. Keep the confirmed requirement list concise: produce exactly two blocking requirements (R1 show a riddle and accept a...
+1h ago
+2 messages
+建立一`個猜謎的webapp系統
+10h ago
+2 messages
+建立一個todo webapp的系統開發功能
+23h ago
+4 messages
+建立一個todo webapp的系統開發
+1d ago
+2 messages
+You are Southstar's library-constrained workflow architect. Return exactly one JSON object matching schemaVersion southstar.workflow_composition_plan.v1. Do not return markdown, co...
+2d ago
+2 messages
+Build the smallest useful local vocabulary flashcard system in this workspace. Keep the confirmed requirement list concise: produce exactly two blocking requirements (R1 add/list w...
+2d ago
+2 messages
+Build the smallest useful local vocabulary flashcard system in this workspace. Keep the confirmed requirement list concise: produce exactly two blocking requirements (R1 add/list w...
+2d ago
+2 messages
+You are Southstar's library-constrained workflow architect. Return exactly one JSON object matching schemaVersion southstar.workflow_composition_plan.v1. Do not return markdown, co...
+2d ago
+2 messages
+You are Southstar's library-constrained workflow architect. Return exactly one JSON object matching schemaVersion southstar.workflow_composition_plan.v1. Do not return markdown, co...
+2d ago
+2 messages
+Build the smallest useful local vocabulary flashcard system in this workspace. Keep the confirmed requirement list concise: produce exactly two blocking requirements (R1 add/list w...
+2d ago
+2 messages
+You are Southstar's library-constrained workflow architect. Return exactly one JSON object matching schemaVersion southstar.workflow_composition_plan.v1. Do not return markdown, co...
+2d ago
+2 messages
+You are Southstar's library-constrained workflow architect. Return exactly one JSON object matching schemaVersion southstar.workflow_composition_plan.v1. Do not return markdown, co...
+2d ago
+2 messages
+Build the smallest useful local vocabulary flashcard system in this workspace. Keep the confirmed requirement list concise: produce exactly two blocking requirements (R1 add/list w...
+2d ago
+2 messages
+You are Southstar's library-constrained workflow architect. Return exactly one JSON object matching schemaVersion southstar.workflow_composition_plan.v1. Do not return markdown, co...
+2d ago
+2 messages
+Build a small local vocabulary flashcard system in this workspace. Users can add and list words with translations and examples, run flashcard quizzes, submit answers with persisted...
+2d ago
+2 messages
+You are Southstar's library-constrained workflow architect. Return exactly one JSON object matching schemaVersion southstar.workflow_composition_plan.v1. Do not return markdown, co...
+2d ago
+2 messages
+You are Southstar's library-constrained workflow architect. Return exactly one JSON object matching schemaVersion southstar.workflow_composition_plan.v1. Do not return markdown, co...
+2d ago
+2 messages
+Build a small local vocabulary flashcard system in this workspace. Users can add and list words with translations and examples, run flashcard quizzes, submit answers with persisted...
+2d ago
+2 messages
+Build a small local vocabulary flashcard system in this workspace. Users can add and list words with translations and examples, run flashcard quizzes, submit answers with persisted...
+2d ago
+2 messages
+Build a small local vocabulary flashcard system in this workspace. Users can add and list words with translations and examples, run flashcard quizzes, submit answers with persisted...
+2d ago
+2 messages
+You are Southstar's library-constrained workflow architect. Return exactly one JSON object matching schemaVersion southstar.workflow_composition_plan.v1. Do not return markdown, co...
+2d ago
+2 messages
+You are Southstar's library-constrained workflow architect. Return exactly one JSON object matching schemaVersion southstar.workflow_composition_plan.v1. Do not return markdown, co...
+2d ago
+2 messages
+完成一個可離線運作的背單字系統：可以新增與列出單字、開始測驗並提交答案、查看本次與累積正確率，需要瀏覽器 UI、持久化資料、啟動與離線依賴檢查，以及可重現的測試與證據。請先產生 Goal Contract、requirements 與 slices，確認後再產生同一張 DAG 執行。
+2d ago
+2 messages
+You are Southstar's library-constrained workflow architect. Return exactly one JSON object matching schemaVersion southstar.workflow_composition_plan.v1. Do not return markdown, co...
+2d ago
+2 messages
+You are Southstar's library-constrained workflow architect. Return exactly one JSON object matching schemaVersion southstar.workflow_composition_plan.v1. Do not return markdown, co...
+2d ago
+2 messages
+完成一個可離線運作的背單字系統：可以新增與列出單字、開始測驗並提交答案、查看本次與累積正確率，需要瀏覽器 UI、持久化資料、啟動與離線依賴檢查，以及可重現的測試與證據。請先產生 Goal Contract、requirements 與 slices，確認後再產生同一張 DAG 執行。
+2d ago
+2 messages
+完成一個可離線運作的背單字系統：可以新增與列出單字、開始測驗並提交答案、查看本次與累積正確率，需要瀏覽器 UI、持久化資料、啟動與離線依賴檢查，以及可重現的測試與證據。請先產生 Goal Contract、requirements 與 slices，確認後再產生同一張 DAG 執行。
+2d ago
+2 messages
+完成目前工作目錄中的離線背單字系統：新增與列出單字、開始測驗並提交答案、顯示本次與累積正確率、瀏覽器 UI、持久化資料、啟動與離線依賴檢查，以及可重現測試與證據。請直接採用合理且明確的產品預設，不要提出或留下任何 blocking open question；產生可審核 Goal Contract、完整 requirements 與 slices，確認後再生...
+2d ago
+2 messages
+在目前工作目錄完成一個可離線運作的背單字系統：使用者可以新增與列出單字、開始測驗並提交答案、查看本次與累積正確率；需要有瀏覽器 UI、持久化資料、啟動與離線依賴檢查，並以可重現的測試與證據驗證所有功能。請先產生可審核的 Goal Contract、requirements 與 slices，確認後再產生同一張 DAG 執行。
+2d ago
+2 messages
+You are Southstar's library-constrained workflow architect. Return exactly one JSON object matching schemaVersion southstar.workflow_composition_plan.v1. Do not return markdown, co...
+3d ago
+2 messages
+You are Southstar's library-constrained workflow architect. Return exactly one JSON object matching schemaVersion southstar.workflow_composition_plan.v1. Do not return markdown, co...
+3d ago
+2 messages
+Build a small local vocabulary flashcard system in this workspace. Users can add and list words with translations and examples, run flashcard quizzes, submit answers with persisted...
+3d ago
+2 messages
+Build a small local vocabulary flashcard system in this workspace. Users can add and list words with translations and examples, run flashcard quizzes, submit answers with persisted...
+3d ago
+2 messages
+You are Southstar's library-constrained workflow architect. Return exactly one JSON object matching schemaVersion southstar.workflow_composition_plan.v1. Do not return markdown, co...
+3d ago
+2 messages
+You are Southstar's library-constrained workflow architect. Return exactly one JSON object matching schemaVersion southstar.workflow_composition_plan.v1. Do not return markdown, co...
+3d ago
+2 messages
+You are Southstar's library-constrained workflow architect. Return exactly one JSON object matching schemaVersion southstar.workflow_composition_plan.v1. Do not return markdown, co...
+3d ago
+2 messages
+Return exactly: vocab-ok
+3d ago
+2 messages
+You are Southstar's library-constrained workflow architect. Return exactly one JSON object matching schemaVersion southstar.workflow_composition_plan.v1. Do not return markdown, co...
+3d ago
+2 messages
+You are Southstar's library-constrained workflow architect. Return exactly one JSON object matching schemaVersion southstar.workflow_composition_plan.v1. Do not return markdown, co...
+3d ago
+2 messages
+You are Southstar's library-constrained workflow architect. Return exactly one JSON object matching schemaVersion southstar.workflow_composition_plan.v1. Do not return markdown, co...
+3d ago
+2 messages
+You are Southstar's library-constrained workflow architect. Return exactly one JSON object matching schemaVersion southstar.workflow_composition_plan.v1. Do not return markdown, co...
+5d ago
+2 messages
+You are Southstar's library-constrained workflow architect. Return exactly one JSON object matching schemaVersion southstar.workflow_composition_plan.v1. Do not return markdown, co...
+5d ago
+2 messages
+WORKFLOW LIBRARY
+all
+workflows
+Models
+Skills
+MCP
+Chat
+Library
+Workflow
+Operator
+●
+Request.Normalized
+request.normalized
+live
+
+Build a small local riddle guessing web app in this workspace. Keep the confirmed requirement list concise: produce exactly two blocking requirements (R1 show a riddle and accept an answer with correct or incorrect feedback, R2 persist each attempt and show current and cumulative accuracy while allowing the user to start the next riddle). Do not split these into extra cosmetic or infrastructure requirements. Each requirement must be verifiable with automated tests and a browser-accessible local UI. The product must produce riddle-attempt and accuracy evidence artifacts; generic repository implementation or verification reports do not represent that product outcome. Do not use external services or network integrations.
+
+Copy
+22:23
+workflow-generate
+10
+
+[request.normalized] request.normalized
+
+Steer
+Follow-up
+GPT-5.3 Codex
+Stop

@@ -6,6 +6,11 @@ export type V2PlannerDraftTaskSummary = {
   dependsOn: string[];
   roleRef?: string;
   agentProfileRef?: string;
+  requirementIds?: string[];
+  sliceId?: string;
+  purpose?: string;
+  nodeType?: string;
+  expectedOutputs?: string[];
 };
 
 export type V2PlannerDraftOrchestrationView = {
@@ -124,6 +129,11 @@ export function buildWorkflowDagFromPlannerDraft(input: V2PlannerDraftOrchestrat
       profileResourcePath: profileResourcePathFromProfileRef(profileRef),
       provider,
       model: modelFromProvider(provider),
+      ...(task.requirementIds?.length ? { requirementIds: task.requirementIds } : {}),
+      ...(task.sliceId ? { sliceId: task.sliceId } : {}),
+      ...(task.purpose ? { purpose: task.purpose } : {}),
+      ...(task.nodeType ? { nodeType: task.nodeType } : {}),
+      ...(task.expectedOutputs?.length ? { expectedOutputs: task.expectedOutputs } : {}),
       level: levels.get(task.taskId) ?? index,
       state: readiness,
     };

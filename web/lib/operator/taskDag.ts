@@ -69,6 +69,11 @@ function readCanvasNode(input: unknown): WorkflowCanvasModel["nodes"][number] | 
     roleRef: stringValue(node?.roleRef) || null,
     agentProfileRef: stringValue(node?.agentProfileRef) || null,
     artifactKind: stringValue(node?.artifactKind) || null,
+    requirementIds: stringArray(node?.requirementIds),
+    sliceId: stringValue(node?.sliceId) || null,
+    purpose: stringValue(node?.purpose) || null,
+    nodeType: stringValue(node?.nodeType) || null,
+    expectedOutputs: stringArray(node?.expectedOutputs),
     badges: Array.isArray(node?.badges) ? node.badges.filter(isWorkflowTaskBadge) : [],
     attention: isWorkflowTaskAttention(node?.attention) ? node.attention : null,
   };
@@ -95,6 +100,10 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.length > 0) : [];
+}
+
 function isWorkflowEdgeStatus(value: unknown): value is WorkflowCanvasModel["edges"][number]["status"] {
   return value === "pending" || value === "ready" || value === "active" || value === "blocked" || value === "satisfied";
 }
@@ -112,4 +121,3 @@ function isWorkflowTaskAttention(value: unknown): value is NonNullable<WorkflowC
     typeof attention.reason === "string",
   );
 }
-

@@ -1064,6 +1064,7 @@ function renderLibraryImportCandidate(
         : candidate.kind === "artifact"
           ? [
             ...(candidate.description ? [`description: ${yamlScalar(candidate.description)}`] : []),
+            ...(candidate.semanticTags ? yamlArray("semanticTags", candidate.semanticTags) : []),
             `artifactType: ${yamlScalar(candidate.artifactType ?? "")}`,
             ...yamlArray("mediaTypes", candidate.mediaTypes),
             ...yamlArray("evidenceKinds", candidate.evidenceKinds),
@@ -1075,6 +1076,7 @@ function renderLibraryImportCandidate(
           : candidate.kind === "evaluator"
             ? [
               ...(candidate.description ? [`description: ${yamlScalar(candidate.description)}`] : []),
+              ...(candidate.semanticTags ? yamlArray("semanticTags", candidate.semanticTags) : []),
               ...yamlArray("validatesArtifactRefs", candidate.validatesArtifactRefs),
               ...yamlArray("requiredInputs", candidate.requiredInputs),
               ...yamlArray("evidenceKinds", candidate.evidenceKinds),

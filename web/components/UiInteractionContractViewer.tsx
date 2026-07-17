@@ -94,8 +94,9 @@ export function UiInteractionContractViewer({
       <div data-testid="ui-interaction-contract-viewer" style={shellStyle}>
         <header style={headerStyle}>
           <div style={{ minWidth: 0 }}>
-            <div style={titleStyle}>{contract.id}</div>
-            <div style={subtitleStyle}>revision {contract.revision} · {contract.status} · {contract.contractHash.slice(0, 12)}</div>
+            <div style={titleStyle}>UI contract · {screen?.title ?? "Untitled screen"}</div>
+            <div style={{ ...subtitleStyle, fontFamily: "inherit", whiteSpace: "normal" }}>{screen?.purpose ?? "Review the screen behavior and confirm it matches the requirement."}</div>
+            <div style={subtitleStyle}>{contract.id} · requirements {contract.requirementIds.join(", ")} · revision {contract.revision} · {contract.status}</div>
           </div>
           <div style={{ display: "flex", gap: 6 }}>
             <button type="button" onClick={() => setExpanded((value) => !value)} style={secondaryButton}>{expanded ? "Collapse" : "Expand"}</button>
@@ -103,8 +104,18 @@ export function UiInteractionContractViewer({
           </div>
         </header>
 
+        <details data-testid="ui-contract-guide" style={guideStyle}>
+          <summary style={guideSummaryStyle}>How to review this UI contract</summary>
+          <div style={guideBodyStyle}>
+            <div><strong>Screen:</strong> the user-facing page or panel for this requirement.</div>
+            <div><strong>State:</strong> the situation being checked, such as empty, loading, error, or completed.</div>
+            <div><strong>Preview:</strong> click a visible element to inspect its label, enabled state, and transition action.</div>
+            <div><strong>Confirm visual contract:</strong> choose this only when the screen purpose, states, actions, and accessibility behavior match the requirement. This is what enables requirement confirmation.</div>
+          </div>
+        </details>
+
         <div style={toolbarStyle}>
-          <label style={controlLabel}>Screen<select value={screen?.id ?? ""} onChange={(event) => { setScreenId(event.target.value); setSelectedElementId(null); }} style={selectStyle}>{contract.screens.map((entry) => <option key={entry.id} value={entry.id}>{entry.id}</option>)}</select></label>
+          <label style={controlLabel}>Screen<select value={screen?.id ?? ""} onChange={(event) => { setScreenId(event.target.value); setSelectedElementId(null); }} style={selectStyle}>{contract.screens.map((entry) => <option key={entry.id} value={entry.id}>{entry.title} · {entry.id}</option>)}</select></label>
           <label style={controlLabel}>State<select value={screenState} onChange={(event) => setScreenState(event.target.value)} style={selectStyle}>{screen?.states.map((state) => <option key={state} value={state}>{state}</option>)}</select></label>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>{screen?.states.map((state) => <button key={state} type="button" data-testid={`ui-state-${state}`} onClick={() => setScreenState(state)} style={state === screenState ? selectedToggle : secondaryButton}>{state}</button>)}</div>
           <div style={{ display: "flex", gap: 4 }}>{(["desktop", "mobile"] as const).map((value) => <button key={value} type="button" data-testid={`ui-viewport-${value}`} onClick={() => setViewport(value)} style={value === viewport ? selectedToggle : secondaryButton}>{value}</button>)}</div>
@@ -232,3 +243,6 @@ const stateRowStyle = { display: "grid", gridTemplateColumns: "1fr auto auto", g
 const mutedStyle = { color: "var(--text-dim)", fontSize: 10 } as const;
 const ruleGridStyle = { width: "100%", display: "grid", gridTemplateColumns: "repeat(2, minmax(0,1fr))", gap: 10 } as const;
 const footerStyle = { flexShrink: 0, padding: "7px 10px", borderTop: "1px solid var(--border)", background: "var(--bg-panel)", fontSize: 10, overflowWrap: "anywhere" as const } as const;
+const guideStyle = { flexShrink: 0, margin: "8px 12px 0", border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-panel)", color: "var(--text-muted)", fontSize: 11, lineHeight: 1.45 } as const;
+const guideSummaryStyle = { cursor: "pointer", padding: "7px 9px", color: "var(--text)" } as const;
+const guideBodyStyle = { display: "grid", gap: 5, padding: "0 9px 9px" } as const;

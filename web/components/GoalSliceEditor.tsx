@@ -49,6 +49,10 @@ export function GoalSliceEditor({
     () => pkg?.slicePlan?.slices?.find((candidate) => candidate.id === selection.selectedSliceId) ?? null,
     [pkg, selection.selectedSliceId],
   );
+  const sliceIndex = useMemo(
+    () => pkg?.slicePlan?.slices?.findIndex((candidate) => candidate.id === selection.selectedSliceId) ?? -1,
+    [pkg, selection.selectedSliceId],
+  );
   const [form, setForm] = useState<SliceForm>(() => slice ? formFromSlice(slice) : emptyForm());
   const [state, setState] = useState<{ status: "idle" | "saving" | "saved" | "error"; message?: string }>({ status: "idle" });
 
@@ -106,39 +110,49 @@ export function GoalSliceEditor({
   return (
     <div data-testid="goal-slice-editor" style={shellStyle}>
       <Header
-        title={slice.id}
+        title={`${sliceIndex >= 0 ? `S${sliceIndex + 1} · ` : ""}${slice.outcome}`}
         subtitle={[
+          slice.id,
+          `covers ${slice.requirementIds.join(", ") || "no requirements"}`,
           pkg.goalContract?.summary,
           pkg.compositionStrategy?.mode ? `strategy ${pkg.compositionStrategy.mode}` : undefined,
           packageHash ? packageHash.slice(0, 12) : undefined,
         ].filter(Boolean).join(" · ")}
       />
+      <details data-testid="goal-slice-editor-guide" style={guideStyle}>
+        <summary style={guideSummaryStyle}>How to edit a slice safely</summary>
+        <div style={guideBodyStyle}>
+          <div><strong>Requirement IDs</strong> bind this slice to user outcomes; keep them aligned with the requirement list.</div>
+          <div><strong>Expected artifact refs</strong> describe the product proof; <strong>evaluator contract refs</strong> describe how the proof is judged.</div>
+          <div><strong>Depends on</strong> fields describe ordering and artifact handoff. Save, then recheck the package before composing the DAG.</div>
+        </div>
+      </details>
       <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 12, display: "flex", flexDirection: "column", gap: 12 }}>
-        <Field label="Outcome">
+        <Field label="Outcome" help="What becomes true for the user after this slice completes.">
           <textarea value={form.outcome} onChange={(event) => setForm((current) => ({ ...current, outcome: event.target.value }))} rows={4} style={textareaStyle} />
         </Field>
-        <Field label="State / artifact owner">
+        <Field label="State / artifact owner" help="The state or product artifact this slice is responsible for changing.">
           <input value={form.stateOrArtifactOwner} onChange={(event) => setForm((current) => ({ ...current, stateOrArtifactOwner: event.target.value }))} style={inputStyle} />
         </Field>
-        <Field label="Mutation boundary">
+        <Field label="Mutation boundary" help="The allowed change boundary; keep unrelated work out of this slice.">
           <textarea value={form.mutationBoundary} onChange={(event) => setForm((current) => ({ ...current, mutationBoundary: event.target.value }))} rows={3} style={textareaStyle} />
         </Field>
-        <Field label="Requirement IDs">
+        <Field label="Requirement IDs" help="The requirement IDs this slice covers, one per line.">
           <TextareaList value={form.requirementIds} onChange={(value) => setForm((current) => ({ ...current, requirementIds: value }))} />
         </Field>
-        <Field label="Expected artifact refs">
+        <Field label="Expected artifact refs" help="Product evidence this slice must produce, not a generic status report.">
           <TextareaList value={form.expectedArtifactRefs} onChange={(value) => setForm((current) => ({ ...current, expectedArtifactRefs: value }))} />
         </Field>
-        <Field label="Evaluator contract refs">
+        <Field label="Evaluator contract refs" help="Evaluator definitions that decide whether the slice evidence passes.">
           <TextareaList value={form.evaluatorContractRefs} onChange={(value) => setForm((current) => ({ ...current, evaluatorContractRefs: value }))} />
         </Field>
-        <Field label="Depends on slice IDs">
+        <Field label="Depends on slice IDs" help="Slices that must complete first.">
           <TextareaList value={form.dependsOnSliceIds} onChange={(value) => setForm((current) => ({ ...current, dependsOnSliceIds: value }))} />
         </Field>
-        <Field label="Dependency artifact refs">
+        <Field label="Dependency artifact refs" help="Upstream artifacts this slice consumes.">
           <TextareaList value={form.dependencyArtifactRefs} onChange={(value) => setForm((current) => ({ ...current, dependencyArtifactRefs: value }))} />
         </Field>
-        <Field label="Merge reason">
+        <Field label="Merge reason" help="Why this slice is merged with or kept separate from adjacent work.">
           <textarea value={form.mergeReason} onChange={(event) => setForm((current) => ({ ...current, mergeReason: event.target.value }))} rows={2} style={textareaStyle} />
         </Field>
       </div>
@@ -165,10 +179,11 @@ function Header({ title, subtitle }: { title: string; subtitle?: string }) {
   );
 }
 
-function Field({ label, children }: { label: string; children: ReactNode }) {
+function Field({ label, help, children }: { label: string; help?: string; children: ReactNode }) {
   return (
     <label style={{ display: "flex", flexDirection: "column", gap: 5 }}>
       <span style={{ color: "var(--text-dim)", fontSize: 11, fontWeight: 650 }}>{label}</span>
+      {help ? <span style={{ color: "var(--text-dim)", fontSize: 10, lineHeight: 1.35 }}>{help}</span> : null}
       {children}
     </label>
   );
@@ -302,6 +317,19 @@ const textareaStyle = {
   minHeight: 54,
   lineHeight: 1.45,
 } as const;
+
+const guideStyle = {
+  margin: "0 12px",
+  border: "1px solid var(--border)",
+  borderRadius: 6,
+  background: "var(--bg-panel)",
+  color: "var(--text-muted)",
+  fontSize: 11,
+  lineHeight: 1.45,
+} as const;
+
+const guideSummaryStyle = { cursor: "pointer", padding: "7px 9px", color: "var(--text)" } as const;
+const guideBodyStyle = { display: "grid", gap: 5, padding: "0 9px 9px" } as const;
 
 const footerStyle = {
   display: "flex",

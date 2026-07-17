@@ -8,7 +8,7 @@ import type {
   GoalRequirementSelection,
   GoalRequirementsContent,
 } from "@/lib/types";
-import type { GoalValidationProgressEvent } from "@/lib/workflow/generate-stream";
+import { generateWorkflowDagStream, type GoalValidationProgressEvent } from "../lib/workflow/generate-stream";
 
 export type GoalRequirementsConfirmation = {
   draftId: string;
@@ -22,26 +22,114 @@ export type GoalRequirementsConfirmationResult = GoalRequirementsContent | GoalD
 export function GoalRequirementListBlock({
   block,
   onRequirementSelect,
+  onGoalRequirements,
   onConfirmRequirements,
 }: {
   block: GoalRequirementsContent;
   onRequirementSelect?: (selection: GoalRequirementSelection) => void;
+  onGoalRequirements?: (content: GoalRequirementsContent) => void;
   onConfirmRequirements?: (confirmation: GoalRequirementsConfirmation) => void | Promise<GoalRequirementsConfirmationResult | void>;
 }) {
   const [currentBlock, setCurrentBlock] = useState(block);
+  const [blockerAnswers, setBlockerAnswers] = useState<Record<string, string>>({});
+  const [openQuestionAnswers, setOpenQuestionAnswers] = useState<Record<string, string>>({});
+  const [blockerResolution, setBlockerResolution] = useState<{ status: "idle" | "submitting" | "resolved" | "error"; message?: string }>({ status: "idle" });
   const [confirmState, setConfirmState] = useState<"idle" | "confirming" | "confirmed" | "error">("idle");
   const [confirmMessage, setConfirmMessage] = useState<string | null>(null);
   const [confirmProgress, setConfirmProgress] = useState<GoalValidationProgressEvent | null>(null);
   useEffect(() => {
     setCurrentBlock(block);
+    setBlockerAnswers(Object.fromEntries(block.draft.blockingInputs.map((_, index) => [String(index), ""])));
+    setOpenQuestionAnswers(Object.fromEntries(block.draft.requirements.flatMap((requirement) => requirement.openQuestions.map((_, index) => [questionAnswerKey(requirement.id, index), ""]))));
+    setBlockerResolution({ status: "idle" });
     setConfirmState("idle");
     setConfirmMessage(null);
     setConfirmProgress(null);
+  }, [block.draftId, block.goalRequirementDraftHash, block.status, block.draft.revision]);
+
+  // A UI contract confirmation changes host readiness without changing the
+  // requirement draft identity. Merge that projection into the local block so
+  // the Confirm button reflects the persisted contract state while preserving
+  // any in-progress clarification answers.
+  useEffect(() => {
+    setCurrentBlock((current) => {
+      if (
+        current.draftId !== block.draftId
+        || current.goalRequirementDraftHash !== block.goalRequirementDraftHash
+        || current.draft.revision !== block.draft.revision
+      ) return current;
+      const sameReadiness = current.status === block.status
+        && current.confirmable === block.confirmable
+        && JSON.stringify(current.validationIssues ?? []) === JSON.stringify(block.validationIssues ?? [])
+        && JSON.stringify(current.coveragePreview ?? []) === JSON.stringify(block.coveragePreview ?? [])
+        && JSON.stringify(current.blockers ?? []) === JSON.stringify(block.blockers ?? [])
+        && current.libraryImportDraftId === block.libraryImportDraftId;
+      if (sameReadiness) return current;
+      return {
+        ...current,
+        status: block.status,
+        confirmable: block.confirmable,
+        validationIssues: block.validationIssues,
+        ...(block.coveragePreview ? { coveragePreview: block.coveragePreview } : {}),
+        ...(block.blockers ? { blockers: block.blockers } : {}),
+        ...(block.libraryImportDraftId ? { libraryImportDraftId: block.libraryImportDraftId } : {}),
+      };
+    });
   }, [block]);
+
   const draft = currentBlock.draft;
   const coverage = useMemo(() => new Map((currentBlock.coveragePreview ?? []).map((entry) => [entry.requirementId, entry])), [currentBlock.coveragePreview]);
-  const hasUnresolvedBlockingQuestions = draft.requirements.some((item) => item.status !== "superseded" && item.blocking && item.openQuestions.length > 0);
-  const confirmable = currentBlock.confirmable === true && draft.blockingInputs.length === 0 && !hasUnresolvedBlockingQuestions;
+  const hasUnresolvedOpenQuestions = hasOpenQuestions(draft);
+  const hasVisualContractIssues = currentBlock.validationIssues?.some((issue) => issue.code === "missing_ui_interaction_contract" || issue.code === "unconfirmed_ui_interaction_contract") ?? false;
+  const confirmable = currentBlock.confirmable === true && draft.blockingInputs.length === 0 && !hasUnresolvedOpenQuestions;
+
+  const resolveBlockers = async () => {
+    if (blockerResolution.status === "submitting") return;
+    const answers = [
+      ...draft.blockingInputs.map((question, index) => ({ question, answer: blockerAnswers[String(index)]?.trim() ?? "" })),
+      ...draft.requirements
+        .filter((requirement) => requirement.status !== "superseded")
+        .flatMap((requirement) => requirement.openQuestions.map((question, index) => ({
+          question,
+          answer: openQuestionAnswers[questionAnswerKey(requirement.id, index)]?.trim() ?? "",
+        }))),
+    ];
+    if (answers.some(({ answer }) => answer.length === 0)) {
+      setBlockerResolution({ status: "error", message: "Answer every clarification before rechecking." });
+      return;
+    }
+    setBlockerResolution({ status: "submitting" });
+    let nextBlock: GoalRequirementsContent | null = null;
+    let followUp: string | null = null;
+    try {
+      await generateWorkflowDagStream({
+        prompt: blockerRevisionPrompt(answers),
+        draftId: currentBlock.draftId,
+        expectedDraftHash: currentBlock.goalRequirementDraftHash,
+        selectedRequirementIds: draft.requirements.filter((item) => item.status !== "superseded").map((item) => item.id),
+        onMessage(text) {
+          followUp = text;
+        },
+        onGoalRequirements(value) {
+          const content = goalRequirementsContentFromUnknown(value);
+          if (!content || !goalRequirementsContentShouldReplace(currentBlock, content)) return;
+          nextBlock = content;
+          setCurrentBlock(content);
+          onGoalRequirements?.(content);
+        },
+        onDone(result) {
+          if (result?.kind === "needs_input" && typeof result.question === "string") followUp = result.question;
+        },
+      });
+      const resolvedBlock = nextBlock as GoalRequirementsContent | null;
+      if (!resolvedBlock) throw new Error(followUp ?? "Requirement revision did not return a Goal Requirements revision.");
+      setBlockerResolution(resolvedBlock.draft.blockingInputs.length === 0 && !hasOpenQuestions(resolvedBlock.draft)
+        ? { status: "resolved", message: `Saved revision ${resolvedBlock.draft.revision}. All goal clarifications are resolved.` }
+        : { status: "error", message: followUp ?? "Some clarifications still need an answer." });
+    } catch (error) {
+      setBlockerResolution({ status: "error", message: error instanceof Error ? error.message : String(error) });
+    }
+  };
 
   const confirm = async () => {
     if (!confirmable || confirmState === "confirming") return;
@@ -98,6 +186,16 @@ export function GoalRequirementListBlock({
         <span style={pillStyle}>{draft.requirements.filter((item) => item.status !== "superseded").length} requirements</span>
       </header>
 
+      <details data-testid="goal-requirements-guide" style={guideStyle}>
+        <summary style={guideSummaryStyle}>How to answer blockers and complete this step</summary>
+        <div style={guideBodyStyle}>
+          <div><strong>1. Read each requirement.</strong> The title and statement describe the user outcome; the technical ID is only for linking.</div>
+          <div><strong>2. Answer every blocker or open question.</strong> Enter one proposed option such as <code>A</code> or a short decision, then choose <em>Answer and recheck</em>.</div>
+          <div><strong>3. Review each visual contract.</strong> Open the UI contract, inspect its screens and states, then choose <em>Confirm visual contract</em>.</div>
+          <div><strong>4. Confirm requirements.</strong> This button enables only after the host returns no unresolved inputs and all required visual contracts are confirmed.</div>
+        </div>
+      </details>
+
       <div style={metaRowStyle}>
         <span style={pillStyle}>{draft.requirements.filter((item) => item.source === "explicit" && item.status !== "superseded").length} explicit</span>
         <span style={pillStyle}>{draft.requirements.filter((item) => item.source === "inferred" && item.status !== "superseded").length} inferred</span>
@@ -108,66 +206,131 @@ export function GoalRequirementListBlock({
       {draft.blockingInputs.length > 0 ? (
         <div data-testid="goal-requirement-blockers" style={blockerPanelStyle}>
           <strong>Resolve before confirmation</strong>
-          <ul style={questionListStyle}>
-            {draft.blockingInputs.map((input, index) => <li key={`${input}-${index}`}>{input}</li>)}
-          </ul>
-          <div style={helperTextStyle}>Answer these clarifications in the editor or Workflow chat, then save the revised requirements.</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 6 }}>
+            {draft.blockingInputs.map((input, index) => (
+              <div key={`${input}-${index}`} style={blockerQuestionStyle}>
+                <div style={{ ...questionTextStyle, color: "#fbbf24" }}>{input}</div>
+                <label style={answerLabelStyle}>
+                  Answer
+                  <textarea
+                    aria-label={`Answer ${index + 1}`}
+                    data-testid={`goal-requirement-blocker-answer-${index}`}
+                    rows={2}
+                    value={blockerAnswers[String(index)] ?? ""}
+                    placeholder="Choose an option or add a short answer"
+                    onChange={(event) => setBlockerAnswers((current) => ({ ...current, [String(index)]: event.target.value }))}
+                    style={answerInputStyle}
+                  />
+                </label>
+              </div>
+            ))}
+          </div>
+          <div style={helperTextStyle}>Use one option letter when the question provides options, or add a short decision. Answer every clarification, then recheck the Goal Requirements revision.</div>
+          {blockerResolution.message ? <div data-testid="goal-requirement-resolution-status" role="status" style={resolutionMessageStyle}>{blockerResolution.message}</div> : null}
+          <button
+            type="button"
+            data-testid="goal-requirement-resolve"
+            disabled={blockerResolution.status === "submitting"}
+            onClick={() => void resolveBlockers()}
+            style={resolveButtonStyle}
+          >
+            {blockerResolution.status === "submitting" ? "Rechecking…" : "Answer and recheck"}
+          </button>
         </div>
       ) : null}
 
       <div style={listStyle}>
-        {draft.requirements.filter((item) => item.status !== "superseded").map((requirement) => {
+        {draft.requirements.filter((item) => item.status !== "superseded").map((requirement, index) => {
           const entry = coverage.get(requirement.id);
           const visualStatus = requirement.interactionContractRefs.length > 0 ? "visual review" : "no visual contract";
+          const requirementRef = `R${index + 1}`;
           return (
-            <button
-              key={requirement.id}
-              type="button"
-              data-testid={`goal-requirement-item-${requirement.id}`}
-              onClick={() => onRequirementSelect?.({
-                draftId: currentBlock.draftId,
-                expectedDraftHash: currentBlock.goalRequirementDraftHash,
-                requirementId: requirement.id,
-                draft,
-                status: currentBlock.status,
-                confirmable,
-                ...(currentBlock.validationIssues ? { validationIssues: currentBlock.validationIssues } : {}),
-                ...(currentBlock.coveragePreview ? { coveragePreview: currentBlock.coveragePreview } : {}),
-              })}
-              style={itemButtonStyle}
-            >
-              <div style={itemHeadingStyle}>
-                <strong style={{ color: "var(--text)", fontSize: 12 }}>{requirement.title}</strong>
-                <span style={miniPillStyle}>{requirement.source}</span>
-                {requirement.blocking ? <span style={{ ...miniPillStyle, color: "#fbbf24" }}>blocking</span> : null}
-              </div>
-              <div style={statementStyle}>{requirement.statement}</div>
-              <div style={metaRowStyle}>
-                <span style={miniPillStyle}>{requirement.acceptanceCriteria.length} AC</span>
-                <span style={miniPillStyle}>{requirement.status.replaceAll("_", " ")}</span>
-                <span style={miniPillStyle}>{coverageLabel(entry)}</span>
-                <span style={miniPillStyle}>{visualStatus}</span>
-              </div>
+            <div key={requirement.id} style={itemContainerStyle}>
+              <button
+                type="button"
+                data-testid={`goal-requirement-item-${requirement.id}`}
+                onClick={() => onRequirementSelect?.({
+                  draftId: currentBlock.draftId,
+                  expectedDraftHash: currentBlock.goalRequirementDraftHash,
+                  requirementId: requirement.id,
+                  draft,
+                  status: currentBlock.status,
+                  confirmable,
+                  ...(currentBlock.validationIssues ? { validationIssues: currentBlock.validationIssues } : {}),
+                  ...(currentBlock.coveragePreview ? { coveragePreview: currentBlock.coveragePreview } : {}),
+                })}
+                style={itemButtonStyle}
+              >
+                <div style={itemHeadingStyle}>
+                  <strong style={{ color: "var(--text)", fontSize: 12 }}><span style={semanticRefStyle}>{requirementRef}</span> {requirement.title}</strong>
+                  <span style={{ ...miniPillStyle, fontFamily: "var(--font-mono)" }}>{requirement.id}</span>
+                  <span style={miniPillStyle}>{requirement.source}</span>
+                  {requirement.blocking ? <span style={{ ...miniPillStyle, color: "#fbbf24" }}>blocking</span> : null}
+                </div>
+                <div style={statementStyle}>{requirement.statement}</div>
+                <div data-testid={`goal-requirement-semantic-tags-${requirement.id}`} style={{ color: "var(--text-muted)", fontSize: 11 }}>
+                  Semantic coverage: {requirement.semanticTags && requirement.semanticTags.length > 0 ? requirement.semanticTags.join(" · ") : "not recorded; validation will require confirmation before tagged Library reuse"}
+                </div>
+                <div style={metaRowStyle}>
+                  <span style={miniPillStyle}>{requirement.acceptanceCriteria.length} AC</span>
+                  <span style={miniPillStyle}>{requirement.status.replaceAll("_", " ")}</span>
+                  <span style={miniPillStyle}>{coverageLabel(entry)}</span>
+                  <span style={miniPillStyle}>{visualStatus}</span>
+                </div>
+              </button>
               {requirement.openQuestions.length > 0 ? (
                 <div data-testid={`goal-requirement-questions-${requirement.id}`} style={questionPanelStyle}>
                   <strong>Open questions</strong>
-                  <ul style={questionListStyle}>
-                    {requirement.openQuestions.map((question, index) => <li key={`${question}-${index}`}>{question}</li>)}
-                  </ul>
+                  {requirement.openQuestions.map((question, index) => (
+                    <div key={`${question}-${index}`} style={questionItemStyle}>
+                      <div style={questionTextStyle}>{question}</div>
+                      <label style={answerLabelStyle}>
+                        Answer with an option or short reply
+                        <textarea
+                          aria-label={`Answer ${requirement.title} question ${index + 1}`}
+                          data-testid={`goal-requirement-question-answer-${requirement.id}-${index}`}
+                          rows={2}
+                          placeholder="Choose an option or add a short answer"
+                          value={openQuestionAnswers[questionAnswerKey(requirement.id, index)] ?? ""}
+                          onChange={(event) => setOpenQuestionAnswers((current) => ({ ...current, [questionAnswerKey(requirement.id, index)]: event.target.value }))}
+                          style={answerInputStyle}
+                        />
+                      </label>
+                    </div>
+                  ))}
                 </div>
               ) : null}
-            </button>
+            </div>
           );
         })}
       </div>
+
+      {draft.blockingInputs.length === 0 && hasUnresolvedOpenQuestions ? (
+        <div data-testid="goal-requirement-open-question-resolution" style={blockerPanelStyle}>
+          <strong>Resolve before confirmation</strong>
+          <div style={helperTextStyle}>Use one option letter when available, or add a short decision. Answer every open question above, then recheck the Goal Requirements revision.</div>
+          {blockerResolution.message ? <div data-testid="goal-requirement-resolution-status" role="status" style={resolutionMessageStyle}>{blockerResolution.message}</div> : null}
+          <button
+            type="button"
+            data-testid="goal-requirement-resolve"
+            disabled={blockerResolution.status === "submitting"}
+            onClick={() => void resolveBlockers()}
+            style={resolveButtonStyle}
+          >
+            {blockerResolution.status === "submitting" ? "Rechecking…" : "Answer and recheck"}
+          </button>
+        </div>
+      ) : null}
 
       {draft.nonGoals.length > 0 ? <p style={bodyStyle}><strong>Non-goals:</strong> {draft.nonGoals.join(" · ")}</p> : null}
       <footer style={footerStyle}>
         <div data-testid="goal-validation-progress" data-event={confirmProgress?.event ?? ""} aria-live="polite" style={{ color: confirmState === "error" ? "#f87171" : "var(--text-dim)", fontSize: 11, minWidth: 0, overflowWrap: "anywhere" }}>
           {confirmMessage ?? (confirmable
             ? "Host marked this requirement draft confirmable."
-            : draft.blockingInputs.length > 0 || hasUnresolvedBlockingQuestions
-              ? "Resolve the listed blockers and questions before confirming."
+            : draft.blockingInputs.length > 0 || hasUnresolvedOpenQuestions
+            ? "Resolve the listed blockers and questions before confirming."
+            : hasVisualContractIssues
+              ? "Review each visual contract and choose Confirm visual contract before confirming requirements."
               : "Waiting for host validation readiness.")}
         </div>
         <button
@@ -206,6 +369,25 @@ function goalValidationProgressMessage(progress: GoalValidationProgressEvent): s
   if (progress.event === "library.import.candidates.validated") return "Library proposal passed coverage validation.";
   if (progress.event.startsWith("library.import.")) return "Preparing the complete Library validation proposal…";
   return progress.event;
+}
+
+function blockerRevisionPrompt(answers: Array<{ question: string; answer: string }>): string {
+  return [
+    "Resolve the goal-level clarification inputs below and return a complete revised Goal Requirements draft.",
+    "Apply each answer to the relevant requirements. Remove a blocking input only when its decision is fully answered.",
+    "Treat an answer as selecting one of the proposed options when possible, and remove an open question only when its decision is fully answered.",
+    "This is a clarification-only revision: preserve requirement titles, statements, acceptance criteria ids/order, and interactionContractRefs unless an answer explicitly changes them.",
+    "For any remaining open question or blocking input with finite choices, preserve 2-4 concise options in the question string as `Options: A) ...; B) ...`.",
+    ...answers.map(({ question, answer }, index) => `${index + 1}. Question: ${question}\nAnswer: ${answer}`),
+  ].join("\n");
+}
+
+function questionAnswerKey(requirementId: string, index: number): string {
+  return `${requirementId}:${index}`;
+}
+
+function hasOpenQuestions(draft: GoalRequirementDraftView): boolean {
+  return draft.requirements.some((requirement) => requirement.status !== "superseded" && requirement.openQuestions.length > 0);
 }
 
 function extractContent(value: unknown, previous: GoalRequirementsContent): GoalRequirementsContent | null {
@@ -414,6 +596,7 @@ function parseRequirement(value: unknown): GoalRequirementDraftView["requirement
     id: value.id,
     title: value.title,
     statement: value.statement,
+    ...(Array.isArray(value.semanticTags) ? { semanticTags: stringArray(value.semanticTags) } : {}),
     source: value.source,
     blocking: value.blocking,
     userVisibleBehaviors: stringArray(value.userVisibleBehaviors),
@@ -471,14 +654,25 @@ const subtitleStyle = { marginTop: 3, color: "var(--text-dim)", fontSize: 11, fo
 const metaRowStyle = { display: "flex", flexWrap: "wrap", gap: 5, marginTop: 8 } as const;
 const pillStyle = { border: "1px solid var(--border)", borderRadius: 999, padding: "2px 7px", color: "var(--text-dim)", background: "var(--bg)", fontSize: 10, fontFamily: "var(--font-mono)" } as const;
 const miniPillStyle = { ...pillStyle, borderRadius: 5, background: "rgba(0,0,0,0.08)" } as const;
+const semanticRefStyle = { color: "var(--accent)", fontFamily: "var(--font-mono)", fontSize: 10 } as const;
 const listStyle = { display: "flex", flexDirection: "column", gap: 7, marginTop: 11 } as const;
-const itemButtonStyle = { width: "100%", border: "1px solid var(--border)", borderRadius: 7, background: "var(--bg-panel)", padding: 10, cursor: "pointer", textAlign: "left" as const } as const;
+const itemContainerStyle = { border: "1px solid var(--border)", borderRadius: 7, background: "var(--bg-panel)" } as const;
+const itemButtonStyle = { width: "100%", border: "none", borderRadius: 7, background: "var(--bg-panel)", padding: 10, cursor: "pointer", textAlign: "left" as const } as const;
 const itemHeadingStyle = { display: "flex", alignItems: "center", flexWrap: "wrap" as const, gap: 5 } as const;
 const statementStyle = { marginTop: 5, color: "var(--text-muted)", fontSize: 12, lineHeight: 1.45 } as const;
 const blockerPanelStyle = { marginTop: 10, border: "1px solid rgba(251,191,36,0.38)", borderRadius: 7, background: "rgba(251,191,36,0.08)", padding: "8px 10px", color: "#fbbf24", fontSize: 11, lineHeight: 1.45 } as const;
+const blockerQuestionStyle = { border: "1px solid rgba(251,191,36,0.28)", borderRadius: 6, padding: "7px 8px", background: "rgba(0,0,0,0.08)" } as const;
+const answerLabelStyle = { display: "flex", flexDirection: "column" as const, gap: 4, marginTop: 5, color: "var(--text-dim)", fontSize: 10 } as const;
+const answerInputStyle = { width: "100%", resize: "vertical" as const, border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-panel)", color: "var(--text)", padding: "7px 8px", fontSize: 12, lineHeight: 1.4 } as const;
+const resolveButtonStyle = { alignSelf: "flex-start" as const, border: "1px solid #fbbf24", borderRadius: 6, background: "transparent", color: "#fbbf24", padding: "6px 9px", cursor: "pointer", fontSize: 11, fontWeight: 700 } as const;
+const resolutionMessageStyle = { color: "var(--text-dim)", fontSize: 10, whiteSpace: "pre-wrap" as const } as const;
 const questionPanelStyle = { marginTop: 6, borderLeft: "2px solid rgba(251,191,36,0.55)", paddingLeft: 8, color: "#fbbf24", fontSize: 11, lineHeight: 1.45 } as const;
-const questionListStyle = { margin: "4px 0 0", paddingLeft: 17 } as const;
+const questionItemStyle = { marginTop: 5 } as const;
+const questionTextStyle = { whiteSpace: "pre-wrap" as const } as const;
 const helperTextStyle = { marginTop: 6, color: "var(--text-dim)", fontSize: 10 } as const;
+const guideStyle = { marginTop: 10, border: "1px solid color-mix(in srgb, var(--accent) 22%, var(--border))", borderRadius: 7, background: "color-mix(in srgb, var(--accent) 5%, var(--bg-panel))", padding: "7px 9px" } as const;
+const guideSummaryStyle = { color: "var(--text)", cursor: "pointer", fontSize: 11, fontWeight: 700 } as const;
+const guideBodyStyle = { display: "flex", flexDirection: "column" as const, gap: 6, marginTop: 7, color: "var(--text-muted)", fontSize: 11, lineHeight: 1.45 } as const;
 const bodyStyle = { margin: "10px 0 0", color: "var(--text-muted)", fontSize: 11, lineHeight: 1.5 } as const;
 const footerStyle = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginTop: 11 } as const;
 const confirmButtonStyle = { border: "1px solid var(--accent)", borderRadius: 7, background: "var(--accent)", color: "#fff", padding: "8px 10px", cursor: "pointer", fontSize: 12, fontWeight: 700, flexShrink: 0 } as const;

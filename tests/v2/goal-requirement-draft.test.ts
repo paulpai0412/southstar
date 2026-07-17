@@ -111,6 +111,7 @@ test("LLM Requirement interpreter returns rich requirements without Library refs
   assert.match(prompts[0] ?? "", /Do not return host-owned fields/);
   assert.match(prompts[0] ?? "", /file-diff, test-result, command-output, url, screenshot/);
   assert.match(prompts[0] ?? "", /Do not attach interactionContractRefs to persistence, data integrity, offline operation/);
+  assert.match(prompts[0] ?? "", /openQuestions or blockingInputs.*2-4 concise answer options/i);
   assert.doesNotMatch(prompts[0] ?? "", /evaluatorContracts|slicePlan|agentDefinitionRef/);
   assert.match(draft.requirements[0]!.id, /^req-/);
   assert.equal(draft.requirements[0]!.status, "ready");
