@@ -3,24 +3,29 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { CheckCheck, ChevronDown, ChevronUp, Download, Square } from "lucide-react";
-import type { LibraryImportCandidate, LibraryImportCandidateCoverageTarget, LibraryImportProposedEdge } from "@/lib/library/types";
+import type { LibraryImportCandidate, LibraryImportCandidateCoverageTarget, LibraryImportProposedEdge, LibraryImportSourceDocument } from "@/lib/library/types";
+import { LibraryGraphChart, selectGraphNeighborhood, type LibraryGraphChartEdge, type LibraryGraphChartNode, type LibraryGraphSelectionGraph } from "./LibraryGraphChart";
 
 export function LibraryCandidateMessageBlock({
   draftId,
   candidates,
   candidateCoverageTargets,
   proposedEdges,
+  documents,
   status,
   installedObjectKeys,
   onInstall,
+  onSelectNode,
 }: {
   draftId: string;
   candidates: LibraryImportCandidate[];
   candidateCoverageTargets?: LibraryImportCandidateCoverageTarget[];
   proposedEdges?: LibraryImportProposedEdge[];
+  documents?: LibraryImportSourceDocument[];
   status: "draft" | "installing" | "installed";
   installedObjectKeys?: string[];
   onInstall: (selectedCandidateIds: string[], selectedEdgeIds?: string[]) => void;
+  onSelectNode?: (node: LibraryGraphChartNode) => void;
 }) {
   const installedKeys = useMemo(() => new Set(installedObjectKeys ?? []), [installedObjectKeys]);
   const selectableCandidates = useMemo(
@@ -58,6 +63,9 @@ export function LibraryCandidateMessageBlock({
   const allSelected = selectedIds.length === selectableCandidates.length && selectableCandidates.length > 0;
   const isInstalling = status === "installing";
   const installDisabled = isInstalling || selectedIds.length === 0;
+  const coverageGraph = candidateCoverageTargets && candidateCoverageTargets.length > 0
+    ? buildCandidateCoverageGraph(candidates, candidateCoverageTargets, proposedEdges, installedObjectKeys, documents)
+    : undefined;
 
   return (
     <div
@@ -144,6 +152,9 @@ export function LibraryCandidateMessageBlock({
               checked={selected.has(candidate.objectKey) && !installedKeys.has(candidate.objectKey)}
               disabled={proposalLocked || isInstalling || installedKeys.has(candidate.objectKey)}
               installed={installedKeys.has(candidate.objectKey)}
+              documents={documents}
+              selectionGraph={coverageGraph ? selectGraphNeighborhood(coverageGraph, candidate.objectKey) : undefined}
+              onSelectNode={onSelectNode}
               onCheckedChange={(checked) => {
                 setSelected((current) => {
                   const next = new Set(current);
@@ -170,8 +181,184 @@ export function LibraryCandidateMessageBlock({
           ))}
         </div>
       ) : null}
+      {candidateCoverageTargets && candidateCoverageTargets.length > 0 ? (
+        <CandidateCoveragePreview
+          draftId={draftId}
+          candidates={candidates}
+          coverageTargets={candidateCoverageTargets}
+          graph={coverageGraph!}
+          onSelectNode={onSelectNode}
+        />
+      ) : null}
     </div>
   );
+}
+
+function CandidateCoveragePreview({
+  draftId,
+  candidates,
+  coverageTargets,
+  graph,
+  onSelectNode,
+}: {
+  draftId: string;
+  candidates: LibraryImportCandidate[];
+  coverageTargets: LibraryImportCandidateCoverageTarget[];
+  graph: LibraryGraphSelectionGraph;
+  onSelectNode?: (node: LibraryGraphChartNode) => void;
+}) {
+  const requirementIds = new Set(coverageTargets.map((target) => target.requirementId));
+  const criterionIds = new Set(coverageTargets.flatMap((target) => target.criterionIds));
+
+  return (
+    <section data-testid="candidate-coverage-preview" style={{ display: "grid", gap: 7, paddingTop: 2 }}>
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+        <strong>Candidate coverage preview</strong>
+        <span data-testid="candidate-coverage-summary" style={{ fontSize: 11, color: "var(--text-dim)" }}>
+          {requirementIds.size} requirement{requirementIds.size === 1 ? "" : "s"} · {criterionIds.size} AC · {candidates.length} candidate{candidates.length === 1 ? "" : "s"}
+        </span>
+      </div>
+      <div style={{ fontSize: 11, color: "var(--text-dim)" }}>
+        Proposal only: installing a candidate does not create runtime lineage until the Goal Contract and workflow are persisted.
+      </div>
+      <LibraryGraphChart
+        nodes={graph.nodes}
+        edges={graph.edges}
+        onSelectNode={(node) => onSelectNode?.({
+          ...node,
+          selectionGraph: selectGraphNeighborhood(graph, node.objectKey),
+        })}
+        persistLayoutKey={`candidate-coverage:${draftId}`}
+      />
+    </section>
+  );
+}
+
+function buildCandidateCoverageGraph(
+  candidates: LibraryImportCandidate[],
+  coverageTargets: LibraryImportCandidateCoverageTarget[],
+  proposedEdges: LibraryImportProposedEdge[] | undefined,
+  installedObjectKeys: string[] | undefined,
+  documents: LibraryImportSourceDocument[] | undefined,
+): { nodes: LibraryGraphChartNode[]; edges: LibraryGraphChartEdge[] } {
+  const installedKeys = new Set(installedObjectKeys ?? []);
+  const candidatesByKey = new Map(candidates.map((candidate) => [candidate.objectKey, candidate]));
+  const sourceRequirements = sourceRequirementRecords(documents);
+  const nodes = new Map<string, LibraryGraphChartNode>();
+  const edges: LibraryGraphChartEdge[] = [];
+  const edgeKeys = new Set<string>();
+
+  const addNode = (node: LibraryGraphChartNode) => {
+    if (!nodes.has(node.objectKey)) nodes.set(node.objectKey, node);
+  };
+  const addEdge = (edge: LibraryGraphChartEdge) => {
+    const key = `${edge.fromObjectKey}:${edge.edgeType}:${edge.toObjectKey}`;
+    if (edgeKeys.has(key)) return;
+    edgeKeys.add(key);
+    edges.push(edge);
+  };
+
+  candidates.forEach((candidate) => addNode({
+    objectKey: candidate.objectKey,
+    title: candidate.title,
+    objectKind: candidate.kind,
+    status: installedKeys.has(candidate.objectKey) ? "installed" : "proposed",
+    sourcePath: candidate.sourcePath,
+    sourceContent: sourceDocumentForCandidate(candidate, documents)?.content,
+    metadata: candidate as unknown as Record<string, unknown>,
+  }));
+
+  coverageTargets.forEach((target) => {
+    const requirementKey = `requirement:${target.requirementId}`;
+    const candidate = candidatesByKey.get(target.candidateObjectKey);
+    const missingCandidate = !candidate;
+    const requirement = sourceRequirements.find((item) => item.id === target.requirementId);
+    addNode({
+      objectKey: requirementKey,
+      title: `Requirement ${target.requirementId}`,
+      objectKind: "requirement",
+      status: missingCandidate ? "blocked" : "proposed",
+      metadata: requirementMetadata(requirement, target.requirementId),
+    });
+
+    const criterionIds = target.criterionIds.length > 0 ? target.criterionIds : [`gap:${target.gapRef}`];
+    const candidateKey = candidate?.objectKey ?? `candidate:missing:${target.candidateObjectKey}`;
+    if (missingCandidate) {
+      addNode({
+        objectKey: candidateKey,
+        title: `Missing candidate · ${target.candidateObjectKey}`,
+        objectKind: "candidate",
+        status: "blocked",
+      });
+    }
+
+    criterionIds.forEach((criterionId) => {
+      const criterionKey = `ac:${target.requirementId}:${criterionId}`;
+      const criterion = criterionForRequirement(requirement, criterionId);
+      addNode({
+        objectKey: criterionKey,
+        title: `AC ${criterionId}`,
+        objectKind: "acceptance_criteria",
+        status: missingCandidate ? "blocked" : "proposed",
+        metadata: criterionMetadata(criterion, requirement, criterionId),
+      });
+      addEdge({ fromObjectKey: requirementKey, toObjectKey: criterionKey, edgeType: "has criterion" });
+      addEdge({ fromObjectKey: criterionKey, toObjectKey: candidateKey, edgeType: "candidate covers" });
+    });
+  });
+
+  proposedEdges?.forEach((edge) => {
+    addNode({ objectKey: edge.fromObjectKey, title: edge.fromObjectKey, objectKind: "ontology", status: "proposed" });
+    addNode({ objectKey: edge.toObjectKey, title: edge.toObjectKey, objectKind: "ontology", status: "proposed" });
+    addEdge({
+      fromObjectKey: edge.fromObjectKey,
+      toObjectKey: edge.toObjectKey,
+      edgeType: edge.edgeType,
+      ontology: { confidence: edge.confidence, rationale: edge.rationale },
+    });
+  });
+
+  return { nodes: [...nodes.values()], edges };
+}
+
+type SourceRecord = Record<string, unknown>;
+
+function sourceRequirementRecords(documents: LibraryImportSourceDocument[] | undefined): SourceRecord[] {
+  const content = documents?.[0]?.content?.trim();
+  if (!content) return [];
+  try {
+    const parsed = JSON.parse(content) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
+    const requirements = (parsed as SourceRecord).requirements;
+    return Array.isArray(requirements)
+      ? requirements.filter((item): item is SourceRecord => Boolean(item && typeof item === "object" && !Array.isArray(item)))
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function requirementMetadata(requirement: SourceRecord | undefined, requirementId: string): Record<string, unknown> {
+  if (!requirement) return { description: `No Requirement statement was supplied for ${requirementId}.` };
+  return pickContentFields(requirement, ["id"]);
+}
+
+function criterionForRequirement(requirement: SourceRecord | undefined, criterionId: string): SourceRecord | undefined {
+  const intents = requirement?.criterionIntent;
+  if (!Array.isArray(intents)) return undefined;
+  return intents.find((item): item is SourceRecord => Boolean(item && typeof item === "object" && !Array.isArray(item) && (item as SourceRecord).id === criterionId));
+}
+
+function criterionMetadata(criterion: SourceRecord | undefined, requirement: SourceRecord | undefined, criterionId: string): Record<string, unknown> {
+  if (criterion) return pickContentFields(criterion, ["id"]);
+  const acceptanceCriteria = Array.isArray(requirement?.acceptanceCriteria) ? requirement.acceptanceCriteria : [];
+  return {
+    statement: acceptanceCriteria.length === 1 ? acceptanceCriteria[0] : `No acceptance criterion statement was supplied for ${criterionId}.`,
+  };
+}
+
+function pickContentFields(record: SourceRecord, omittedKeys: string[]): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(record).filter(([key]) => !omittedKeys.includes(key)));
 }
 
 function IconButton({
@@ -220,6 +407,9 @@ function CandidateRow({
   checked,
   disabled,
   installed,
+  documents,
+  selectionGraph,
+  onSelectNode,
   onCheckedChange,
 }: {
   candidate: LibraryImportCandidate;
@@ -227,13 +417,17 @@ function CandidateRow({
   checked: boolean;
   disabled: boolean;
   installed: boolean;
+  documents?: LibraryImportSourceDocument[];
+  selectionGraph?: LibraryGraphSelectionGraph;
+  onSelectNode?: (node: LibraryGraphChartNode) => void;
   onCheckedChange: (checked: boolean) => void;
 }) {
+  const sourceDocument = sourceDocumentForCandidate(candidate, documents);
   return (
-          <label
+          <div
             style={{
               display: "grid",
-              gridTemplateColumns: "auto minmax(0, 1fr)",
+              gridTemplateColumns: "auto minmax(0, 1fr) auto",
               gap: 8,
               alignItems: "start",
               border: "1px solid var(--border)",
@@ -284,8 +478,35 @@ function CandidateRow({
                 </span>
               ) : null}
             </span>
-          </label>
+            {onSelectNode ? (
+              <button
+                type="button"
+                aria-label={`View ${candidate.title}`}
+                onClick={() => onSelectNode({
+                  objectKey: candidate.objectKey,
+                  objectKind: candidate.kind,
+                  status: installed ? "installed" : "proposed",
+                  title: candidate.title,
+                  sourcePath: candidate.sourcePath,
+                  sourceContent: sourceDocument?.content,
+                  metadata: candidate as unknown as Record<string, unknown>,
+                  selectionGraph,
+                })}
+                style={{ alignSelf: "start", whiteSpace: "nowrap", fontSize: 11 }}
+              >
+                View
+              </button>
+            ) : null}
+          </div>
   );
+}
+
+function sourceDocumentForCandidate(
+  candidate: LibraryImportCandidate,
+  documents?: LibraryImportSourceDocument[],
+): LibraryImportSourceDocument | undefined {
+  if (!candidate.sourcePath) return undefined;
+  return documents?.find((document) => document.path === candidate.sourcePath || document.path.endsWith(`/${candidate.sourcePath}`));
 }
 
 const importGuideStyle = {

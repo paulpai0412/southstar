@@ -126,6 +126,11 @@ export type PlannerDraftTaskSummary = {
   dependsOn: string[];
   roleRef?: string;
   agentProfileRef?: string;
+  agentRef?: string;
+  harnessRef?: string;
+  provider?: string;
+  model?: string;
+  thinkingLevel?: string;
   /** Existing task prompt lineage projected for the workflow UI. */
   requirementIds?: string[];
   sliceId?: string;
@@ -539,7 +544,7 @@ export async function validatePostgresPlannerDraft(
     const validationIssues = parseValidationIssues(summary.validationIssues);
     const taskSummaries = parseTaskSummaries(summary.taskSummaries).length > 0
       ? parseTaskSummaries(summary.taskSummaries)
-      : summarizeWorkflowTasksFromPayload(workflow.tasks);
+      : summarizeWorkflowTasksFromPayload(workflow.tasks, workflow.agentProfiles);
     const storedContract = goalContractFromStored(payload.goalContract);
     const canonicalHash = goalContractHash(contract);
     const blockedStatus = draft.status === PLANNER_DRAFT_STATUS_NEEDS_LIBRARY_INPUT
@@ -603,7 +608,7 @@ export async function validatePostgresPlannerDraft(
     ...validatePlannerDraftWorkflow(refreshed.workflow),
   ];
   const status = issues.length === 0 ? PLANNER_DRAFT_STATUS_VALIDATED : PLANNER_DRAFT_STATUS_INVALID;
-  const taskSummaries = summarizeWorkflowTasksFromPayload(refreshed.workflow.tasks);
+  const taskSummaries = summarizeWorkflowTasksFromPayload(refreshed.workflow.tasks, refreshed.workflow.agentProfiles);
   const orchestrationSnapshot = refreshDraftValidationSnapshot(refreshed.orchestrationSnapshot, issues);
   const lineage = buildPlannerDraftLineage({
     goalContract: contract,
@@ -1413,7 +1418,12 @@ export async function getPostgresPlannerDraftOrchestration(
       : undefined;
   const taskSummaries = parseTaskSummaries(summary.taskSummaries).length > 0
     ? parseTaskSummaries(summary.taskSummaries)
-    : summarizeWorkflowTasksFromPayload(workflow.tasks);
+    : summarizeWorkflowTasksFromPayload(workflow.tasks, workflow.agentProfiles);
+  const taskSummariesWithBindings = enrichTaskSummariesWithWorkflow(
+    taskSummaries,
+    workflow.tasks,
+    workflow.agentProfiles,
+  );
   const stagedRequirement = payload.goalRequirementDraft && typeof payload.goalRequirementDraft === "object"
     ? payload.goalRequirementDraft as GoalRequirementDraftV1
     : undefined;
@@ -1444,7 +1454,7 @@ export async function getPostgresPlannerDraftOrchestration(
         ? (Array.isArray(stagedRequirement?.blockingInputs) ? [...stagedRequirement.blockingInputs] : [])
         : [...(contract?.blockingInputs ?? [])],
     validationIssues,
-    taskSummaries,
+    taskSummaries: taskSummariesWithBindings,
     ...(vocabularyGaps.length > 0 ? { vocabularyGaps } : {}),
     ...(stringValue(payload.libraryImportDraftId) ? { libraryImportDraftId: stringValue(payload.libraryImportDraftId) } : {}),
     ...(isRecord(payload.templateSelectionDecision) ? { templateSelectionDecision: payload.templateSelectionDecision as TemplateSelectionBlock } : {}),
@@ -1462,7 +1472,7 @@ async function markPlannerDraftNeedsValidation(db: SouthstarDb, draftId: string)
   const workflow = asWorkflowManifest(payload.workflow);
   const contract = storedOrLegacyGoalContract(payload, summary, draftId);
   const contractHash = storedGoalContractHash(summary, payload, contract);
-  const taskSummaries = summarizeWorkflowTasksFromPayload(workflow.tasks);
+  const taskSummaries = summarizeWorkflowTasksFromPayload(workflow.tasks, workflow.agentProfiles);
   const workflowId = stringValue(summary.workflowId) ?? workflow.workflowId ?? "";
   const goalPrompt = stringValue(summary.goalPrompt) ?? workflow.goalPrompt ?? "";
   const validationIssues = draftNeedsValidationIssues();
@@ -1929,18 +1939,21 @@ function hash(value: string): string {
 }
 
 function summarizeWorkflowTasks(workflow: SouthstarWorkflowManifest): PlannerDraftTaskSummary[] {
+  const profilesById = profileRecordsById(workflow.agentProfiles);
   return workflow.tasks.map((task) => ({
     taskId: task.id,
     taskName: task.name,
     dependsOn: task.dependsOn,
     ...(task.roleRef ? { roleRef: task.roleRef } : {}),
     ...(task.agentProfileRef ? { agentProfileRef: task.agentProfileRef } : {}),
+    ...profileBindingForTask(task, profilesById),
     ...taskSemanticSummary(task.promptInputs),
   }));
 }
 
-function summarizeWorkflowTasksFromPayload(tasksValue: unknown): PlannerDraftTaskSummary[] {
+function summarizeWorkflowTasksFromPayload(tasksValue: unknown, profilesValue?: unknown): PlannerDraftTaskSummary[] {
   if (!Array.isArray(tasksValue)) return [];
+  const profilesById = profileRecordsById(profilesValue);
   const summaries: PlannerDraftTaskSummary[] = [];
   for (const task of tasksValue) {
     if (!isRecord(task)) continue;
@@ -1952,6 +1965,7 @@ function summarizeWorkflowTasksFromPayload(tasksValue: unknown): PlannerDraftTas
       dependsOn: parseDependsOn(task.dependsOn),
       ...(stringValue(task.roleRef) ? { roleRef: stringValue(task.roleRef) } : {}),
       ...(stringValue(task.agentProfileRef) ? { agentProfileRef: stringValue(task.agentProfileRef) } : {}),
+      ...profileBindingForTask(task, profilesById),
       ...taskSemanticSummary(task.promptInputs),
     });
   }
@@ -2015,6 +2029,11 @@ function parseTaskSummaries(value: unknown): PlannerDraftTaskSummary[] {
       dependsOn: parseDependsOn(task.dependsOn),
       ...(stringValue(task.roleRef) ? { roleRef: stringValue(task.roleRef) } : {}),
       ...(stringValue(task.agentProfileRef) ? { agentProfileRef: stringValue(task.agentProfileRef) } : {}),
+      ...(stringValue(task.agentRef) ? { agentRef: stringValue(task.agentRef) } : {}),
+      ...(stringValue(task.harnessRef) ? { harnessRef: stringValue(task.harnessRef) } : {}),
+      ...(stringValue(task.provider) ? { provider: stringValue(task.provider) } : {}),
+      ...(stringValue(task.model) ? { model: stringValue(task.model) } : {}),
+      ...(stringValue(task.thinkingLevel) ? { thinkingLevel: stringValue(task.thinkingLevel) } : {}),
       ...(Array.isArray(task.requirementIds) ? { requirementIds: stringArray(task.requirementIds) } : {}),
       ...(stringValue(task.sliceId) ? { sliceId: stringValue(task.sliceId) } : {}),
       ...(stringValue(task.purpose) ? { purpose: stringValue(task.purpose) } : {}),
@@ -2023,6 +2042,52 @@ function parseTaskSummaries(value: unknown): PlannerDraftTaskSummary[] {
     });
   }
   return summaries;
+}
+
+function enrichTaskSummariesWithWorkflow(
+  summaries: PlannerDraftTaskSummary[],
+  tasksValue: unknown,
+  profilesValue: unknown,
+): PlannerDraftTaskSummary[] {
+  if (!Array.isArray(tasksValue)) return summaries;
+  const profilesById = profileRecordsById(profilesValue);
+  const tasksById = new Map(
+    tasksValue
+      .filter(isRecord)
+      .map((task) => [stringValue(task.id), task] as const)
+      .filter((entry): entry is readonly [string, Record<string, unknown>] => Boolean(entry[0])),
+  );
+  return summaries.map((summary) => ({
+    ...summary,
+    ...profileBindingForTask(tasksById.get(summary.taskId), profilesById),
+  }));
+}
+
+function profileRecordsById(value: unknown): Map<string, Record<string, unknown>> {
+  if (!Array.isArray(value)) return new Map();
+  return new Map(
+    value
+      .filter(isRecord)
+      .map((profile) => [stringValue(profile.id), profile] as const)
+      .filter((entry): entry is readonly [string, Record<string, unknown>] => Boolean(entry[0])),
+  );
+}
+
+function profileBindingForTask(
+  taskValue: unknown,
+  profilesById: Map<string, Record<string, unknown>>,
+): Pick<PlannerDraftTaskSummary, "agentRef" | "harnessRef" | "provider" | "model" | "thinkingLevel"> {
+  const task = isRecord(taskValue) ? taskValue : undefined;
+  const profile = task?.agentProfileRef ? profilesById.get(stringValue(task.agentProfileRef) ?? "") : undefined;
+  const override = asRecord(task?.profileOverride);
+  const value = (key: string): string | undefined => stringValue(override[key]) ?? stringValue(profile?.[key]);
+  return {
+    ...(value("agentRef") ? { agentRef: value("agentRef") } : {}),
+    ...(value("harnessRef") ? { harnessRef: value("harnessRef") } : {}),
+    ...(value("provider") ? { provider: value("provider") } : {}),
+    ...(value("model") ? { model: value("model") } : {}),
+    ...(value("thinkingLevel") ? { thinkingLevel: value("thinkingLevel") } : {}),
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -103,6 +103,7 @@ export type SubmitGoalContext = {
   libraryImportSourceFetcher?: LibraryImportSourceFetcher;
   startScheduling?: (db: SouthstarDb, input: { runId: string }) => Promise<StartRunSchedulingResult>;
   onStage?: (stage: string, data?: Record<string, unknown>) => void;
+  onLlmDelta?: (text: string) => void;
 };
 
 export class GoalSubmissionConflictError extends Error {
@@ -492,6 +493,7 @@ export async function continueGoalDesignToRunPg(
           observedStages.push(event.stage);
           context.onStage?.(event.stage);
         },
+        onLlmDelta: context.onLlmDelta,
       });
   } catch (error) {
     await failGoalDesignConfirmationPg(context.db, {

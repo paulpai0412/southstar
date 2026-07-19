@@ -6,6 +6,7 @@ const allowedProviders = new Set<AgentProvider>([
   "claude-code",
   "openai",
   "openai-codex",
+  "github-copilot",
   "anthropic",
   "custom",
 ]);

@@ -4,11 +4,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { AgentMessage, ExtensionUiRequest, GoalDesignContent, GoalRequirementSelection, GoalRequirementsContent, GoalSliceSelection, LibraryImportCandidatesContent, SessionInfo, SessionTreeNode, WorkspaceSurface } from "@/lib/types";
 import type { GoalRequirementsConfirmation, GoalRequirementsConfirmationResult } from "./GoalRequirementListBlock";
 import { MessageView } from "./MessageView";
+import { GoalSlicePlanBlock } from "./GoalSlicePlanBlock";
 import { ChatInput, type ChatInputHandle } from "./ChatInput";
 import { ChatMinimap, useMessageRefs } from "./ChatMinimap";
 import { useAgentSession, type AgentPhase, type NoticeItem, type WorkflowProgress } from "@/hooks/useAgentSession";
 import { useAudio } from "@/hooks/useAudio";
 import { useDragDrop } from "@/hooks/useDragDrop";
+import { latestGoalDesignContent } from "@/lib/agent-session-engine";
 import type { SessionStatsInfo } from "@/lib/pi-types";
 import type { WorkflowDag, WorkflowDagNode, WorkflowTemplateSummary } from "@/lib/workflow/types";
 import type { LibraryGraphChartNode } from "./library/LibraryGraphChart";
@@ -90,6 +92,49 @@ const CHAT_MINIMAP_WIDTH = 36;
 const CHAT_COLUMN_PADDING = 16;
 const CHAT_INPUT_RIGHT_PADDING = CHAT_COLUMN_PADDING + CHAT_MINIMAP_WIDTH;
 
+function containsGoalDesignBlock(content: unknown, draftId: string, packageHash?: string): boolean {
+  return Array.isArray(content) && content.some((block) => {
+    if (!block || typeof block !== "object") return false;
+    const record = block as { type?: unknown; draftId?: unknown; goalDesignPackageHash?: unknown };
+    return record.type === "goalDesign"
+      && record.draftId === draftId
+      && (!packageHash || record.goalDesignPackageHash === packageHash);
+  });
+}
+
+function keepCurrentGoalDesign(message: AgentMessage, current: GoalDesignContent | null): AgentMessage {
+  if (!current || !current.goalDesignPackageHash || message.role !== "assistant") return message;
+  let changed = false;
+  const content = message.content.flatMap((block) => {
+    if (block.type !== "goalDesign" || block.draftId !== current.draftId) return [block];
+    if (block.goalDesignPackageHash !== current.goalDesignPackageHash) {
+      changed = true;
+      return [];
+    }
+    changed = true;
+    return [current];
+  });
+  return changed ? { ...message, content } : message;
+}
+
+function latestGoalRequirementsContent(messages: unknown[], streamingContent?: unknown): GoalRequirementsContent | null {
+  const contents = [...messages, streamingContent];
+  for (let index = contents.length - 1; index >= 0; index -= 1) {
+    const message = contents[index];
+    const blocks = message && typeof message === "object" && "content" in message
+      ? (message as { content?: unknown }).content
+      : message;
+    if (!Array.isArray(blocks)) continue;
+    for (let blockIndex = blocks.length - 1; blockIndex >= 0; blockIndex -= 1) {
+      const block = blocks[blockIndex];
+      if (!block || typeof block !== "object") continue;
+      const record = block as { type?: unknown };
+      if (record.type === "goalRequirements") return block as GoalRequirementsContent;
+    }
+  }
+  return null;
+}
+
 function Typewriter({ phrases }: { phrases: string[] }) {
   const [phraseIdx, setPhraseIdx] = useState(() => Math.floor(Math.random() * phrases.length));
   const [text, setText] = useState("");
@@ -146,7 +191,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
     session, newSessionCwd, onAgentEnd, onSessionCreated, onSessionForked,
     modelsRefreshKey, onBranchDataChange, onSystemPromptChange, onSessionStatsPanelOpen,
     sessionKind, libraryScope, workflowMode, workflowTemplate, workflowCwd, onWorkflowDagNodeSelect, goalDesignRevisionAnchor,
-    goalRequirementRevisionAnchor, onGoalRequirements,
+    goalRequirementRevisionAnchor, goalRequirementContentOverride, onGoalRequirements,
   });
 
   const { soundEnabled, onSoundToggle, playDoneSound } = useAudio();
@@ -210,6 +255,14 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
 
   const visibleMessages = messages.filter((m) => m.role === "user" || m.role === "assistant");
   const messageRefs = useMessageRefs(visibleMessages.length);
+
+  const goalDesignContentForViewer = goalDesignContentOverride ?? latestGoalDesignContent(messages);
+  const goalDesignAlreadyRendered = Boolean(goalDesignContentForViewer && (
+    messages.some((message) => message.role === "assistant" && containsGoalDesignBlock(message.content, goalDesignContentForViewer.draftId, goalDesignContentForViewer.goalDesignPackageHash))
+    || containsGoalDesignBlock(streamState.streamingMessage?.content, goalDesignContentForViewer.draftId, goalDesignContentForViewer.goalDesignPackageHash)
+  ));
+  const goalRequirementContentForViewer = goalRequirementContentOverride
+    ?? latestGoalRequirementsContent(messages, streamState.streamingMessage);
 
   const isEmptyNew = isNew && visibleMessages.length === 0 && !streamState.isStreaming && !agentRunning;
   const shouldAnchorBottom = visibleMessages.length > 0 || streamState.isStreaming || agentRunning;
@@ -435,7 +488,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
                 const view = (
                   <MessageView
                     key={idx}
-                    message={msg}
+                    message={keepCurrentGoalDesign(msg, goalDesignContentForViewer)}
                     toolResults={toolResultsMap}
                     modelNames={modelNames}
                     entryId={entryIds[idx]}
@@ -453,8 +506,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
                     onConfirmGoalDesign={onConfirmGoalDesign ?? handleConfirmGoalDesign}
                     onGoalRequirementSelect={onGoalRequirementSelect}
                     onConfirmRequirements={onConfirmRequirements}
-                    goalRequirementContentOverride={goalRequirementContentOverride}
-                    goalDesignContentOverride={goalDesignContentOverride}
+                    goalRequirementContentOverride={goalRequirementContentForViewer}
                     goalLibraryImportCandidatesOverride={goalLibraryImportCandidatesOverride}
                     onGoalValidationResume={onGoalValidationResume}
                     onGoalContractSelect={onGoalContractSelect}
@@ -476,8 +528,20 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
             })()}
 
             {streamState.isStreaming && streamState.streamingMessage && (
-              <MessageView message={streamState.streamingMessage as AgentMessage} isStreaming modelNames={modelNames} workflowCwd={workflowCwd} onWorkflowDagNodeSelect={onWorkflowDagNodeSelect} onGoalRequirements={onGoalRequirements} onGoalSliceSelect={onGoalSliceSelect} onConfirmGoalDesign={onConfirmGoalDesign ?? handleConfirmGoalDesign} onGoalRequirementSelect={onGoalRequirementSelect} onConfirmRequirements={onConfirmRequirements} goalRequirementContentOverride={goalRequirementContentOverride} goalDesignContentOverride={goalDesignContentOverride} goalLibraryImportCandidatesOverride={goalLibraryImportCandidatesOverride} onGoalValidationResume={onGoalValidationResume} onGoalContractSelect={onGoalContractSelect} onWorkflowGoalRevise={onWorkflowGoalRevise} onLibraryGraphNodeSelect={onLibraryGraphNodeSelect} onWorkspaceSurfaceChange={onWorkspaceSurfaceChange} />
+              <MessageView message={streamState.streamingMessage as AgentMessage} isStreaming modelNames={modelNames} workflowCwd={workflowCwd} onWorkflowDagNodeSelect={onWorkflowDagNodeSelect} onGoalRequirements={onGoalRequirements} onGoalSliceSelect={onGoalSliceSelect} onConfirmGoalDesign={onConfirmGoalDesign ?? handleConfirmGoalDesign} onGoalRequirementSelect={onGoalRequirementSelect} onConfirmRequirements={onConfirmRequirements} goalRequirementContentOverride={goalRequirementContentForViewer} goalLibraryImportCandidatesOverride={goalLibraryImportCandidatesOverride} onGoalValidationResume={onGoalValidationResume} onGoalContractSelect={onGoalContractSelect} onWorkflowGoalRevise={onWorkflowGoalRevise} onLibraryGraphNodeSelect={onLibraryGraphNodeSelect} onWorkspaceSurfaceChange={onWorkspaceSurfaceChange} />
             )}
+
+            {goalDesignContentForViewer && !goalDesignAlreadyRendered ? (
+              <div data-testid="goal-slice-plan-tail" style={{ marginBottom: 16 }}>
+                <GoalSlicePlanBlock
+                  block={goalDesignContentForViewer}
+                  requirementContent={goalRequirementContentForViewer}
+                  onSliceSelect={onGoalSliceSelect}
+                  onConfirmGoalDesign={onConfirmGoalDesign ?? handleConfirmGoalDesign}
+                  onLibraryGraphNodeSelect={onLibraryGraphNodeSelect}
+                />
+              </div>
+            ) : null}
 
             {agentRunning && !streamState.streamingMessage && (
               <div className="py-2 text-[13px] text-text-muted">

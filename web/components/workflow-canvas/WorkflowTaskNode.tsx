@@ -20,16 +20,33 @@ export function WorkflowTaskNode(props: NodeProps<WorkflowTaskFlowNode>) {
   return (
     <article
       data-testid={`workflow-dag-node-${props.data.id}`}
-      className={`ss-flow-node ss-flow-node-${status} ${props.data.selected ? "ss-flow-node-selected" : ""}`}
+      className={`ss-flow-node ss-flow-node-${status} ${props.data.collapsed ? "ss-flow-node-collapsed" : ""} ${props.data.selected ? "ss-flow-node-selected" : ""}`}
       style={{ borderColor: colors.border, background: colors.fill }}
     >
       <Handle type="target" position={Position.Top} className="ss-flow-handle" />
       <header className="ss-flow-node-header">
         <strong>{props.data.label}</strong>
-        <span className="ss-flow-node-status" style={{ color: colors.text }}>
-          {status}
-        </span>
+        <div className="ss-flow-node-header-actions">
+          <span className="ss-flow-node-status" style={{ color: colors.text }}>{status}</span>
+          <button
+            type="button"
+            className="ss-flow-node-toggle"
+            data-testid={`workflow-dag-node-toggle-${props.data.id}`}
+            aria-label={props.data.collapsed ? `Expand ${props.data.label}` : `Collapse ${props.data.label}`}
+            aria-expanded={!props.data.collapsed}
+            onClick={(event) => {
+              event.stopPropagation();
+              props.data.onToggleCollapse?.(props.data.id);
+            }}
+          >
+            {props.data.collapsed ? "+" : "−"}
+          </button>
+        </div>
       </header>
+      {props.data.collapsed ? (
+        <p className="ss-flow-node-collapsed-summary">Click + to expand node details</p>
+      ) : null}
+      {!props.data.collapsed ? <>
       {purpose ? <p className="ss-flow-node-purpose" data-node-field="purpose">Does: {purpose}</p> : null}
       {sliceId || requirementIds.length > 0 ? (
         <>
@@ -67,6 +84,7 @@ export function WorkflowTaskNode(props: NodeProps<WorkflowTaskFlowNode>) {
           attention: {attention.severity} · {attention.reason}
         </p>
       ) : null}
+      </> : null}
       <Handle type="source" position={Position.Bottom} className="ss-flow-handle" />
     </article>
   );

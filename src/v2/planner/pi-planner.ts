@@ -1,10 +1,45 @@
 import { createHash } from "node:crypto";
+import type { AgentProvider } from "../design-library/runtime-types.ts";
 import type { PiPlannerClient, PiPlannerStreamHandlers } from "./types.ts";
 
 const SOUTHSTAR_SESSION_KIND_CUSTOM_TYPE = "southstar.session.kind";
 type SouthstarSessionKind = "chat" | "workflow" | "library";
 
 export type { PiPlannerClient, PiPlannerStreamHandlers };
+
+export type PiRuntimeProfileBinding = {
+  harnessRef: "pi";
+  provider: AgentProvider;
+  model: string;
+};
+
+export function selectPiDefaultRuntimeProfileBinding(input: {
+  available: Array<{ id: string; provider: string }>;
+  provider?: string;
+  modelId?: string;
+}): PiRuntimeProfileBinding | undefined {
+  const provider = input.provider?.trim();
+  const modelId = input.modelId?.trim();
+  if (!provider || !modelId) return undefined;
+  if (!input.available.some((model) => model.provider === provider && model.id === modelId)) return undefined;
+  return { harnessRef: "pi", provider: provider as AgentProvider, model: modelId };
+}
+
+export async function resolvePiDefaultRuntimeProfileBinding(
+  cwd = process.cwd(),
+): Promise<PiRuntimeProfileBinding | undefined> {
+  const pi = await import("@earendil-works/pi-coding-agent");
+  const services = await pi.createAgentSessionServices({ cwd, agentDir: pi.getAgentDir() });
+  const available = services.modelRegistry.getAvailable().map((model) => ({
+    id: model.id,
+    provider: model.provider,
+  }));
+  return selectPiDefaultRuntimeProfileBinding({
+    available,
+    provider: services.settingsManager.getDefaultProvider(),
+    modelId: services.settingsManager.getDefaultModel(),
+  });
+}
 
 export function createHttpPiPlannerClient(options: {
   endpoint: string;
@@ -54,7 +89,7 @@ export type PiSdkPlannerClientOptions = {
 export function createPiSdkPlannerClient(options: PiSdkPlannerClientOptions = {}): PiPlannerClient {
   return {
     async generate(prompt: string): Promise<string> {
-      const timeoutMs = options.timeoutMs ?? 180_000;
+      const timeoutMs = options.timeoutMs ?? 600_000;
       const deadline = Date.now() + timeoutMs;
       const session = await withPlannerTimeout(
         (options.createSession ?? createDefaultPiSdkSession)(plannerSessionOptions(options)),
@@ -74,7 +109,7 @@ export function createPiSdkPlannerClient(options: PiSdkPlannerClientOptions = {}
       }
     },
     async generateStream(prompt: string, handlers: PiPlannerStreamHandlers = {}): Promise<string> {
-      const timeoutMs = options.timeoutMs ?? 180_000;
+      const timeoutMs = options.timeoutMs ?? 600_000;
       const deadline = Date.now() + timeoutMs;
       const session = await withPlannerTimeout(
         (options.createSession ?? createDefaultPiSdkSession)(plannerSessionOptions(options)),

@@ -6,7 +6,12 @@ export type LibraryGraphChartNode = {
   objectKey: string;
   objectKind?: string;
   status?: string;
+  viewOnly?: boolean;
   title?: string;
+  sourcePath?: string;
+  sourceContent?: string;
+  metadata?: Record<string, unknown>;
+  selectionGraph?: LibraryGraphSelectionGraph;
 };
 
 export type LibraryGraphChartEdge = {
@@ -22,6 +27,67 @@ export type LibraryGraphChartEdge = {
     evidenceRefs?: string[];
   };
 };
+
+export type LibraryGraphSelectionGraph = {
+  activeScope?: string;
+  nodes: LibraryGraphChartNode[];
+  edges: LibraryGraphChartEdge[];
+};
+
+export function selectGraphNeighborhood(
+  graph: LibraryGraphSelectionGraph,
+  objectKey: string,
+): LibraryGraphSelectionGraph {
+  const visibleKeys = new Set([objectKey]);
+  const relatedEdgeIndexes = new Set<number>();
+  const adjacency = new Map<string, number[]>();
+  graph.edges.forEach((edge, index) => {
+    for (const key of new Set([edge.fromObjectKey, edge.toObjectKey])) {
+      const indexes = adjacency.get(key) ?? [];
+      indexes.push(index);
+      adjacency.set(key, indexes);
+    }
+  });
+
+  const pending = [objectKey];
+  for (let cursor = 0; cursor < pending.length; cursor += 1) {
+    const currentKey = pending[cursor];
+    for (const edgeIndex of adjacency.get(currentKey) ?? []) {
+      relatedEdgeIndexes.add(edgeIndex);
+      const edge = graph.edges[edgeIndex];
+      const connectedKey = edge.fromObjectKey === currentKey ? edge.toObjectKey : edge.fromObjectKey;
+      if (!visibleKeys.has(connectedKey)) {
+        visibleKeys.add(connectedKey);
+        pending.push(connectedKey);
+      }
+    }
+  }
+
+  return {
+    activeScope: graph.activeScope,
+    nodes: graph.nodes.filter((node) => visibleKeys.has(node.objectKey)),
+    edges: graph.edges.filter((_, index) => relatedEdgeIndexes.has(index)),
+  };
+}
+
+export function prepareGraphNodeSelection(
+  graph: LibraryGraphSelectionGraph,
+  node: LibraryGraphChartNode,
+): LibraryGraphChartNode {
+  const selectedGraph = selectGraphNeighborhood(graph, node.objectKey);
+  return {
+    ...node,
+    viewOnly: true,
+    selectionGraph: {
+      ...selectedGraph,
+      nodes: selectedGraph.nodes.map((item) => ({ ...item, viewOnly: true })),
+    },
+    sourceContent: node.sourceContent ?? JSON.stringify({
+      title: node.title ?? node.objectKey,
+      ...(node.metadata ?? {}),
+    }, null, 2),
+  };
+}
 
 export function LibraryGraphChart({
   nodes,
@@ -124,7 +190,7 @@ export function LibraryGraphChart({
         style={{ position: "relative", height, overflow: "auto", background: "radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--accent, #4f46e5) 8%, transparent), transparent 58%)" }}
       >
         <div style={{ position: "relative", width: width * zoom, height: height * zoom }}>
-          <svg width={width * zoom} height={height * zoom} role="img" aria-label="Library graph chart" style={{ display: "block" }}>
+          <svg width={width * zoom} height={height * zoom} role="img" aria-label="Library graph chart" style={{ display: "block", pointerEvents: "none" }}>
             <g transform={`scale(${zoom})`}>
               {edges.map((edge, index) => {
                 const from = positions.get(edge.fromObjectKey);
@@ -208,6 +274,7 @@ export function LibraryGraphChart({
                   color: "transparent",
                   cursor: dragEnabled ? (draggingKey === node.objectKey ? "grabbing" : "grab") : onSelectNode ? "pointer" : "default",
                   touchAction: "none",
+                  zIndex: 2,
                 }}
               >
                 <span style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)" }}>
@@ -304,11 +371,35 @@ function nodeRadius(node: LibraryGraphChartNode): number {
 
 function nodeColor(node: LibraryGraphChartNode): string {
   if (node.status === "blocked") return "var(--danger, #b42318)";
-  if (node.objectKind === "domain_taxonomy") return "var(--info, #2563eb)";
-  if (node.objectKind === "agent_definition" || node.objectKind === "agent_profile") return "var(--accent, #4f46e5)";
-  if (node.objectKind === "skill_spec" || node.objectKind === "skill_definition") return "var(--success, #0f766e)";
-  if (node.objectKind === "tool_definition" || node.objectKind === "mcp_tool_grant") return "var(--warning, #b54708)";
-  return "var(--text-muted)";
+  const colors: Record<string, string> = {
+    requirement: "#f59e0b",
+    acceptance_criteria: "#14b8a6",
+    candidate: "#8b5cf6",
+    artifact: "#3b82f6",
+    artifact_contract: "#3b82f6",
+    expected_output: "#60a5fa",
+    evidence: "#0ea5e9",
+    evaluator: "#ec4899",
+    evaluator_profile: "#ec4899",
+    producer: "#22c55e",
+    agent_definition: "var(--accent, #4f46e5)",
+    agent_profile: "var(--accent, #4f46e5)",
+    agent_spec: "var(--accent, #4f46e5)",
+    skill_spec: "var(--success, #0f766e)",
+    skill_definition: "var(--success, #0f766e)",
+    capability_spec: "var(--success, #0f766e)",
+    tool_definition: "var(--warning, #b54708)",
+    mcp_tool_grant: "var(--warning, #b54708)",
+    vault_lease_policy: "var(--warning, #b54708)",
+    workflow_template: "#06b6d4",
+    domain_taxonomy: "var(--info, #2563eb)",
+    ontology: "#a855f7",
+    slice: "#06b6d4",
+    workflow_dag: "#0284c7",
+    task: "#84cc16",
+    goal_contract: "#eab308",
+  };
+  return colors[node.objectKind ?? ""] ?? "var(--text-muted)";
 }
 
 function shortLabel(value: string): string {

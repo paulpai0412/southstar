@@ -1,0 +1,51 @@
+schemaVersion: southstar.library.evaluator_profile_file.v1
+id: evaluator.bookkeeping-persistence-continuity-evaluator
+title: "Bookkeeping Persistence Continuity Evaluator"
+scope: "software"
+status: approved
+semanticTags:
+  - "data-persistence"
+  - "continuity"
+  - "record-integrity"
+  - "bookkeeping"
+validatesArtifactRefs:
+  - "artifact.bookkeeping-persistence-continuity-evidence"
+requiredInputs:
+  - "artifactRef"
+  - "snapshotArtifacts"
+  - "snapshotComparisonReport"
+  - "restartCommandOutput"
+  - "persistenceTestResult"
+evidenceKinds:
+  - "command-output"
+  - "test-result"
+  - "workspace-snapshot"
+verificationModes:
+  - "deterministic"
+  - "semantic_review"
+verificationProcedures:
+  - id: "snapshot-integrity-check"
+    checkKind: "deterministic"
+    instruction: "Compare pre-refresh, post-refresh, and post-restart snapshots to confirm identical record identities and values, with no duplication or loss."
+    allowedEvidenceKinds:
+      - "command-output"
+      - "test-result"
+      - "workspace-snapshot"
+  - id: "persistence-flow-consistency-review"
+    checkKind: "semantic_review"
+    instruction: "Review command and test evidence to confirm refresh/restart flow semantics align with the snapshot comparison result and persistence claim."
+    allowedEvidenceKinds:
+      - "command-output"
+      - "test-result"
+      - "workspace-snapshot"
+independencePolicy: "independent"
+resultSchemaRef: "southstar.requirement_evaluator_result.v2"
+failureClassifications:
+  - "missing-evidence"
+  - "snapshot-mismatch"
+  - "data-loss-or-duplication"
+  - "restart-flow-invalid"
+  - "evidence-inconsistency"
+importDraftId: "library-import-goal-e1aa4e2f8358207b7164edb9d7b5d04e"
+importCandidateKey: "evaluator.bookkeeping-persistence-continuity-evaluator"
+importSourcePath: "Confirmed-Goal-validation-gaps.md"

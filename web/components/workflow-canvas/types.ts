@@ -64,6 +64,8 @@ export type WorkflowCanvasModel = {
 
 export type WorkflowTaskNodeData = WorkflowTaskNodeModel & {
   selected: boolean;
+  collapsed: boolean;
+  onToggleCollapse?: (taskId: string) => void;
 };
 
 export type WorkflowDependencyEdgeData = {

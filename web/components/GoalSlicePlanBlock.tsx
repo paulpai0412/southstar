@@ -1,6 +1,9 @@
 "use client";
 
-import type { GoalDesignContent, GoalSliceSelection } from "@/lib/types";
+import { useMemo } from "react";
+import type { GoalDesignContent, GoalRequirementsContent, GoalSliceSelection } from "@/lib/types";
+import { CoverageGraphPreview, type CoverageGraphData } from "./CoverageGraphPreview";
+import type { LibraryGraphChartEdge, LibraryGraphChartNode } from "./library/LibraryGraphChart";
 
 type GoalSliceView = {
   id: string;
@@ -26,18 +29,24 @@ type GoalDesignPackageView = {
 
 export function GoalSlicePlanBlock({
   block,
+  requirementContent,
   onSliceSelect,
   onConfirmGoalDesign,
+  onLibraryGraphNodeSelect,
 }: {
   block: GoalDesignContent;
+  requirementContent?: GoalRequirementsContent | null;
   onSliceSelect?: (selection: GoalSliceSelection) => void;
   onConfirmGoalDesign?: (selection: GoalSliceSelection) => void;
+  onLibraryGraphNodeSelect?: (node: LibraryGraphChartNode) => void;
 }) {
   const pkg = goalDesignPackageView(block.package);
   const slices = pkg?.slicePlan?.slices ?? [];
+  const requirementContentForBlock = requirementContent?.draftId === block.draftId ? requirementContent : null;
   const packageHash = block.goalDesignPackageHash ?? pkg?.packageHash;
   const strategyMode = pkg?.compositionStrategy?.mode ?? "unknown";
   const templateMode = pkg?.templatePolicy?.mode ?? "auto";
+  const coverageGraph = useMemo(() => buildSliceCoverageGraph(slices, requirementContentForBlock), [requirementContentForBlock, slices]);
 
   if (!pkg || slices.length === 0) {
     return (
@@ -91,6 +100,7 @@ export function GoalSlicePlanBlock({
               goalDesignPackageHash: packageHash,
               selectedSliceId: slice.id,
               package: block.package,
+              ...(requirementContentForBlock?.draft ? { requirementDraft: requirementContentForBlock.draft } : {}),
             })}
             style={sliceButtonStyle}
           >
@@ -111,6 +121,14 @@ export function GoalSlicePlanBlock({
           </button>
         ))}
       </div>
+      <CoverageGraphPreview
+        testId="goal-slice-coverage-preview"
+        persistLayoutKey={`goal-slice-coverage:${block.draftId}:${pkg.packageHash ?? packageHash ?? "unknown"}`}
+        nodes={coverageGraph.nodes}
+        edges={coverageGraph.edges}
+        description="Slice coverage currently available from requirements, slice dependencies, artifact refs, and evaluator refs."
+        onSelectNode={onLibraryGraphNodeSelect}
+      />
       {block.status === "ready_for_review" && packageHash && onConfirmGoalDesign ? (
         <button
           type="button"
@@ -121,6 +139,7 @@ export function GoalSlicePlanBlock({
             goalDesignPackageHash: packageHash,
             package: block.package,
             selectedSliceId: slices[0]?.id,
+            ...(requirementContentForBlock?.draft ? { requirementDraft: requirementContentForBlock.draft } : {}),
           })}
           style={confirmButtonStyle}
         >
@@ -184,6 +203,66 @@ function goalSliceView(value: unknown): GoalSliceView | null {
     dependencyArtifactRefs: stringArray(value.dependencyArtifactRefs),
     mergeReason: typeof value.mergeReason === "string" ? value.mergeReason : undefined,
   };
+}
+
+function buildSliceCoverageGraph(
+  slices: GoalSliceView[],
+  requirementContent: GoalRequirementsContent | null,
+): CoverageGraphData {
+  const nodes = new Map<string, LibraryGraphChartNode>();
+  const edges: LibraryGraphChartEdge[] = [];
+  const edgeKeys = new Set<string>();
+  const requirements = new Map((requirementContent?.draft.requirements ?? []).map((requirement) => [requirement.id, requirement]));
+  const slicesById = new Map(slices.map((slice) => [slice.id, slice]));
+  const addNode = (node: LibraryGraphChartNode) => {
+    if (!nodes.has(node.objectKey)) nodes.set(node.objectKey, node);
+  };
+  const addEdge = (fromObjectKey: string, toObjectKey: string, edgeType: string) => {
+    const key = `${fromObjectKey}:${edgeType}:${toObjectKey}`;
+    if (edgeKeys.has(key)) return;
+    edgeKeys.add(key);
+    edges.push({ fromObjectKey, toObjectKey, edgeType });
+  };
+  const addRequirement = (requirementId: string) => {
+    const requirement = requirements.get(requirementId);
+    addNode({
+      objectKey: `requirement:${requirementId}`,
+      objectKind: "requirement",
+      status: requirement?.status ?? "proposed",
+      title: `Requirement ${requirementId}`,
+      ...(requirement ? { metadata: { title: requirement.title, statement: requirement.statement } } : {}),
+    });
+  };
+
+  for (const slice of slices) {
+    const sliceKey = `slice:${slice.id}`;
+    addNode({ objectKey: sliceKey, objectKind: "slice", status: "proposed", title: `Slice ${slice.id}`, metadata: { outcome: slice.outcome } });
+    for (const requirementId of slice.requirementIds) {
+      addRequirement(requirementId);
+      addEdge(`requirement:${requirementId}`, sliceKey, "covered by slice");
+    }
+    for (const ref of slice.expectedArtifactRefs) {
+      addNode({ objectKey: ref, objectKind: "artifact", status: "proposed", title: `Artifact ${ref}` });
+      addEdge(sliceKey, ref, "expects artifact");
+    }
+    for (const ref of slice.evaluatorContractRefs) {
+      addNode({ objectKey: ref, objectKind: "evaluator", status: "proposed", title: `Evaluator ${ref}` });
+      addEdge(sliceKey, ref, "checked by evaluator");
+    }
+    for (const dependencyId of slice.dependsOnSliceIds) {
+      const dependency = slicesById.get(dependencyId);
+      addNode({
+        objectKey: `slice:${dependencyId}`,
+        objectKind: "slice",
+        status: dependency ? "proposed" : "blocked",
+        title: `Slice ${dependencyId}`,
+        ...(dependency ? { metadata: { outcome: dependency.outcome } } : {}),
+      });
+      addEdge(`slice:${dependencyId}`, sliceKey, "depends on");
+    }
+  }
+
+  return { nodes: [...nodes.values()], edges };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

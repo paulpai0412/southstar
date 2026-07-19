@@ -1,0 +1,40 @@
+schemaVersion: southstar.library.artifact_contract_file.v1
+id: artifact.bookkeeping-persistence-continuity-evidence
+title: "Bookkeeping Persistence Continuity Evidence"
+scope: "software"
+status: approved
+semanticTags:
+  - "data-persistence"
+  - "continuity"
+  - "record-integrity"
+  - "bookkeeping"
+artifactType: "bookkeeping-persistence-continuity-evidence"
+mediaTypes:
+  - "application/json"
+  - "text/plain"
+evidenceKinds:
+  - "command-output"
+  - "test-result"
+  - "workspace-snapshot"
+validationRules:
+  - "Must include snapshots captured before refresh, after refresh, and after restart for the same logical dataset."
+  - "Snapshot comparison must prove record identity consistency with no missing or duplicated entries."
+  - "Command output must document refresh/restart execution context and successful completion."
+  - "Test results must confirm list and summary consistency across lifecycle boundaries."
+schemaRef: "southstar.artifact.bookkeeping_persistence_continuity_evidence.v1"
+requiredFields:
+  - "preRefreshSnapshotRef"
+  - "postRefreshSnapshotRef"
+  - "postRestartSnapshotRef"
+  - "snapshotComparisonReport"
+  - "recordIdentitySet"
+  - "restartCommandOutputRef"
+  - "persistenceTestResultRef"
+  - "evidenceTimestampRange"
+provenanceRequirements:
+  - "All snapshots must be generated from the same environment and dataset lineage."
+  - "Refresh and restart evidence must reference the same application instance configuration and data store."
+  - "Snapshot comparison output must be reproducible from stored snapshot artifacts."
+importDraftId: "library-import-goal-e1aa4e2f8358207b7164edb9d7b5d04e"
+importCandidateKey: "artifact.bookkeeping-persistence-continuity-evidence"
+importSourcePath: "Confirmed-Goal-validation-gaps.md"

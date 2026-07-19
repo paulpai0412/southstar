@@ -86,6 +86,8 @@ test("workflow read model exposes the same answer-first mission for draft and ru
       outcome: "in_progress",
       health: "healthy",
     });
+    assert.equal(draftModel.lineage.workflowDag?.mode, "draft");
+    assert.deepEqual(draftModel.lineage.workflowDag?.taskIds, draftModel.canvasModel.nodes.map((node) => node.id));
 
     const run = await createPostgresRunFromDraft(db, { draftId: draft.draftId });
     const runtimeContext = await db.one<{ runtime_context_json: Record<string, string> }>(
@@ -182,6 +184,9 @@ test("workflow read model exposes the same answer-first mission for draft and ru
     });
     assert.equal(runtimeModel.mission!.approval!.goalContractHash, runtimeModel.mission!.goalContractHash);
     assert.equal(runtimeModel.mission!.evaluatorResults.length, 1);
+    assert.equal(runtimeModel.lineage.workflowDag?.mode, "runtime");
+    assert.equal(runtimeModel.lineage.workflowDag?.id, run.runId);
+    assert.deepEqual(runtimeModel.lineage.workflowDag?.taskIds, runtimeModel.canvasModel.nodes.map((node) => node.id));
     assert.deepEqual(runtimeModel.mission!.goalContract, draftModel.mission!.goalContract);
     assert.equal(runtimeModel.mission!.goalContractHash, draftModel.mission!.goalContractHash);
     assert.deepEqual(runtimeModel.mission!.coverage.entries, draftModel.mission!.coverage.entries);
@@ -535,11 +540,44 @@ test("ui route exposes draft workflow canvas via /api/v2/ui/workflow", async () 
       scope: "planner",
       status: "validated",
       payload: {
+        goalDesignPackage: {
+          slicePlan: {
+            schemaVersion: "southstar.goal_slice_plan.v1",
+            goalContractHash: "contract-hash-draft-ui",
+            revision: 2,
+            slices: [{
+              id: "slice-main",
+              requirementIds: ["req-offline"],
+              outcome: "Build the offline article",
+              stateOrArtifactOwner: "artifact://article.html",
+              mutationBoundary: "workspace",
+              expectedArtifactRefs: ["artifact://article.html"],
+              evaluatorContractRefs: ["evaluator.html"],
+              dependsOnSliceIds: [],
+              dependencyArtifactRefs: [],
+            }],
+          },
+        },
         workflow: {
           workflowId: "wf-draft-ui",
           tasks: [
             { id: "task-plan", name: "Plan", dependsOn: [] },
-            { id: "task-build", name: "Build", dependsOn: ["task-plan"], roleRef: "builder", agentProfileRef: "builder-codex" },
+            {
+              id: "task-build",
+              name: "Build",
+              dependsOn: ["task-plan"],
+              roleRef: "builder",
+              agentProfileRef: "builder-codex",
+              promptInputs: {
+                sliceId: "slice-main",
+                requirementIds: ["req-offline"],
+                nodePromptSpec: {
+                  goal: "Build the offline article",
+                  nodeType: "implement",
+                  expectedOutputs: ["artifact://article.html"],
+                },
+              },
+            },
           ],
         },
       },
@@ -566,6 +604,27 @@ test("ui route exposes draft workflow canvas via /api/v2/ui/workflow", async () 
       assert.equal(envelope.result.canvasModel.selectedNodeId, "task-build");
       assert.equal(envelope.result.canvasModel.nodes[0]?.kind, "task");
       assert.deepEqual(envelope.result.canvasModel.edges, [{ id: "task-plan->task-build", source: "task-plan", target: "task-build", status: "pending" }]);
+      assert.equal(envelope.result.lineage.slicePlan?.revision, 2);
+      assert.equal(envelope.result.lineage.slicePlan?.slices[0]?.id, "slice-main");
+      assert.deepEqual(envelope.result.lineage.workflowDag, {
+        id: draftId,
+        mode: "draft",
+        taskIds: ["task-plan", "task-build"],
+        edges: [{ from: "task-plan", to: "task-build", status: "pending" }],
+      });
+      assert.deepEqual(envelope.result.lineage.tasks.find((task) => task.id === "task-build"), {
+        id: "task-build",
+        label: "Build",
+        status: "ready",
+        sliceId: "slice-main",
+        requirementIds: ["req-offline"],
+        dependsOn: ["task-plan"],
+        purpose: "Build the offline article",
+        nodeType: "implement",
+        expectedOutputs: ["artifact://article.html"],
+        roleRef: "builder",
+        agentProfileRef: "builder-codex",
+      });
       assert.equal(envelope.result.selectedDefinition?.taskId, "task-build");
       assert.equal(envelope.result.activeDraft?.draftId, draftId);
       assert.equal(envelope.result.activeDraft?.goalPrompt, "draft workflow ui");

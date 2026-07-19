@@ -1,0 +1,61 @@
+schemaVersion: southstar.library.evaluator_profile_file.v1
+id: evaluator.bookkeeping-webapp-outcome-evaluator
+title: "Bookkeeping Webapp Outcome Evaluator"
+scope: "software"
+status: approved
+semanticTags:
+  - "bookkeeping"
+  - "transaction-entry"
+  - "income-expense"
+  - "balance"
+  - "summary"
+  - "financial-overview"
+  - "webapp"
+  - "runtime-access"
+  - "usability"
+validatesArtifactRefs:
+  - "artifact.bookkeeping-webapp-outcome-evidence"
+requiredInputs:
+  - "artifactRef"
+  - "startupCommandOutput"
+  - "runtimeUrlEvidence"
+  - "uiScreenshots"
+  - "commandOutputs"
+  - "testResults"
+  - "summaryComputationEvidence"
+evidenceKinds:
+  - "command-output"
+  - "screenshot"
+  - "test-result"
+  - "url"
+verificationModes:
+  - "browser_interaction"
+  - "deterministic"
+verificationProcedures:
+  - id: "browser-runtime-and-crud-check"
+    checkKind: "browser_interaction"
+    instruction: "Verify the provided URL is reachable from startup evidence, then confirm create/edit/delete transaction actions are reflected in UI screenshots and corresponding command/test outputs."
+    allowedEvidenceKinds:
+      - "command-output"
+      - "screenshot"
+      - "test-result"
+      - "url"
+  - id: "summary-consistency-check"
+    checkKind: "deterministic"
+    instruction: "Recompute income, expense, and balance from captured transaction evidence and confirm equality with reported summary values after data mutations."
+    allowedEvidenceKinds:
+      - "command-output"
+      - "screenshot"
+      - "test-result"
+      - "url"
+independencePolicy: "independent"
+resultSchemaRef: "southstar.requirement_evaluator_result.v2"
+failureClassifications:
+  - "missing-evidence"
+  - "unreachable-url"
+  - "crud-state-mismatch"
+  - "summary-calculation-mismatch"
+  - "evidence-inconsistency"
+importDraftId: "library-import-goal-e1aa4e2f8358207b7164edb9d7b5d04e"
+importCandidateKey: "evaluator.bookkeeping-webapp-outcome-evaluator"
+importSourcePath: "Confirmed-Goal-validation-gaps.md"

@@ -61,6 +61,10 @@ test("workflow node profile editor adds refs with multi-select candidates and us
   assert.match(editor, /selectedProviderPiModelOptions/);
   assert.match(editor, /workflow-profile-model-custom/);
   assert.match(editor, /thinkingLevels/);
+  assert.match(editor, /Unbound — choose a host adapter/);
+  assert.match(editor, /workflow-profile-binding-state/);
+  assert.match(editor, /Provider<\/strong> selects the model API/);
+  assert.doesNotMatch(editor, /\.\.\.profileOptions\.map\(\(profile\) => profile\.harnessRef\),\s*"pi",\s*"codex"/);
 });
 
 test("workflow node profile editor uses structured prompt editing and explains generated AGENTS.md", () => {
@@ -86,4 +90,6 @@ test("workflow node click opens a usable static profile before planner draft exi
   assert.doesNotMatch(appShell, /handleOpenWorkflowResource\(node\.profileResourcePath,\s*"profile\.json"\)/);
   assert.match(staticProfile, /Profile summary/);
   assert.match(staticProfile, /Draft this DAG to edit/);
+  assert.match(staticProfile, /Host adapter/);
+  assert.doesNotMatch(staticProfile, /provider:auto \/ model:auto/);
 });

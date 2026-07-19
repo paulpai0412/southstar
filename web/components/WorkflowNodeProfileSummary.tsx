@@ -20,14 +20,11 @@ export function WorkflowNodeProfileSummary({
   const selected = recordValue(selectedDefinition);
   const agentProfile = recordValue(selected?.agentProfile);
   const taskName = stringValue(selected?.taskName) || taskId;
-  const roleRef = stringValue(selected?.roleRef) || "role:auto";
-  const profileRef = stringValue(selected?.agentProfileRef ?? agentProfile?.id) || "profile:auto";
-  const host = [
-    form.harnessRef || stringValue(agentProfile?.harnessRef) || "host:auto",
-    form.provider || stringValue(agentProfile?.provider) || "provider:auto",
-    form.model || stringValue(agentProfile?.model) || "model:auto",
-    form.thinkingLevel ? `thinking:${form.thinkingLevel}` : "",
-  ].filter(Boolean).join(" / ");
+  const roleRef = stringValue(selected?.roleRef) || "Unbound";
+  const profileRef = stringValue(selected?.agentProfileRef ?? agentProfile?.id) || "Unbound";
+  const hostAdapter = form.harnessRef || stringValue(agentProfile?.harnessRef) || "Unbound";
+  const provider = form.provider || stringValue(agentProfile?.provider) || "Unbound";
+  const model = form.model || stringValue(agentProfile?.model) || "Unbound";
   const capabilityCount = form.skillRefs.length + form.mcpGrantRefs.length + form.toolGrantRefs.length + form.vaultLeasePolicyRefs.length;
   const promptState = form.nodePromptSpec.trim() ? "editable nodePromptSpec" : "no nodePromptSpec";
   const stateLabel = editable
@@ -44,7 +41,9 @@ export function WorkflowNodeProfileSummary({
         <dt style={termStyle}>Task</dt><dd style={valueStyle}>{taskName}</dd>
         <dt style={termStyle}>Role</dt><dd style={valueStyle}>{roleRef}</dd>
         <dt style={termStyle}>Profile</dt><dd style={valueStyle}>{profileRef}</dd>
-        <dt style={termStyle}>Host</dt><dd style={valueStyle}>{host}</dd>
+        <dt style={termStyle}>Host adapter</dt><dd style={valueStyle}>{hostAdapter}</dd>
+        <dt style={termStyle}>Provider</dt><dd style={valueStyle}>{provider}</dd>
+        <dt style={termStyle}>Model</dt><dd style={valueStyle}>{model}</dd>
         <dt style={termStyle}>Capability refs</dt><dd style={valueStyle}>{capabilityCount} refs</dd>
         <dt style={termStyle}>Prompt</dt><dd style={valueStyle}>{promptState}</dd>
         <dt style={termStyle}>State</dt><dd style={valueStyle}>{stateLabel}</dd>

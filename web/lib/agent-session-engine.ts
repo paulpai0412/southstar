@@ -1,4 +1,4 @@
-import type { AgentMessage, AssistantMessage } from "./types";
+import type { AgentMessage, AssistantMessage, GoalDesignContent } from "./types";
 import type { SessionStatsInfo } from "./pi-types";
 import type { WorkflowTemplatePolicyV1 } from "./workflow/types";
 
@@ -109,6 +109,23 @@ export function latestWorkflowDraftId(messages: AgentMessage[]): string | null {
     }
   }
   return null;
+}
+
+export function latestGoalDesignContent(messages: AgentMessage[]): GoalDesignContent | null {
+  let latest: GoalDesignContent | null = null;
+  let latestStatus: string | undefined;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
+    for (let j = message.content.length - 1; j >= 0; j -= 1) {
+      const block = message.content[j];
+      if (block.type !== "goalDesign" || !isPlannerDraftId(block.draftId)) continue;
+      if (!latest) latest = block;
+      if (!latestStatus && latest && block.draftId === latest.draftId && typeof block.status === "string") latestStatus = block.status;
+    }
+  }
+  if (!latest) return null;
+  return latest.status || !latestStatus ? latest : { ...latest, status: latestStatus };
 }
 
 export function latestGoalDesignDraftIdentity(messages: AgentMessage[]): {

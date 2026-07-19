@@ -22,7 +22,7 @@ export function loadSouthstarEnv(input: Record<string, string | undefined> = pro
     containerCallbackBaseUrl: input.SOUTHSTAR_CONTAINER_CALLBACK_BASE_URL,
     dockerRequired: input.SOUTHSTAR_REQUIRE_DOCKER !== "0",
     piPlannerEndpoint: input.PI_PLANNER_ENDPOINT,
-    piPlannerTimeoutMs: positiveInteger(input.SOUTHSTAR_PI_PLANNER_TIMEOUT_MS) ?? 180_000,
+    piPlannerTimeoutMs: positiveInteger(input.SOUTHSTAR_PI_PLANNER_TIMEOUT_MS) ?? 600_000,
     codexCliPath: input.CODEX_CLI_PATH ?? "codex",
   };
 }

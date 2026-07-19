@@ -304,14 +304,17 @@ test("LibraryFileViewer renders graph-backed edge chart, usage, and merged prove
         }}
         onSelectGraphNode={(node) => {
           window.__selectedGraphNode = node.objectKey;
+          window.__selectedGraphNodeKeys = node.selectionGraph?.nodes.map((item) => item.objectKey);
         }}
       />
     );
   `, async (page) => {
     await page.locator('[data-testid="library-graph-chart"]').waitFor();
     assert.equal(await page.locator('[data-testid="library-graph-edge"]').count(), 2);
+    await assertText(page, '[data-testid="library-file-content-preview"]', "title: React UI");
     await page.getByRole("button", { name: "Frontend Developer" }).click();
     assert.equal(await page.evaluate(() => (window as any).__selectedGraphNode), "agent.frontend-developer");
+    assert.equal(await page.evaluate(() => (window as any).__selectedGraphNodeKeys), undefined);
 
     await page.getByRole("button", { name: "Usage" }).click();
     await assertText(page, '[data-testid="library-usage-panel"]', "Used by");
@@ -519,6 +522,392 @@ test("Goal-linked Library proposal shows Requirement coverage and installs the c
       "artifact.validation-evidence",
       "evaluator.validation-evidence",
     ]);
+  });
+});
+
+test("Goal-linked Library proposal renders a candidate coverage preview before install", async () => {
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { LibraryCandidateMessageBlock } from "./web/components/library/LibraryCandidateMessageBlock";
+
+    const candidates = [{
+      objectKey: "artifact.validation-evidence",
+      kind: "artifact",
+      title: "Validation Evidence",
+      scope: "software",
+      selectedByDefault: false,
+    }, {
+      objectKey: "evaluator.validation-evidence",
+      kind: "evaluator",
+      title: "Validation Evidence Evaluator",
+      scope: "software",
+      selectedByDefault: false,
+    }];
+
+    createRoot(document.getElementById("root")).render(
+      <LibraryCandidateMessageBlock
+        draftId="library-import-goal-preview"
+        candidates={candidates}
+        candidateCoverageTargets={[{
+          candidateObjectKey: "artifact.validation-evidence",
+          gapRef: "gap-validation",
+          requirementId: "R1",
+          criterionIds: ["AC1", "AC2"],
+        }, {
+          candidateObjectKey: "evaluator.validation-evidence",
+          gapRef: "gap-validation",
+          requirementId: "R1",
+          criterionIds: ["AC1", "AC2"],
+        }]}
+        proposedEdges={[{
+          fromObjectKey: "artifact.validation-evidence",
+          edgeType: "produces",
+          toObjectKey: "evaluator.validation-evidence",
+          confidence: 0.9,
+        }]}
+        status="draft"
+        onSelectNode={(node) => {
+          window.__selectedCoverageNode = node.objectKey;
+          window.__selectedCoverageGraphNodeKeys = node.selectionGraph?.nodes.map((item) => item.objectKey);
+        }}
+        onInstall={() => undefined}
+      />
+    );
+  `, async (page) => {
+    const preview = page.locator('[data-testid="candidate-coverage-preview"]');
+    await preview.waitFor();
+    await assertText(page, '[data-testid="candidate-coverage-preview"]', "Candidate coverage preview");
+    await assertText(page, '[data-testid="candidate-coverage-summary"]', "1 requirement · 2 AC · 2 candidates");
+    await assertText(page, '[data-testid="candidate-coverage-preview"]', "Requirement R1");
+    await assertText(page, '[data-testid="candidate-coverage-preview"]', "AC AC1");
+    await assertText(page, '[data-testid="candidate-coverage-preview"]', "Validation Evidence");
+    assert.equal(await preview.locator('[data-testid="library-graph-chart"]').count(), 1);
+    assert.equal(await preview.locator('[data-testid="library-graph-edge"]').count(), 7);
+    await preview.getByRole("button", { name: "Validation Evidence", exact: true }).click();
+    assert.equal(await page.evaluate(() => (window as any).__selectedCoverageNode), "artifact.validation-evidence");
+    assert.deepEqual(await page.evaluate(() => (window as any).__selectedCoverageGraphNodeKeys), [
+      "artifact.validation-evidence",
+      "evaluator.validation-evidence",
+      "requirement:R1",
+      "ac:R1:AC1",
+      "ac:R1:AC2",
+    ]);
+  });
+});
+
+test("candidate coverage selection expands the full connected component", async () => {
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { LibraryCandidateMessageBlock } from "./web/components/library/LibraryCandidateMessageBlock";
+
+    createRoot(document.getElementById("root")).render(
+      <LibraryCandidateMessageBlock
+        draftId="library-import-connected-component"
+        candidates={["a", "b", "c", "d"].map((suffix) => ({
+          objectKey: "candidate." + suffix,
+          kind: "artifact",
+          title: "Candidate " + suffix.toUpperCase(),
+          scope: "software",
+          selectedByDefault: true,
+        }))}
+        candidateCoverageTargets={[{
+          candidateObjectKey: "candidate.a",
+          gapRef: "gap-connected",
+          requirementId: "R1",
+          criterionIds: ["AC1"],
+        }]}
+        proposedEdges={[
+          { fromObjectKey: "candidate.a", edgeType: "relates", toObjectKey: "candidate.b" },
+          { fromObjectKey: "candidate.b", edgeType: "relates", toObjectKey: "candidate.c" },
+          { fromObjectKey: "candidate.c", edgeType: "relates", toObjectKey: "candidate.d" },
+          { fromObjectKey: "unrelated.a", edgeType: "relates", toObjectKey: "unrelated.b" },
+        ]}
+        status="draft"
+        onInstall={() => undefined}
+        onSelectNode={(node) => {
+          window.__selectedCoverageGraphNodeKeys = node.selectionGraph?.nodes.map((item) => item.objectKey);
+          window.__selectedCoverageGraphEdges = node.selectionGraph?.edges.map((edge) => edge.fromObjectKey + "->" + edge.toObjectKey);
+        }}
+      />
+    );
+  `, async (page) => {
+    const preview = page.locator('[data-testid="candidate-coverage-preview"]');
+    await preview.waitFor();
+    await preview.getByRole("button", { name: "Candidate A", exact: true }).click();
+    assert.deepEqual(await page.evaluate(() => (window as any).__selectedCoverageGraphNodeKeys), [
+      "candidate.a",
+      "candidate.b",
+      "candidate.c",
+      "candidate.d",
+      "requirement:R1",
+      "ac:R1:AC1",
+    ]);
+    assert.deepEqual(await page.evaluate(() => (window as any).__selectedCoverageGraphEdges), [
+      "requirement:R1->ac:R1:AC1",
+      "ac:R1:AC1->candidate.a",
+      "candidate.a->candidate.b",
+      "candidate.b->candidate.c",
+      "candidate.c->candidate.d",
+    ]);
+  });
+});
+
+test("coverage Requirement and AC nodes carry their source statements into the viewer selection", async () => {
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { LibraryCandidateMessageBlock } from "./web/components/library/LibraryCandidateMessageBlock";
+
+    createRoot(document.getElementById("root")).render(
+      <LibraryCandidateMessageBlock
+        draftId="library-import-node-content"
+        candidates={[{
+          objectKey: "artifact.result",
+          kind: "artifact",
+          title: "Result Evidence",
+          scope: "software",
+          selectedByDefault: true,
+        }]}
+        candidateCoverageTargets={[{
+          candidateObjectKey: "artifact.result",
+          gapRef: "gap-r1",
+          requirementId: "req-r1",
+          criterionIds: ["criterion-ac1"],
+        }]}
+        documents={[{
+          path: "validation.md",
+          label: "Validation schema",
+          content: JSON.stringify({
+            schemaVersion: "southstar.goal_validation_import_request.v1",
+            requirements: [{
+              id: "req-r1",
+              statement: "使用者可以新增與查看記帳項目。",
+              acceptanceCriteria: ["新增後清單立即顯示資料。"],
+              criterionIntent: [{ id: "criterion-ac1", statement: "新增後清單立即顯示資料。", evidenceIntent: ["screenshot"] }],
+            }],
+          }),
+        }]}
+        status="draft"
+        onInstall={() => undefined}
+        onSelectNode={(node) => {
+          window.__selectedCoverageNodeContent = { objectKey: node.objectKey, metadata: node.metadata };
+        }}
+      />
+    );
+  `, async (page) => {
+    const preview = page.locator('[data-testid="candidate-coverage-preview"]');
+    await preview.waitFor();
+    await preview.getByRole("button", { name: "Requirement req-r1", exact: true }).click();
+    const requirement = await page.evaluate(() => (window as any).__selectedCoverageNodeContent);
+    assert.equal(requirement.metadata.statement, "使用者可以新增與查看記帳項目。");
+    await preview.getByRole("button", { name: "AC criterion-ac1", exact: true }).click();
+    const selected = await page.evaluate(() => (window as any).__selectedCoverageNodeContent);
+    assert.equal(selected.objectKey, "ac:req-r1:criterion-ac1");
+    assert.equal(selected.metadata.statement, "新增後清單立即顯示資料。");
+    assert.deepEqual(selected.metadata.evidenceIntent, ["screenshot"]);
+  });
+});
+
+test("LibraryFileViewer renders normalized node content instead of schema JSON", async () => {
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { LibraryFileViewer } from "./web/components/library/LibraryFileViewer";
+
+    createRoot(document.getElementById("root")).render(
+      <LibraryFileViewer
+        selectedFilePath="validation.md"
+        fileRecord={{
+          relativePath: "validation.md",
+          content: JSON.stringify({ schemaVersion: "southstar.requirement.v1", statement: "使用者可以新增與查看記帳項目。" }),
+          parsed: { ok: true, file: { objectKind: "requirement", title: "記帳項目", frontmatter: {}, definition: {} }, issues: [] },
+        }}
+        objectDetail={{
+          object: {
+            objectKey: "requirement:req-r1",
+            objectKind: "requirement",
+            status: "approved",
+            state: {
+              title: "記帳項目",
+              schemaVersion: "southstar.requirement.v1",
+              statement: "使用者可以新增與查看記帳項目。",
+              acceptanceCriteria: ["新增後清單立即顯示資料。"],
+            },
+          },
+          inboundEdges: [],
+          outboundEdges: [],
+        }}
+        content={JSON.stringify({ schemaVersion: "southstar.requirement.v1", statement: "使用者可以新增與查看記帳項目。" })}
+        dirty={false}
+        saving={false}
+        syncing={false}
+        onContentChange={() => {}}
+        onSaveAndSync={() => {}}
+      />
+    );
+  `, async (page) => {
+    const content = page.locator('[data-testid="library-node-content"]');
+    await content.waitFor();
+    await assertText(page, '[data-testid="library-node-content"]', "使用者可以新增與查看記帳項目。");
+    await assertText(page, '[data-testid="library-node-content"]', "Acceptance Criteria");
+    assert.equal((await content.innerText()).includes("schemaVersion"), false);
+    assert.equal((await content.innerText()).includes("requirement:req-r1"), false);
+  });
+});
+
+test("Library graph nodes use distinct colors for domain types", async () => {
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { LibraryGraphChart } from "./web/components/library/LibraryGraphChart";
+
+    createRoot(document.getElementById("root")).render(
+      <LibraryGraphChart
+        nodes={[
+          { objectKey: "requirement:R1", objectKind: "requirement", status: "approved", title: "Requirement R1" },
+          { objectKey: "ac:R1:AC1", objectKind: "acceptance_criteria", status: "approved", title: "AC AC1" },
+          { objectKey: "artifact.result", objectKind: "artifact", status: "approved", title: "Result artifact" },
+          { objectKey: "evaluator.result", objectKind: "evaluator", status: "approved", title: "Result evaluator" },
+        ]}
+        edges={[]}
+      />
+    );
+  `, async (page) => {
+    await page.locator('[data-testid="library-graph-dot"]').nth(0).waitFor();
+    const fills = await page.locator('[data-testid="library-graph-dot"]').evaluateAll((dots) => dots.map((dot) => dot.getAttribute("fill")));
+    assert.equal(new Set(fills).size, 4);
+  });
+});
+
+test("Library import candidate item opens the shared selection callback without toggling install state", async () => {
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { LibraryCandidateMessageBlock } from "./web/components/library/LibraryCandidateMessageBlock";
+
+    createRoot(document.getElementById("root")).render(
+      <LibraryCandidateMessageBlock
+        draftId="library-import-candidate-view"
+        candidates={[{
+          objectKey: "artifact.validation-evidence",
+          kind: "artifact",
+          title: "Validation Evidence",
+          scope: "software",
+          sourcePath: "validation/evidence.md",
+          description: "Evidence contract",
+          selectedByDefault: true,
+        }]}
+        documents={[{ path: "validation/evidence.md", label: "Evidence", content: "# Evidence contract" }]}
+        candidateCoverageTargets={[{ candidateObjectKey: "artifact.validation-evidence", gapRef: "gap-1", requirementId: "R1", criterionIds: ["AC1"] }]}
+        status="draft"
+        onInstall={() => undefined}
+        onSelectNode={(node) => {
+          window.__selectedCoverageNode = node.objectKey;
+          window.__selectedCoverageGraphNodeCount = node.selectionGraph?.nodes.length;
+          window.__selectedCoverageContent = node.sourceContent;
+        }}
+      />
+    );
+  `, async (page) => {
+    const checkbox = page.getByRole("checkbox", { name: /Validation Evidence artifact/ });
+    const viewButton = page.getByRole("button", { name: "View Validation Evidence", exact: true });
+    assert.equal(await viewButton.count(), 1);
+    assert.equal(await checkbox.isChecked(), true);
+    await viewButton.click();
+    assert.equal(await page.evaluate(() => (window as any).__selectedCoverageNode), "artifact.validation-evidence");
+    assert.equal(await page.evaluate(() => (window as any).__selectedCoverageGraphNodeCount), 3);
+    assert.equal(await page.evaluate(() => (window as any).__selectedCoverageContent), "# Evidence contract");
+    assert.equal(await checkbox.isChecked(), true);
+  });
+});
+
+test("LibraryWorkspace refreshes the viewer when the same candidate gains hydrated source content", async () => {
+  await withBrowserHarness(`
+    import React, { useState } from "react";
+    import { createRoot } from "react-dom/client";
+    import { LibraryFileSidecarPanel, LibraryGraphNodeSelectionBridge, LibraryWorkspaceProvider } from "./web/components/library/LibraryWorkspace";
+
+    const baseNode = {
+      objectKey: "artifact.validation-evidence",
+      objectKind: "artifact",
+      status: "proposed",
+      title: "Validation Evidence",
+      sourcePath: "validation/evidence.md",
+    };
+
+    function Harness() {
+      const [selection, setSelection] = useState(null);
+      return (
+        <LibraryWorkspaceProvider active={false}>
+          <button data-testid="select-before-hydration" onClick={() => setSelection({ id: 1, node: baseNode })}>Before hydration</button>
+          <button data-testid="select-after-hydration" onClick={() => setSelection({ id: 2, node: { ...baseNode, sourceContent: "# Evidence contract" } })}>After hydration</button>
+          <LibraryGraphNodeSelectionBridge selection={selection} />
+          <LibraryFileSidecarPanel />
+        </LibraryWorkspaceProvider>
+      );
+    }
+
+    createRoot(document.getElementById("root")).render(<Harness />);
+  `, async (page) => {
+    await page.getByTestId("select-before-hydration").click();
+    await assertText(page, '[data-testid="library-file-content-preview"]', "(empty source file)");
+    await page.getByTestId("select-after-hydration").click();
+    await page.waitForFunction(() => document.querySelector('[data-testid="library-file-content-preview"]')?.textContent?.includes("# Evidence contract"));
+  });
+});
+
+test("step graph virtual nodes open the shared file viewer with node content and connected edges", async () => {
+  await withBrowserHarness(`
+    import React, { useState } from "react";
+    import { createRoot } from "react-dom/client";
+    import { LibraryFileSidecarPanel, LibraryGraphNodeSelectionBridge, LibraryWorkspaceProvider } from "./web/components/library/LibraryWorkspace";
+
+    const graph = {
+      activeScope: "software",
+      nodes: [{
+        objectKey: "requirement:R1",
+        objectKind: "requirement",
+        status: "accepted",
+        title: "Requirement R1",
+        metadata: { title: "Persist the review", statement: "The review must be persisted." },
+      }, {
+        objectKey: "task:review",
+        objectKind: "task",
+        status: "completed",
+        title: "Review task",
+        metadata: { purpose: "Run the review" },
+      }],
+      edges: [{ fromObjectKey: "requirement:R1", toObjectKey: "task:review", edgeType: "implemented by task" }],
+    };
+
+    function Harness() {
+      const [selection, setSelection] = useState(null);
+      return (
+        <LibraryWorkspaceProvider active={false}>
+          <button data-testid="select-step-node" onClick={() => setSelection({
+            id: 1,
+            node: {
+              ...graph.nodes[0],
+              selectionGraph: graph,
+              sourceContent: JSON.stringify({ title: "Persist the review", statement: "The review must be persisted." }),
+            },
+          })}>Select step node</button>
+          <LibraryGraphNodeSelectionBridge selection={selection} />
+          <LibraryFileSidecarPanel />
+        </LibraryWorkspaceProvider>
+      );
+    }
+
+    createRoot(document.getElementById("root")).render(<Harness />);
+  `, async (page) => {
+    await page.getByTestId("select-step-node").click();
+    await assertText(page, '[data-testid="library-node-content"]', "Persist the review");
+    await assertText(page, '[data-testid="library-node-content"]', "The review must be persisted.");
+    assert.equal(await page.locator('[data-testid="library-graph-chart"]').count(), 1);
+    assert.equal(await page.locator('[data-testid="library-graph-edge"]').count(), 1);
+    await assertText(page, '[data-testid="library-graph-chart"]', "implemented by task");
   });
 });
 

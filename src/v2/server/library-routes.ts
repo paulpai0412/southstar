@@ -144,6 +144,7 @@ export async function handleLibraryRoute(
     return json("library-import-draft", {
       draftId,
       status: draft.status,
+      documents: draft.documents,
       candidates: draft.candidates,
       candidateCoverageTargets: draft.candidateCoverageTargets,
       proposedEdges: draft.proposedEdges,

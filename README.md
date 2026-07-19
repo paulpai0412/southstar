@@ -50,7 +50,7 @@ The runtime reads configuration from environment variables:
 - `SOUTHSTAR_CONTAINER_CALLBACK_BASE_URL`
 - `SOUTHSTAR_REQUIRE_DOCKER`
 - `PI_PLANNER_ENDPOINT`
-- `SOUTHSTAR_PI_PLANNER_TIMEOUT_MS` for local Pi SDK planner/composer calls; default `180000`
+- `SOUTHSTAR_PI_PLANNER_TIMEOUT_MS` for local Pi SDK planner/composer calls; default `600000`
 - `CODEX_CLI_PATH`
 - `SOUTHSTAR_WEB_APP_DIR` for the web app directory
 

@@ -28,10 +28,9 @@ export function buildPlannerDraftRequest(dag: WorkflowDag, cwd?: string | null) 
     goalPrompt: dag.prompt,
     orchestrationMode: "llm-constrained" as const,
     composerMode: "llm" as const,
-    ...(dag.compositionPlan ? { compositionPlan: dag.compositionPlan } : {}),
     libraryHints: {
       agentProfileRefs: Array.from(
-        new Set(dag.nodes.map((node) => node.profileRef).filter((profileRef) => profileRef.length > 0)),
+        new Set(dag.nodes.map((node) => node.profileRef).filter((profileRef): profileRef is string => Boolean(profileRef))),
       ),
     },
   };

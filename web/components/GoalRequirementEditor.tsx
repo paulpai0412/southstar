@@ -72,7 +72,7 @@ export function GoalRequirementEditor({
 
   return (
     <div data-testid="goal-requirement-editor" style={shellStyle}>
-      <Header title={`${requirementIndex >= 0 ? `R${requirementIndex + 1} · ` : ""}${requirement.title}`} subtitle={`${requirement.id} · ${requirement.source}${requirement.blocking ? " · blocking" : ""}`} />
+      <Header title={`${requirementIndex >= 0 ? `R${requirementIndex + 1} · ` : ""}${requirement.title}`} subtitle={`${requirement.id} · ${requirement.source}${requirement.blocking ? " · required for goal" : ""}`} />
       <div style={contentStyle}>
         <details data-testid="goal-requirement-field-guide" style={guideStyle}>
           <summary style={guideSummaryStyle}>How to edit a requirement</summary>

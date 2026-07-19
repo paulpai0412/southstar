@@ -3,11 +3,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SouthstarWorkflowCanvas } from "./workflow-canvas/SouthstarWorkflowCanvas";
 import { GoalContractCard } from "./GoalContractCard";
+import { buildMissionCoverageGraph } from "./GoalContractInspector";
 import type { WorkflowCanvasModel, WorkflowDependencyModel, WorkflowTaskNodeModel } from "./workflow-canvas/types";
 import { useWorkflowLifecycle } from "@/hooks/useWorkflowLifecycle";
 import { buildWorkflowTemplateSaveRequest } from "@/lib/workflow/template-save";
 import { invokeOperatorCommand } from "@/lib/operator/invokeCommand";
 import type { GoalMissionReadModel, WorkflowCommandDescriptor, WorkflowDag, WorkflowDagNode } from "@/lib/workflow/types";
+import { CoverageGraphPreview, type CoverageGraphData } from "./CoverageGraphPreview";
+import type { LibraryGraphChartEdge, LibraryGraphChartNode } from "./library/LibraryGraphChart";
 
 type SaveTemplateStatus =
   | { phase: "idle" }
@@ -24,6 +27,12 @@ type ApprovalDraft = {
   reason: string;
 };
 
+type RefreshedWorkflowRuntime = {
+  mission: GoalMissionReadModel | null;
+  approvalCommand?: WorkflowCommandDescriptor;
+  runStatus?: WorkflowDag["runStatus"];
+};
+
 export function WorkflowDagBlock({
   dag,
   cwd,
@@ -31,6 +40,7 @@ export function WorkflowDagBlock({
   onGoalContractSelect,
   onReviseGoal,
   onMissionRefresh,
+  onLibraryGraphNodeSelect,
 }: {
   dag: WorkflowDag;
   cwd?: string | null;
@@ -38,43 +48,68 @@ export function WorkflowDagBlock({
   onGoalContractSelect?: (dag: WorkflowDag) => void;
   onReviseGoal?: (dag: WorkflowDag, choice?: string) => void;
   onMissionRefresh?: (dag: WorkflowDag) => Promise<GoalMissionReadModel | null>;
+  onLibraryGraphNodeSelect?: (node: LibraryGraphChartNode) => void;
 }) {
-  const [expanded, setExpanded] = useState<boolean>(dag.expandedByDefault);
+  const [expanded, setExpanded] = useState<boolean>(false);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [saveTemplateStatus, setSaveTemplateStatus] = useState<SaveTemplateStatus>({ phase: "idle" });
   const [reviewMode, setReviewMode] = useState(false);
   const [approvalStatus, setApprovalStatus] = useState<ApprovalStatus>({ phase: "idle", message: null });
   const [approvalDraft, setApprovalDraft] = useState<ApprovalDraft | null>(null);
   const [refreshedMission, setRefreshedMission] = useState<GoalMissionReadModel | null>(null);
+  const [refreshedApprovalCommand, setRefreshedApprovalCommand] = useState<WorkflowCommandDescriptor | null>(null);
+  const [refreshedRunStatus, setRefreshedRunStatus] = useState<WorkflowDag["runStatus"]>();
   const approvalInFlightRef = useRef(false);
   const { state, createDraft, validateDraft, runDraft, executeRun } = useWorkflowLifecycle(dag, cwd);
   const busy = state.phase === "drafting" || state.phase === "validating" || state.phase === "running" || state.phase === "executing";
   const activeDraftId = state.draft?.draftId ?? dag.draftId;
   const activeRunId = state.run?.runId ?? dag.runId;
   const draftReady = Boolean(activeDraftId);
-  const canValidateActiveDag = draftReady || Boolean(dag.compositionPlan);
+  const canValidateActiveDag = draftReady;
   const canRunActiveDraft = state.canRun || Boolean(dag.draftId && (dag.draftStatus === "validated" || dag.readiness === "ready"));
   const saveTemplateBusy = saveTemplateStatus.phase === "saving";
   const validateDisabled = busy || !canValidateActiveDag;
   const runDisabled = busy || !draftReady || !canRunActiveDraft || Boolean(activeRunId);
-  const executeDisabled = busy || !activeRunId;
   const nodeById = useMemo(() => new Map(dag.nodes.map((node) => [node.id, node])), [dag.nodes]);
   const canvas = useMemo(() => workflowDagToCanvasModel(dag, selectedNodeId), [dag, selectedNodeId]);
+  const coverageGraph = useMemo(() => buildDagCoverageGraph(dag), [dag]);
+  const activeRunStatus: WorkflowDag["runStatus"] = state.run?.runStatus === "awaiting_approval"
+    ? "awaiting_approval"
+    : state.run?.runStatus === "scheduling"
+      ? "scheduling"
+      : refreshedRunStatus ?? dag.runStatus;
+  const activeDag = useMemo(() => ({
+    ...dag,
+    ...(activeRunId ? { runId: activeRunId } : {}),
+    ...(activeRunStatus ? { runStatus: activeRunStatus } : {}),
+  }), [activeRunId, activeRunStatus, dag]);
   const mission = refreshedMission && (!dag.mission || refreshedMission.goalContractHash === dag.mission.goalContractHash)
     ? refreshedMission
     : dag.mission;
   const approvalComplete = approvalStatus.phase === "succeeded" || Boolean(mission?.approval && mission.approval.status !== "pending");
+  const approvalPending = approvalStatus.phase === "pending"
+    || activeRunStatus === "awaiting_approval"
+    || mission?.status.execution === "awaiting_approval"
+    || mission?.approval?.status === "pending";
+  const executeDisabled = busy || !activeRunId || approvalPending;
+  const approvalCommand = approvalComplete ? undefined : refreshedApprovalCommand ?? dag.approvalCommand;
 
   useEffect(() => {
-    if (!dag.runId) return;
+    if (!activeRunId) return;
     let active = true;
     let timer: number | undefined;
     const refresh = async () => {
       try {
-        const next = await refreshGoalMission(dag);
-        if (!active || !next) return;
-        setRefreshedMission(next);
-        if (next.status.outcome !== "in_progress" && timer !== undefined) {
+        const next = await refreshGoalRuntime({
+          ...dag,
+          ...(activeRunId ? { runId: activeRunId } : {}),
+          ...(activeRunStatus ? { runStatus: activeRunStatus } : {}),
+        });
+        if (!active) return;
+        if (next.mission) setRefreshedMission(next.mission);
+        setRefreshedApprovalCommand(next.approvalCommand ?? null);
+        setRefreshedRunStatus(next.runStatus);
+        if (next.mission && next.mission.status.outcome !== "in_progress" && timer !== undefined) {
           window.clearInterval(timer);
         }
       } catch {
@@ -87,7 +122,7 @@ export function WorkflowDagBlock({
       active = false;
       if (timer !== undefined) window.clearInterval(timer);
     };
-  }, [dag.runId]);
+  }, [activeRunId, activeRunStatus]);
 
   const handleDraft = () => {
     void createDraft();
@@ -112,13 +147,13 @@ export function WorkflowDagBlock({
   };
 
   const openApprovalForm = (command: WorkflowCommandDescriptor) => {
-    if (!dag.runId || approvalInFlightRef.current || approvalComplete) return;
+    if (!activeRunId || approvalInFlightRef.current || approvalComplete) return;
     setApprovalDraft({ command, reason: "Approve Goal Contract execution" });
     setApprovalStatus({ phase: "idle", message: null });
   };
 
   const submitApproval = async () => {
-    if (!dag.runId || !approvalDraft || approvalInFlightRef.current || approvalComplete) return;
+    if (!activeRunId || !approvalDraft || approvalInFlightRef.current || approvalComplete) return;
     const reason = approvalDraft.reason.trim();
     if (!reason) {
       setApprovalStatus({ phase: "error", message: "Approval reason is required." });
@@ -127,12 +162,18 @@ export function WorkflowDagBlock({
     approvalInFlightRef.current = true;
     setApprovalStatus({ phase: "pending", message: "Approving…" });
     try {
-      await invokeOperatorCommand({ command: approvalDraft.command, runId: dag.runId, reason });
+      await invokeOperatorCommand({ command: approvalDraft.command, runId: activeRunId, reason });
       try {
         const refreshed = onMissionRefresh
-          ? await onMissionRefresh(dag)
-          : await refreshGoalMission(dag);
-        if (refreshed) setRefreshedMission(refreshed);
+          ? await onMissionRefresh(activeDag)
+          : await refreshGoalRuntime(activeDag);
+        if (refreshed && "mission" in refreshed) {
+          if (refreshed.mission) setRefreshedMission(refreshed.mission);
+          setRefreshedApprovalCommand(refreshed.approvalCommand ?? null);
+          setRefreshedRunStatus(refreshed.runStatus);
+        } else if (refreshed) {
+          setRefreshedMission(refreshed);
+        }
         setApprovalStatus({ phase: "succeeded", message: "Approved" });
       } catch (refreshError) {
         const message = refreshError instanceof Error ? refreshError.message : String(refreshError);
@@ -231,12 +272,12 @@ export function WorkflowDagBlock({
           {mission ? (
             <GoalContractCard
               mission={mission}
-              runStatus={dag.runStatus}
-              approvalCommand={approvalComplete ? undefined : dag.approvalCommand}
+              runStatus={activeRunStatus}
+              approvalCommand={approvalCommand}
               onOpenDetails={() => onGoalContractSelect?.(dag)}
               onReviseGoal={(choice) => onReviseGoal?.(dag, choice)}
               onApprove={openApprovalForm}
-              approvalPending={approvalStatus.phase === "pending"}
+              approvalPending={approvalPending}
             />
           ) : null}
           {approvalDraft && !approvalComplete ? (
@@ -413,23 +454,49 @@ export function WorkflowDagBlock({
               />
             </div>
           </div>
+          <CoverageGraphPreview
+            testId="workflow-dag-coverage-preview"
+            persistLayoutKey={`workflow-dag-coverage:${dag.id}`}
+            nodes={coverageGraph.nodes}
+            edges={coverageGraph.edges}
+            description="DAG coverage uses persisted mission lineage when available; expected outputs remain separate from produced artifacts."
+            onSelectNode={onLibraryGraphNodeSelect}
+          />
         </div>
       )}
     </div>
   );
 }
 
-async function refreshGoalMission(dag: WorkflowDag): Promise<GoalMissionReadModel | null> {
+async function refreshGoalRuntime(dag: WorkflowDag): Promise<RefreshedWorkflowRuntime> {
   const query = dag.runId
     ? `runId=${encodeURIComponent(dag.runId)}`
     : dag.draftId
       ? `draftId=${encodeURIComponent(dag.draftId)}`
       : null;
-  if (!query) return null;
+  if (!query) return { mission: null };
   const response = await fetch(`/api/workflow/ui?${query}`, { cache: "no-store" });
   if (!response.ok) throw new Error(await response.text() || `Mission refresh failed with ${response.status}`);
-  const payload = await response.json() as { result?: { mission?: GoalMissionReadModel | null }; mission?: GoalMissionReadModel | null };
-  return payload.result?.mission ?? payload.mission ?? null;
+  const payload = await response.json() as {
+    result?: { mission?: GoalMissionReadModel | null; commands?: unknown };
+    mission?: GoalMissionReadModel | null;
+    commands?: unknown;
+  };
+  const result = payload.result ?? payload;
+  const mission = result.mission ?? null;
+  const approvalCommand = Array.isArray(result.commands)
+    ? result.commands.find((command): command is WorkflowCommandDescriptor => (
+        typeof command === "object"
+        && command !== null
+        && "id" in command
+        && (command as { id?: unknown }).id === "approval.approve"
+      ))
+    : undefined;
+  return {
+    mission,
+    ...(approvalCommand ? { approvalCommand } : {}),
+    ...(mission?.status.execution === "awaiting_approval" ? { runStatus: "awaiting_approval" as const } : {}),
+  };
 }
 
 function workflowDagToCanvasModel(dag: WorkflowDag, selectedNodeId: string | null): WorkflowCanvasModel {
@@ -455,8 +522,8 @@ function workflowDagToCanvasModel(dag: WorkflowDag, selectedNodeId: string | nul
     nodeType: node.nodeType ?? null,
     expectedOutputs: node.expectedOutputs ?? [],
     badges: [
-      { label: node.provider, tone: node.provider === "pi" ? "good" : "neutral" },
-      { label: node.model, tone: "neutral" },
+      ...(node.provider ? [{ label: node.provider, tone: node.provider === "pi" ? "good" as const : "neutral" as const }] : []),
+      ...(node.model ? [{ label: node.model, tone: "neutral" as const }] : []),
     ],
     attention: node.state === "blocked"
       ? { severity: "blocked", reason: "Planner draft is blocked." }
@@ -479,6 +546,81 @@ function workflowDagToCanvasModel(dag: WorkflowDag, selectedNodeId: string | nul
     nodes,
     edges,
   };
+}
+
+function buildDagCoverageGraph(dag: WorkflowDag): CoverageGraphData {
+  const nodes = new Map<string, LibraryGraphChartNode>();
+  const edges: LibraryGraphChartEdge[] = [];
+  const edgeKeys = new Set<string>();
+  const taskKeys = new Set(dag.nodes.map((node) => `task:${node.id}`));
+  const missionRequirements = new Map((dag.mission?.goalContract.requirements ?? []).map((requirement) => [requirement.id, requirement]));
+  const addNode = (node: LibraryGraphChartNode) => {
+    if (!nodes.has(node.objectKey)) nodes.set(node.objectKey, node);
+  };
+  const addEdge = (fromObjectKey: string, toObjectKey: string, edgeType: string) => {
+    const key = `${fromObjectKey}:${edgeType}:${toObjectKey}`;
+    if (edgeKeys.has(key)) return;
+    edgeKeys.add(key);
+    edges.push({ fromObjectKey, toObjectKey, edgeType });
+  };
+
+  for (const node of dag.nodes) {
+    const taskKey = `task:${node.id}`;
+    addNode({
+      objectKey: taskKey,
+      objectKind: "task",
+      status: node.state,
+      title: node.label,
+      metadata: { purpose: node.purpose, nodeType: node.nodeType, expectedOutputs: node.expectedOutputs ?? [] },
+    });
+    for (const requirementId of node.requirementIds ?? []) {
+      const requirementKey = `requirement:${requirementId}`;
+      const requirement = missionRequirements.get(requirementId);
+      addNode({
+        objectKey: requirementKey,
+        objectKind: "requirement",
+        status: node.state,
+        title: requirement?.statement ?? `Requirement ${requirementId}`,
+        ...(requirement ? { metadata: { acceptanceCriteria: requirement.acceptanceCriteria, blocking: requirement.blocking } } : {}),
+      });
+      if (node.sliceId) {
+        const sliceKey = `slice:${node.sliceId}`;
+        addNode({ objectKey: sliceKey, objectKind: "slice", status: node.state, title: `Slice ${node.sliceId}` });
+        addEdge(requirementKey, sliceKey, "covered by slice");
+        addEdge(sliceKey, taskKey, "implemented by task");
+      } else {
+        addEdge(requirementKey, taskKey, "implemented by task");
+      }
+    }
+    for (const output of node.expectedOutputs ?? []) {
+      if (!output) continue;
+      const outputKey = `expected-output:${node.id}:${output}`;
+      addNode({ objectKey: outputKey, objectKind: "expected_output", status: node.state, title: `Expected output ${output}` });
+      addEdge(taskKey, outputKey, "produces expected output");
+    }
+  }
+
+  for (const edge of dag.edges) {
+    const from = `task:${edge.from}`;
+    const to = `task:${edge.to}`;
+    if (taskKeys.has(from) && taskKeys.has(to)) addEdge(from, to, "depends on");
+  }
+
+  if (dag.mission) {
+    const missionGraph = buildMissionCoverageGraph(dag.mission);
+    for (const node of missionGraph.nodes) addNode(node);
+    for (const edge of missionGraph.edges) addEdge(edge.fromObjectKey, edge.toObjectKey, edge.edgeType ?? "related");
+    for (const entry of dag.mission.coverage.entries) {
+      for (const producerTaskId of entry.producerTaskIds) {
+        if (taskKeys.has(`task:${producerTaskId}`)) addEdge(`task:${producerTaskId}`, `producer:${producerTaskId}`, "is producer");
+      }
+      for (const evaluatorTaskId of entry.evaluatorTaskIds) {
+        if (taskKeys.has(`task:${evaluatorTaskId}`)) addEdge(`task:${evaluatorTaskId}`, `evaluator:${evaluatorTaskId}`, "runs evaluator");
+      }
+    }
+  }
+
+  return { nodes: [...nodes.values()], edges };
 }
 
 function nodeStatus(node: WorkflowDagNode): string {

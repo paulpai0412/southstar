@@ -8,6 +8,8 @@ import type {
   GoalRequirementSelection,
   GoalRequirementsContent,
 } from "@/lib/types";
+import { CoverageGraphPreview, type CoverageGraphData } from "./CoverageGraphPreview";
+import type { LibraryGraphChartEdge, LibraryGraphChartNode } from "./library/LibraryGraphChart";
 import { generateWorkflowDagStream, type GoalValidationProgressEvent } from "../lib/workflow/generate-stream";
 
 export type GoalRequirementsConfirmation = {
@@ -24,11 +26,13 @@ export function GoalRequirementListBlock({
   onRequirementSelect,
   onGoalRequirements,
   onConfirmRequirements,
+  onLibraryGraphNodeSelect,
 }: {
   block: GoalRequirementsContent;
   onRequirementSelect?: (selection: GoalRequirementSelection) => void;
   onGoalRequirements?: (content: GoalRequirementsContent) => void;
   onConfirmRequirements?: (confirmation: GoalRequirementsConfirmation) => void | Promise<GoalRequirementsConfirmationResult | void>;
+  onLibraryGraphNodeSelect?: (node: LibraryGraphChartNode) => void;
 }) {
   const [currentBlock, setCurrentBlock] = useState(block);
   const [blockerAnswers, setBlockerAnswers] = useState<Record<string, string>>({});
@@ -77,11 +81,37 @@ export function GoalRequirementListBlock({
     });
   }, [block]);
 
+  useEffect(() => {
+    let cancelled = false;
+    void loadAuthoritativeGoalRequirements(block.draftId).then((authoritative) => {
+      if (cancelled || !goalRequirementsContentShouldReplace(block, authoritative)) return;
+      setCurrentBlock(authoritative);
+      onGoalRequirements?.(authoritative);
+    }).catch(() => {
+      // The session replay remains usable when the read model is temporarily unavailable.
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [block.draftId, block.goalRequirementDraftHash, block.draft.revision, onGoalRequirements]);
+
   const draft = currentBlock.draft;
   const coverage = useMemo(() => new Map((currentBlock.coveragePreview ?? []).map((entry) => [entry.requirementId, entry])), [currentBlock.coveragePreview]);
   const hasUnresolvedOpenQuestions = hasOpenQuestions(draft);
+  const hasUnresolvedClarifications = draft.blockingInputs.length > 0 || hasUnresolvedOpenQuestions;
   const hasVisualContractIssues = currentBlock.validationIssues?.some((issue) => issue.code === "missing_ui_interaction_contract" || issue.code === "unconfirmed_ui_interaction_contract") ?? false;
   const confirmable = currentBlock.confirmable === true && draft.blockingInputs.length === 0 && !hasUnresolvedOpenQuestions;
+  const requirementRows = draft.requirements
+    .map((requirement, draftIndex) => ({ requirement, draftIndex }))
+    .filter(({ requirement }) => requirement.status !== "superseded")
+    .map(({ requirement, draftIndex }) => ({
+      requirement,
+      draftIndex,
+      readiness: requirementReadiness(requirement, draftIndex, currentBlock),
+    }));
+  const completeRequirementCount = requirementRows.filter(({ readiness }) => readiness.tone === "complete").length;
+  const attentionRequirementCount = requirementRows.filter(({ readiness }) => readiness.tone === "warning").length;
+  const coverageGraph = useMemo(() => buildRequirementCoverageGraph(draft, currentBlock.coveragePreview), [currentBlock.coveragePreview, draft]);
 
   const resolveBlockers = async () => {
     if (blockerResolution.status === "submitting") return;
@@ -110,6 +140,17 @@ export function GoalRequirementListBlock({
         onMessage(text) {
           followUp = text;
         },
+        onHeartbeat(heartbeat) {
+          const elapsedSeconds = typeof heartbeat.elapsedMs === "number"
+            ? Math.round(heartbeat.elapsedMs / 1000)
+            : null;
+          setBlockerResolution({
+            status: "submitting",
+            message: elapsedSeconds === null
+              ? "Rechecking Goal Requirements…"
+              : `Rechecking Goal Requirements… ${elapsedSeconds}s`,
+          });
+        },
         onGoalRequirements(value) {
           const content = goalRequirementsContentFromUnknown(value);
           if (!content || !goalRequirementsContentShouldReplace(currentBlock, content)) return;
@@ -121,12 +162,33 @@ export function GoalRequirementListBlock({
           if (result?.kind === "needs_input" && typeof result.question === "string") followUp = result.question;
         },
       });
+      if (!nextBlock) {
+        const reconciled = await loadAuthoritativeGoalRequirements(currentBlock.draftId);
+        if (goalRequirementsContentShouldReplace(currentBlock, reconciled)) {
+          nextBlock = reconciled;
+          setCurrentBlock(reconciled);
+          onGoalRequirements?.(reconciled);
+        }
+      }
       const resolvedBlock = nextBlock as GoalRequirementsContent | null;
       if (!resolvedBlock) throw new Error(followUp ?? "Requirement revision did not return a Goal Requirements revision.");
       setBlockerResolution(resolvedBlock.draft.blockingInputs.length === 0 && !hasOpenQuestions(resolvedBlock.draft)
         ? { status: "resolved", message: `Saved revision ${resolvedBlock.draft.revision}. All goal clarifications are resolved.` }
         : { status: "error", message: followUp ?? "Some clarifications still need an answer." });
     } catch (error) {
+      try {
+        const reconciled = await loadAuthoritativeGoalRequirements(currentBlock.draftId);
+        if (goalRequirementsContentShouldReplace(currentBlock, reconciled)) {
+          setCurrentBlock(reconciled);
+          onGoalRequirements?.(reconciled);
+          setBlockerResolution(reconciled.draft.blockingInputs.length === 0 && !hasOpenQuestions(reconciled.draft)
+            ? { status: "resolved", message: `Saved revision ${reconciled.draft.revision}. All goal clarifications are resolved.` }
+            : { status: "error", message: "Some clarifications still need an answer." });
+          return;
+        }
+      } catch {
+        // Preserve the original stream error when the read model cannot reconcile it.
+      }
       setBlockerResolution({ status: "error", message: error instanceof Error ? error.message : String(error) });
     }
   };
@@ -174,6 +236,28 @@ export function GoalRequirementListBlock({
     }
   };
 
+  const primaryAction = hasUnresolvedClarifications
+    ? {
+      testId: "goal-requirement-resolve",
+      disabled: blockerResolution.status === "submitting" || confirmState === "confirming",
+      run: resolveBlockers,
+      label: blockerResolution.status === "submitting" ? "Rechecking…" : "Answer & recheck",
+    }
+    : {
+      testId: "goal-requirements-confirm",
+      disabled: !confirmable || confirmState === "confirming" || confirmState === "confirmed",
+      run: confirm,
+      label: confirmState === "confirming"
+        ? "Confirming…"
+        : confirmState === "confirmed"
+          ? "Confirmed"
+          : confirmable
+            ? "Confirm requirements"
+            : hasVisualContractIssues
+              ? "Review visual contracts first"
+              : "Waiting for host readiness",
+    };
+
   return (
     <section data-testid="goal-requirements-block" style={cardStyle}>
       <header style={headerStyle}>
@@ -183,14 +267,19 @@ export function GoalRequirementListBlock({
             draft {currentBlock.draftId} · {currentBlock.status} · rev {draft.revision}
           </div>
         </div>
-        <span style={pillStyle}>{draft.requirements.filter((item) => item.status !== "superseded").length} requirements</span>
+        <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "flex-end", gap: 6 }}>
+          <span style={pillStyle}>{requirementRows.length} requirements</span>
+          <span data-testid="goal-requirements-readiness-summary" style={pillStyle}>
+            {completeRequirementCount}/{requirementRows.length} complete{attentionRequirementCount > 0 ? ` · ${attentionRequirementCount} need attention` : ""}
+          </span>
+        </div>
       </header>
 
       <details data-testid="goal-requirements-guide" style={guideStyle}>
         <summary style={guideSummaryStyle}>How to answer blockers and complete this step</summary>
         <div style={guideBodyStyle}>
           <div><strong>1. Read each requirement.</strong> The title and statement describe the user outcome; the technical ID is only for linking.</div>
-          <div><strong>2. Answer every blocker or open question.</strong> Enter one proposed option such as <code>A</code> or a short decision, then choose <em>Answer and recheck</em>.</div>
+          <div><strong>2. Answer every blocker or open question.</strong> Enter one proposed option such as <code>A</code> or a short decision, then use the primary action below to recheck.</div>
           <div><strong>3. Review each visual contract.</strong> Open the UI contract, inspect its screens and states, then choose <em>Confirm visual contract</em>.</div>
           <div><strong>4. Confirm requirements.</strong> This button enables only after the host returns no unresolved inputs and all required visual contracts are confirmed.</div>
         </div>
@@ -199,7 +288,7 @@ export function GoalRequirementListBlock({
       <div style={metaRowStyle}>
         <span style={pillStyle}>{draft.requirements.filter((item) => item.source === "explicit" && item.status !== "superseded").length} explicit</span>
         <span style={pillStyle}>{draft.requirements.filter((item) => item.source === "inferred" && item.status !== "superseded").length} inferred</span>
-        <span style={pillStyle}>{draft.requirements.filter((item) => item.blocking && item.status !== "superseded").length} blocking</span>
+        <span style={pillStyle}>{draft.requirements.filter((item) => item.blocking && item.status !== "superseded").length} required</span>
         {draft.blockingInputs.length > 0 ? <span style={{ ...pillStyle, color: "#fbbf24" }}>{draft.blockingInputs.length} clarification{draft.blockingInputs.length === 1 ? "" : "s"}</span> : <span style={pillStyle}>clarification clear</span>}
       </div>
 
@@ -225,47 +314,51 @@ export function GoalRequirementListBlock({
               </div>
             ))}
           </div>
-          <div style={helperTextStyle}>Use one option letter when the question provides options, or add a short decision. Answer every clarification, then recheck the Goal Requirements revision.</div>
-          {blockerResolution.message ? <div data-testid="goal-requirement-resolution-status" role="status" style={resolutionMessageStyle}>{blockerResolution.message}</div> : null}
-          <button
-            type="button"
-            data-testid="goal-requirement-resolve"
-            disabled={blockerResolution.status === "submitting"}
-            onClick={() => void resolveBlockers()}
-            style={resolveButtonStyle}
-          >
-            {blockerResolution.status === "submitting" ? "Rechecking…" : "Answer and recheck"}
-          </button>
+          <div style={helperTextStyle}>Use one option letter when the question provides options, or add a short decision. Answer every clarification, then use the primary action below to recheck the Goal Requirements revision.</div>
         </div>
       ) : null}
 
       <div style={listStyle}>
-        {draft.requirements.filter((item) => item.status !== "superseded").map((requirement, index) => {
+        {requirementRows.map(({ requirement, readiness }, index) => {
           const entry = coverage.get(requirement.id);
           const visualStatus = requirement.interactionContractRefs.length > 0 ? "visual review" : "no visual contract";
           const requirementRef = `R${index + 1}`;
+          const selection: GoalRequirementSelection = {
+            draftId: currentBlock.draftId,
+            expectedDraftHash: currentBlock.goalRequirementDraftHash,
+            requirementId: requirement.id,
+            draft,
+            status: currentBlock.status,
+            confirmable,
+            ...(currentBlock.validationIssues ? { validationIssues: currentBlock.validationIssues } : {}),
+            ...(currentBlock.coveragePreview ? { coveragePreview: currentBlock.coveragePreview } : {}),
+          };
+          const readinessColor = readiness.tone === "warning"
+            ? "#fbbf24"
+            : readiness.tone === "complete"
+              ? "#86efac"
+              : "var(--text-dim)";
           return (
             <div key={requirement.id} style={itemContainerStyle}>
               <button
                 type="button"
                 data-testid={`goal-requirement-item-${requirement.id}`}
-                onClick={() => onRequirementSelect?.({
-                  draftId: currentBlock.draftId,
-                  expectedDraftHash: currentBlock.goalRequirementDraftHash,
-                  requirementId: requirement.id,
-                  draft,
-                  status: currentBlock.status,
-                  confirmable,
-                  ...(currentBlock.validationIssues ? { validationIssues: currentBlock.validationIssues } : {}),
-                  ...(currentBlock.coveragePreview ? { coveragePreview: currentBlock.coveragePreview } : {}),
-                })}
+                onClick={() => onRequirementSelect?.(selection)}
                 style={itemButtonStyle}
               >
                 <div style={itemHeadingStyle}>
                   <strong style={{ color: "var(--text)", fontSize: 12 }}><span style={semanticRefStyle}>{requirementRef}</span> {requirement.title}</strong>
                   <span style={{ ...miniPillStyle, fontFamily: "var(--font-mono)" }}>{requirement.id}</span>
                   <span style={miniPillStyle}>{requirement.source}</span>
-                  {requirement.blocking ? <span style={{ ...miniPillStyle, color: "#fbbf24" }}>blocking</span> : null}
+                  {requirement.blocking ? <span style={{ ...miniPillStyle, color: "#fbbf24" }}>required</span> : null}
+                  <span
+                    data-testid={`goal-requirement-status-${requirement.id}`}
+                    aria-label={`${readiness.label}: ${readiness.detail}`}
+                    title={readiness.detail}
+                    style={{ ...miniPillStyle, color: readinessColor }}
+                  >
+                    <span aria-hidden="true">{readiness.icon}</span> {readiness.label}
+                  </span>
                 </div>
                 <div style={statementStyle}>{requirement.statement}</div>
                 <div data-testid={`goal-requirement-semantic-tags-${requirement.id}`} style={{ color: "var(--text-muted)", fontSize: 11 }}>
@@ -278,6 +371,26 @@ export function GoalRequirementListBlock({
                   <span style={miniPillStyle}>{visualStatus}</span>
                 </div>
               </button>
+              {requirement.interactionContractRefs.length > 0 ? (
+                <div data-testid={`goal-requirement-visual-contracts-${requirement.id}`} style={visualContractListStyle}>
+                  <span style={visualContractLabelStyle}>Visual contracts</span>
+                  {requirement.interactionContractRefs.map((contractId) => {
+                    const contractState = visualContractState(contractId, currentBlock);
+                    return (
+                      <button
+                        key={contractId}
+                        type="button"
+                        data-testid={`goal-requirement-visual-contract-${requirement.id}-${contractId}`}
+                        onClick={() => onRequirementSelect?.(selection)}
+                        style={{ ...visualContractButtonStyle, color: contractState.color }}
+                        title="Open the requirement sidecar, then open this UI contract"
+                      >
+                        {contractState.icon} {contractState.label} · {contractId}
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : null}
               {requirement.openQuestions.length > 0 ? (
                 <div data-testid={`goal-requirement-questions-${requirement.id}`} style={questionPanelStyle}>
                   <strong>Open questions</strong>
@@ -305,42 +418,41 @@ export function GoalRequirementListBlock({
         })}
       </div>
 
+      <CoverageGraphPreview
+        testId="goal-requirements-coverage-preview"
+        persistLayoutKey={`goal-requirements-coverage:${currentBlock.draftId}:${draft.revision}`}
+        nodes={coverageGraph.nodes}
+        edges={coverageGraph.edges}
+        description="Requirement coverage currently available from the Goal Requirements read model."
+        onSelectNode={onLibraryGraphNodeSelect}
+      />
+
       {draft.blockingInputs.length === 0 && hasUnresolvedOpenQuestions ? (
         <div data-testid="goal-requirement-open-question-resolution" style={blockerPanelStyle}>
           <strong>Resolve before confirmation</strong>
-          <div style={helperTextStyle}>Use one option letter when available, or add a short decision. Answer every open question above, then recheck the Goal Requirements revision.</div>
-          {blockerResolution.message ? <div data-testid="goal-requirement-resolution-status" role="status" style={resolutionMessageStyle}>{blockerResolution.message}</div> : null}
-          <button
-            type="button"
-            data-testid="goal-requirement-resolve"
-            disabled={blockerResolution.status === "submitting"}
-            onClick={() => void resolveBlockers()}
-            style={resolveButtonStyle}
-          >
-            {blockerResolution.status === "submitting" ? "Rechecking…" : "Answer and recheck"}
-          </button>
+          <div style={helperTextStyle}>Use one option letter when available, or add a short decision. Answer every open question above, then use the primary action below to recheck the Goal Requirements revision.</div>
         </div>
       ) : null}
 
       {draft.nonGoals.length > 0 ? <p style={bodyStyle}><strong>Non-goals:</strong> {draft.nonGoals.join(" · ")}</p> : null}
       <footer style={footerStyle}>
         <div data-testid="goal-validation-progress" data-event={confirmProgress?.event ?? ""} aria-live="polite" style={{ color: confirmState === "error" ? "#f87171" : "var(--text-dim)", fontSize: 11, minWidth: 0, overflowWrap: "anywhere" }}>
-          {confirmMessage ?? (confirmable
+          {confirmMessage ?? blockerResolution.message ?? (confirmable
             ? "Host marked this requirement draft confirmable."
-            : draft.blockingInputs.length > 0 || hasUnresolvedOpenQuestions
-            ? "Resolve the listed blockers and questions before confirming."
+            : hasUnresolvedClarifications
+            ? "Answer every listed blocker and question, then use Answer & recheck."
             : hasVisualContractIssues
-              ? "Review each visual contract and choose Confirm visual contract before confirming requirements."
+              ? "Review each visual contract and confirm it before confirming requirements."
               : "Waiting for host validation readiness.")}
         </div>
         <button
           type="button"
-          data-testid="goal-requirements-confirm"
-          disabled={!confirmable || confirmState === "confirming" || confirmState === "confirmed"}
-          onClick={() => void confirm()}
-          style={{ ...confirmButtonStyle, opacity: confirmable && confirmState !== "confirming" && confirmState !== "confirmed" ? 1 : 0.55 }}
+          data-testid={primaryAction.testId}
+          disabled={primaryAction.disabled}
+          onClick={() => void primaryAction.run()}
+          style={{ ...confirmButtonStyle, opacity: primaryAction.disabled ? 0.55 : 1 }}
         >
-          {confirmState === "confirming" ? "Confirming…" : confirmState === "confirmed" ? "Confirmed" : "Confirm requirements"}
+          {primaryAction.label}
         </button>
       </footer>
     </section>
@@ -371,6 +483,63 @@ function goalValidationProgressMessage(progress: GoalValidationProgressEvent): s
   return progress.event;
 }
 
+type RequirementReadiness = {
+  tone: "warning" | "complete" | "neutral";
+  icon: "⚠" | "✓" | "•";
+  label: string;
+  detail: string;
+};
+
+function requirementReadiness(
+  requirement: GoalRequirementDraftView["requirements"][number],
+  requirementIndex: number,
+  block: GoalRequirementsContent,
+): RequirementReadiness {
+  const prefix = `requirements.${requirementIndex}`;
+  const hasHostValidation = Array.isArray(block.validationIssues);
+  const issues = (block.validationIssues ?? []).filter((issue) => issue.path === prefix || issue.path.startsWith(`${prefix}.`));
+  if (issues.length > 0 || requirement.openQuestions.length > 0) {
+    return {
+      tone: "warning",
+      icon: "⚠",
+      label: "Needs attention",
+      detail: issues[0]?.message ?? "Answer the open question before confirmation.",
+    };
+  }
+  if (requirement.interactionContractRefs.length > 0 && !hasHostValidation) {
+    return {
+      tone: "neutral",
+      icon: "•",
+      label: "Pending host review",
+      detail: "Waiting for host visual contract readiness data.",
+    };
+  }
+  if (requirement.status === "ready") {
+    return {
+      tone: "complete",
+      icon: "✓",
+      label: "Complete",
+      detail: "Requirement is ready for confirmation.",
+    };
+  }
+  return {
+    tone: "neutral",
+    icon: "•",
+    label: "Pending host review",
+    detail: "Waiting for host readiness data.",
+  };
+}
+
+function visualContractState(contractId: string, block: GoalRequirementsContent): { icon: "⚠" | "✓"; label: string; color: string } {
+  const issue = (block.validationIssues ?? []).find((entry) => (
+    (entry.code === "missing_ui_interaction_contract" || entry.code === "unconfirmed_ui_interaction_contract")
+    && entry.message.includes(contractId)
+  ));
+  return issue
+    ? { icon: "⚠", label: "Needs confirmation", color: "#fbbf24" }
+    : { icon: "✓", label: "Confirmed", color: "#86efac" };
+}
+
 function blockerRevisionPrompt(answers: Array<{ question: string; answer: string }>): string {
   return [
     "Resolve the goal-level clarification inputs below and return a complete revised Goal Requirements draft.",
@@ -380,6 +549,15 @@ function blockerRevisionPrompt(answers: Array<{ question: string; answer: string
     "For any remaining open question or blocking input with finite choices, preserve 2-4 concise options in the question string as `Options: A) ...; B) ...`.",
     ...answers.map(({ question, answer }, index) => `${index + 1}. Question: ${question}\nAnswer: ${answer}`),
   ].join("\n");
+}
+
+async function loadAuthoritativeGoalRequirements(draftId: string): Promise<GoalRequirementsContent> {
+  const response = await fetch(`/api/workflow/planner-drafts/${encodeURIComponent(draftId)}/orchestration`, { cache: "no-store" });
+  const payload = await response.json().catch(() => undefined) as unknown;
+  if (!response.ok) throw new Error(errorMessage(payload) ?? `Goal Requirements reconciliation failed with HTTP ${response.status}`);
+  const content = goalRequirementsContentFromUnknown(payload);
+  if (!content) throw new Error("Goal Requirements reconciliation returned an invalid draft.");
+  return content;
 }
 
 function questionAnswerKey(requirementId: string, index: number): string {
@@ -470,7 +648,21 @@ export function goalRequirementsContentShouldReplace(
   if (current.draft.revision > incoming.draft.revision) return false;
   if (current.draft.revision < incoming.draft.revision) return true;
   if (current.goalRequirementDraftHash !== incoming.goalRequirementDraftHash) return false;
-  return goalRequirementPhaseRank(incoming.status) >= goalRequirementPhaseRank(current.status);
+  if (goalRequirementPhaseRank(incoming.status) < goalRequirementPhaseRank(current.status)) return false;
+  if (incoming.status !== current.status) return true;
+  return JSON.stringify({
+    confirmable: current.confirmable,
+    validationIssues: current.validationIssues ?? [],
+    blockers: current.blockers ?? [],
+    coveragePreview: current.coveragePreview ?? [],
+    libraryImportDraftId: current.libraryImportDraftId ?? null,
+  }) !== JSON.stringify({
+    confirmable: incoming.confirmable,
+    validationIssues: incoming.validationIssues ?? [],
+    blockers: incoming.blockers ?? [],
+    coveragePreview: incoming.coveragePreview ?? [],
+    libraryImportDraftId: incoming.libraryImportDraftId ?? null,
+  });
 }
 
 export function goalRequirementsConfirmationFromUnknown(
@@ -635,6 +827,59 @@ function coverageLabel(entry: GoalRequirementCoveragePreview | undefined): strin
   return entry.status;
 }
 
+function buildRequirementCoverageGraph(
+  draft: GoalRequirementDraftView,
+  coveragePreview: GoalRequirementCoveragePreview[] | undefined,
+): CoverageGraphData {
+  const nodes = new Map<string, LibraryGraphChartNode>();
+  const edges: LibraryGraphChartEdge[] = [];
+  const edgeKeys = new Set<string>();
+  const coverageByRequirement = new Map((coveragePreview ?? []).map((entry) => [entry.requirementId, entry]));
+  const addNode = (node: LibraryGraphChartNode) => {
+    if (!nodes.has(node.objectKey)) nodes.set(node.objectKey, node);
+  };
+  const addEdge = (fromObjectKey: string, toObjectKey: string, edgeType: string) => {
+    const key = `${fromObjectKey}:${edgeType}:${toObjectKey}`;
+    if (edgeKeys.has(key)) return;
+    edgeKeys.add(key);
+    edges.push({ fromObjectKey, toObjectKey, edgeType });
+  };
+
+  for (const requirement of draft.requirements.filter((item) => item.status !== "superseded")) {
+    const requirementKey = `requirement:${requirement.id}`;
+    const coverage = coverageByRequirement.get(requirement.id);
+    const blocked = coverage?.status === "missing" || requirement.status === "needs_clarification";
+    addNode({
+      objectKey: requirementKey,
+      objectKind: "requirement",
+      status: blocked ? "blocked" : requirement.status,
+      title: `Requirement ${requirement.id}`,
+      metadata: { title: requirement.title, statement: requirement.statement },
+    });
+    for (const criterion of requirement.acceptanceCriteria) {
+      const criterionKey = `ac:${requirement.id}:${criterion.id}`;
+      addNode({
+        objectKey: criterionKey,
+        objectKind: "acceptance_criteria",
+        status: blocked ? "blocked" : requirement.status,
+        title: `AC ${criterion.id}`,
+        metadata: { statement: criterion.statement, evidenceIntent: criterion.evidenceIntent },
+      });
+      addEdge(requirementKey, criterionKey, "has criterion");
+    }
+    for (const ref of coverage?.artifactRefs ?? []) {
+      addNode({ objectKey: ref, objectKind: "artifact", status: blocked ? "blocked" : coverage?.status ?? "unknown", title: `Artifact ${ref}` });
+      addEdge(requirementKey, ref, "covered by artifact");
+    }
+    for (const ref of coverage?.evaluatorRefs ?? []) {
+      addNode({ objectKey: ref, objectKind: "evaluator", status: blocked ? "blocked" : coverage?.status ?? "unknown", title: `Evaluator ${ref}` });
+      addEdge(requirementKey, ref, "checked by evaluator");
+    }
+  }
+
+  return { nodes: [...nodes.values()], edges };
+}
+
 function isArtifact(value: unknown): value is { description: string; mediaType?: string } {
   return isRecord(value) && typeof value.description === "string" && (value.mediaType === undefined || typeof value.mediaType === "string");
 }
@@ -658,14 +903,15 @@ const semanticRefStyle = { color: "var(--accent)", fontFamily: "var(--font-mono)
 const listStyle = { display: "flex", flexDirection: "column", gap: 7, marginTop: 11 } as const;
 const itemContainerStyle = { border: "1px solid var(--border)", borderRadius: 7, background: "var(--bg-panel)" } as const;
 const itemButtonStyle = { width: "100%", border: "none", borderRadius: 7, background: "var(--bg-panel)", padding: 10, cursor: "pointer", textAlign: "left" as const } as const;
+const visualContractListStyle = { display: "flex", flexWrap: "wrap" as const, alignItems: "center", gap: 5, padding: "0 10px 9px" } as const;
+const visualContractLabelStyle = { color: "var(--text-dim)", fontSize: 10, fontWeight: 700 } as const;
+const visualContractButtonStyle = { border: "1px solid var(--border)", borderRadius: 5, background: "var(--bg)", padding: "3px 6px", cursor: "pointer", fontSize: 10, fontFamily: "var(--font-mono)" } as const;
 const itemHeadingStyle = { display: "flex", alignItems: "center", flexWrap: "wrap" as const, gap: 5 } as const;
 const statementStyle = { marginTop: 5, color: "var(--text-muted)", fontSize: 12, lineHeight: 1.45 } as const;
 const blockerPanelStyle = { marginTop: 10, border: "1px solid rgba(251,191,36,0.38)", borderRadius: 7, background: "rgba(251,191,36,0.08)", padding: "8px 10px", color: "#fbbf24", fontSize: 11, lineHeight: 1.45 } as const;
 const blockerQuestionStyle = { border: "1px solid rgba(251,191,36,0.28)", borderRadius: 6, padding: "7px 8px", background: "rgba(0,0,0,0.08)" } as const;
 const answerLabelStyle = { display: "flex", flexDirection: "column" as const, gap: 4, marginTop: 5, color: "var(--text-dim)", fontSize: 10 } as const;
 const answerInputStyle = { width: "100%", resize: "vertical" as const, border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-panel)", color: "var(--text)", padding: "7px 8px", fontSize: 12, lineHeight: 1.4 } as const;
-const resolveButtonStyle = { alignSelf: "flex-start" as const, border: "1px solid #fbbf24", borderRadius: 6, background: "transparent", color: "#fbbf24", padding: "6px 9px", cursor: "pointer", fontSize: 11, fontWeight: 700 } as const;
-const resolutionMessageStyle = { color: "var(--text-dim)", fontSize: 10, whiteSpace: "pre-wrap" as const } as const;
 const questionPanelStyle = { marginTop: 6, borderLeft: "2px solid rgba(251,191,36,0.55)", paddingLeft: 8, color: "#fbbf24", fontSize: 11, lineHeight: 1.45 } as const;
 const questionItemStyle = { marginTop: 5 } as const;
 const questionTextStyle = { whiteSpace: "pre-wrap" as const } as const;

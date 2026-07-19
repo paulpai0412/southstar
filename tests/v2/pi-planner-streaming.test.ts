@@ -1,6 +1,29 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createPiSdkPlannerClient, type PiSdkPlannerSession } from "../../src/v2/planner/pi-planner.ts";
+import {
+  createPiSdkPlannerClient,
+  selectPiDefaultRuntimeProfileBinding,
+  type PiSdkPlannerSession,
+} from "../../src/v2/planner/pi-planner.ts";
+
+test("Pi default runtime profile binding uses only the available registry default", () => {
+  assert.deepEqual(
+    selectPiDefaultRuntimeProfileBinding({
+      available: [{ id: "gpt-5.3-codex", provider: "github-copilot" }],
+      provider: "github-copilot",
+      modelId: "gpt-5.3-codex",
+    }),
+    { harnessRef: "pi", provider: "github-copilot", model: "gpt-5.3-codex" },
+  );
+  assert.equal(
+    selectPiDefaultRuntimeProfileBinding({
+      available: [{ id: "gpt-5.4", provider: "github-copilot" }],
+      provider: "github-copilot",
+      modelId: "gpt-5.3-codex",
+    }),
+    undefined,
+  );
+});
 
 test("Pi SDK planner client streams true assistant text deltas from session snapshots", async () => {
   const listeners: Array<(event: unknown) => void> = [];

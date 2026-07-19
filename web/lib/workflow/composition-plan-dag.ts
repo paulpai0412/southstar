@@ -50,9 +50,8 @@ export function buildWorkflowCompositionPlanDisplay(text: string): WorkflowCompo
     expandedByDefault: true,
     readiness: "ready",
     nodes: tasks.map((task, index) => {
-      const profileRef = task.agentProfileRef || profileRefFromAgentDefinition(task.agentDefinitionRef);
+      const profileRef = task.agentProfileRef;
       const role = roleFromRefs(task.agentDefinitionRef, profileRef);
-      const provider = providerFromProfileRef(profileRef);
       return {
         id: task.id,
         taskId: task.id,
@@ -60,10 +59,7 @@ export function buildWorkflowCompositionPlanDisplay(text: string): WorkflowCompo
         label: task.name || task.id,
         role,
         agentRef: task.agentDefinitionRef || `agent.${role}`,
-        profileRef,
-        profileResourcePath: profileResourcePathFromRef(profileRef, role),
-        provider,
-        model: provider === "pi" ? "pi-agent-default" : "gpt-5-codex",
+        ...(profileRef ? { profileRef, profileResourcePath: profileResourcePathFromRef(profileRef, role) } : {}),
         level: levels.get(task.id) ?? index,
         state: "ready",
       };
@@ -161,14 +157,6 @@ function roleFromRefs(agentDefinitionRef: string, profileRef: string): string {
   if (source.includes("checker") || source.includes("reviewer")) return "checker";
   if (source.includes("summarizer")) return "summarizer";
   return "maker";
-}
-
-function providerFromProfileRef(profileRef: string): "pi" | "codex" {
-  return profileRef.includes("-pi") ? "pi" : "codex";
-}
-
-function profileRefFromAgentDefinition(agentDefinitionRef: string): string {
-  return `${agentDefinitionRef.replace(/^agent\./, "profile.")}-codex`;
 }
 
 function profileResourcePathFromRef(profileRef: string, fallback: string): string {

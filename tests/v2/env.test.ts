@@ -12,7 +12,7 @@ test("loads v2 env defaults as Postgres-only runtime configuration", () => {
     containerCallbackBaseUrl: undefined,
     dockerRequired: true,
     piPlannerEndpoint: undefined,
-    piPlannerTimeoutMs: 180000,
+    piPlannerTimeoutMs: 600000,
     codexCliPath: "codex",
   });
 });

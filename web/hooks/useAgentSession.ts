@@ -242,6 +242,8 @@ export interface UseAgentSessionOptions {
   onWorkflowDagNodeSelect?: (node: import("@/lib/workflow/types").WorkflowDagNode) => void;
   /** Receives every host-authoritative Goal Requirements SSE/result projection. */
   onGoalRequirements?: (content: GoalRequirementsContent) => void;
+  /** Uses the latest in-memory Goal Requirements projection for the next revision. */
+  goalRequirementContentOverride?: GoalRequirementsContent | null;
   goalDesignRevisionAnchor?: GoalSliceSelection | null;
   goalRequirementRevisionAnchor?: GoalRequirementSelection | null;
   setToolPreset?: (preset: "none" | "default" | "full") => void;
@@ -977,7 +979,15 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       workflowAbortControllerRef.current?.abort();
       workflowAbortControllerRef.current = workflowAbortController;
       const goalDesignRevisionIdentity = opts.goalDesignRevisionAnchor ?? latestGoalDesignDraftIdentity(messages);
-      const requirementRevisionIdentity = opts.goalRequirementRevisionAnchor ?? latestGoalRequirementDraftIdentity(messages);
+      const requirementRevisionIdentity = opts.goalRequirementRevisionAnchor
+        ?? (opts.goalRequirementContentOverride
+          ? {
+            draftId: opts.goalRequirementContentOverride.draftId,
+            status: opts.goalRequirementContentOverride.status,
+            expectedDraftHash: opts.goalRequirementContentOverride.goalRequirementDraftHash,
+          }
+          : null)
+        ?? latestGoalRequirementDraftIdentity(messages);
       const revisionDraftId = requirementRevisionIdentity?.draftId ?? goalDesignRevisionIdentity?.draftId ?? latestWorkflowDraftId(messages);
       const updateStreamingMessage = () => {
         const streamedText = normalizeWorkflowStreamText(rawStreamedText);
@@ -1356,7 +1366,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       setWorkflowProgress(null);
       dispatch({ type: "end" });
     }
-  }, [effectiveNewSessionCwd, isNew, newSessionModel, toolPreset, thinkingLevel, session, messages, agentRunning, connectEvents, ensureNewSession, promoteNewSession, waitForPromptSettlement, sessionKind, opts.workflowMode, opts.workflowCwd, opts.workflowTemplate, opts.libraryScope, opts.goalDesignRevisionAnchor, opts.goalRequirementRevisionAnchor, addNotice, persistWorkflowMessage]);
+  }, [effectiveNewSessionCwd, isNew, newSessionModel, toolPreset, thinkingLevel, session, messages, agentRunning, connectEvents, ensureNewSession, promoteNewSession, waitForPromptSettlement, sessionKind, opts.workflowMode, opts.workflowCwd, opts.workflowTemplate, opts.libraryScope, opts.goalDesignRevisionAnchor, opts.goalRequirementRevisionAnchor, opts.goalRequirementContentOverride, addNotice, persistWorkflowMessage]);
 
   const handleConfirmGoalDesign = useCallback(async (selection: GoalSliceSelection) => {
     const packageHash = selection.goalDesignPackageHash;
@@ -1371,14 +1381,14 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     dispatch({ type: "start" });
     let streamedText = "";
     let dag: WorkflowDag | null = null;
-    const append = (text: string) => {
+    const append = (text: string, mode: "line" | "message.delta" = "line") => {
       if (!text) return;
-      streamedText = appendWorkflowStreamText(streamedText, text, "line");
+      streamedText = appendWorkflowStreamText(streamedText, text, mode);
       dispatch({
         type: "update",
         message: {
           role: "assistant",
-          content: [{ type: "text", text: streamedText }],
+          content: [{ type: "text", text: normalizeWorkflowStreamText(streamedText) }],
           model: "workflow-generate",
           provider: "southstar",
           timestamp: Date.now(),
@@ -1390,13 +1400,23 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         draftId: selection.draftId,
         expectedPackageHash: packageHash,
         signal: controller.signal,
+        onHeartbeat(heartbeat) {
+          const stage = typeof heartbeat.phase === "string" ? heartbeat.phase : "goal_design_confirmation";
+          const elapsedMs = typeof heartbeat.elapsedMs === "number" ? heartbeat.elapsedMs : undefined;
+          setWorkflowProgress({
+            message: `Still working on ${stage}…`,
+            stage,
+            ...(elapsedMs !== undefined ? { elapsedMs } : {}),
+            updatedAt: Date.now(),
+          });
+        },
         onStage(stage) {
           setWorkflowProgress({ message: stage.message || stage.stage || "Planner is working…", stage: stage.stage, updatedAt: Date.now() });
           append(stage.message || stage.stage || "");
         },
-        onMessage(text) {
+        onMessage(text, event) {
           setWorkflowProgress({ message: text, stage: "composing", updatedAt: Date.now() });
-          append(text);
+          append(text, event === "message.delta" ? "message.delta" : "line");
         },
         onRun(run) {
           setWorkflowProgress({ message: run.runStatus ? `Workflow run is ${run.runStatus}.` : "Workflow run created.", stage: "run", updatedAt: Date.now() });
@@ -1410,7 +1430,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
             message: {
               role: "assistant",
               content: [
-                ...(streamedText ? [{ type: "text" as const, text: streamedText }] : []),
+                ...(streamedText ? [{ type: "text" as const, text: normalizeWorkflowStreamText(streamedText) }] : []),
                 { type: "workflowDag" as const, dag: nextDag },
               ],
               model: "workflow-generate",
@@ -1425,7 +1445,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       const assistantMsg: AgentMessage = {
         role: "assistant",
         content: [
-          ...(streamedText ? [{ type: "text" as const, text: streamedText }] : [{ type: "text" as const, text: "Goal design confirmed; DAG composed." }]),
+          ...(streamedText ? [{ type: "text" as const, text: normalizeWorkflowStreamText(streamedText) }] : [{ type: "text" as const, text: "Goal design confirmed; DAG composed." }]),
           { type: "workflowDag" as const, dag: confirmedDag },
         ],
         model: "workflow-generate",

@@ -4,6 +4,11 @@ export type WorkflowCanvasNode = {
   kind: "task";
   status: string;
   dependsOn: string[];
+  sliceId?: string;
+  requirementIds?: string[];
+  purpose?: string;
+  nodeType?: string;
+  expectedOutputs?: string[];
   roleRef?: string;
   agentProfileRef?: string;
   sortOrder: number;
@@ -43,6 +48,11 @@ export type RuntimeOverlayRow = {
 export type DraftTaskShape = {
   id: string;
   name?: string;
+  sliceId?: string;
+  requirementIds?: string[];
+  purpose?: string;
+  nodeType?: string;
+  expectedOutputs?: string[];
   roleRef?: string;
   agentProfileRef?: string;
   artifactKind?: string;
@@ -80,6 +90,11 @@ export function buildRuntimeWorkflowCanvasProjection(input: {
       status: task.status,
       dependsOn: stringArray(task.depends_on_json),
       sortOrder: task.sort_order,
+      ...(workflowTask?.sliceId ? { sliceId: workflowTask.sliceId } : {}),
+      ...(workflowTask?.requirementIds && workflowTask.requirementIds.length > 0 ? { requirementIds: workflowTask.requirementIds } : {}),
+      ...(workflowTask?.purpose ? { purpose: workflowTask.purpose } : {}),
+      ...(workflowTask?.nodeType ? { nodeType: workflowTask.nodeType } : {}),
+      ...(workflowTask?.expectedOutputs && workflowTask.expectedOutputs.length > 0 ? { expectedOutputs: workflowTask.expectedOutputs } : {}),
       ...(roleRef ? { roleRef } : {}),
       ...(agentProfileRef ? { agentProfileRef } : {}),
       ...(artifactKind ? { artifactKind } : {}),
@@ -130,16 +145,35 @@ export function workflowTasksFromUnknown(value: unknown): DraftTaskShape[] {
     const task = asRecord(candidate);
     const id = stringValue(task.id);
     if (!id) continue;
+    const promptInputs = isRecord(task.promptInputs) ? asRecord(task.promptInputs) : undefined;
+    const nodePromptSpec = asRecord(promptInputs?.nodePromptSpec);
+    const requirementIds = stringArray(promptInputs?.requirementIds).length > 0
+      ? stringArray(promptInputs?.requirementIds)
+      : stringArray(task.requirementIds);
+    const expectedOutputs = stringArray(promptInputs?.expectedOutputs).length > 0
+      ? stringArray(promptInputs?.expectedOutputs)
+      : stringArray(nodePromptSpec.expectedOutputs).length > 0
+        ? stringArray(nodePromptSpec.expectedOutputs)
+        : stringArray(task.expectedOutputs);
     tasks.push({
       id,
       ...(stringValue(task.name) ? { name: stringValue(task.name) } : {}),
+      ...(stringValue(promptInputs?.sliceId) ?? stringValue(task.sliceId) ? { sliceId: stringValue(promptInputs?.sliceId) ?? stringValue(task.sliceId) } : {}),
+      ...(requirementIds.length > 0 ? { requirementIds } : {}),
+      ...(stringValue(promptInputs?.purpose) ?? stringValue(nodePromptSpec.goal) ?? stringValue(task.purpose)
+        ? { purpose: stringValue(promptInputs?.purpose) ?? stringValue(nodePromptSpec.goal) ?? stringValue(task.purpose) }
+        : {}),
+      ...(stringValue(promptInputs?.nodeType) ?? stringValue(nodePromptSpec.nodeType) ?? stringValue(task.nodeType)
+        ? { nodeType: stringValue(promptInputs?.nodeType) ?? stringValue(nodePromptSpec.nodeType) ?? stringValue(task.nodeType) }
+        : {}),
+      ...(expectedOutputs.length > 0 ? { expectedOutputs } : {}),
       ...(stringValue(task.roleRef) ? { roleRef: stringValue(task.roleRef) } : {}),
       ...(stringValue(task.agentProfileRef) ? { agentProfileRef: stringValue(task.agentProfileRef) } : {}),
       ...(stringValue(task.artifactKind) ? { artifactKind: stringValue(task.artifactKind) } : {}),
       ...(stringValue(task.artifactContractRef) ? { artifactContractRef: stringValue(task.artifactContractRef) } : {}),
       ...(stringValue(task.evaluatorPipelineRef) ? { evaluatorPipelineRef: stringValue(task.evaluatorPipelineRef) } : {}),
       ...(stringValue(task.contextPolicyRef) ? { contextPolicyRef: stringValue(task.contextPolicyRef) } : {}),
-      ...(isRecord(task.promptInputs) ? { promptInputs: asRecord(task.promptInputs) } : {}),
+      ...(promptInputs ? { promptInputs } : {}),
       vaultLeasePolicyRefs: stringArray(task.vaultLeasePolicyRefs),
       dependsOn: stringArray(task.dependsOn),
       skillRefs: stringArray(task.skillRefs),

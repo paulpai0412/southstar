@@ -271,6 +271,7 @@ export function SouthstarLogoMark() {
 
 export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSession, initialSessionId, onInitialRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onOpenFile, explorerRefreshKey, onAtMention }: Props) {
   const [allSessions, setAllSessions] = useState<SessionInfo[]>([]);
+  const [hydrated, setHydrated] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [unreadById, setUnreadById] = useState<Record<string, number>>({});
@@ -294,6 +295,10 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   const prevMessageCountRef = useRef<Map<string, number>>(new Map());
   const splitContainerRef = useRef<HTMLDivElement>(null);
   const lastNotifiedCwdRef = useRef<string | null | undefined>(undefined);
+
+  useEffect(() => {
+    setHydrated(true);
+  }, []);
 
   useEffect(() => {
     const stored = Number(window.localStorage.getItem(EXPLORER_SPLIT_STORAGE_KEY));
@@ -582,7 +587,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
           <div style={{ display: "flex", gap: 6 }}>
             <button
               onClick={handleNewSession}
-              disabled={!selectedCwd}
+              disabled={hydrated ? !selectedCwd : undefined}
               style={{
                 display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
                 background: "var(--bg-hover)",

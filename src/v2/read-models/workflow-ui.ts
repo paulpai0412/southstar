@@ -75,6 +75,7 @@ type WorkflowTaskDefinitionSummary = {
 
 export type WorkflowUiReadModel = {
   mission: GoalMissionReadModel | null;
+  lineage: WorkflowLineageReadModel;
   activeDraft: null | {
     draftId: string;
     workflowId: string;
@@ -146,6 +147,80 @@ export type GoalMissionReadModel = {
     librarySnapshotHash?: string;
   };
 };
+
+export type WorkflowLineageReadModel = {
+  slicePlan: {
+    revision: number;
+    goalContractHash: string;
+    slices: Array<{
+      id: string;
+      requirementIds: string[];
+      outcome: string;
+      expectedArtifactRefs: string[];
+      evaluatorContractRefs: string[];
+      dependsOnSliceIds: string[];
+      dependencyArtifactRefs: string[];
+    }>;
+  } | null;
+  workflowDag: {
+    id: string;
+    mode: "draft" | "runtime";
+    taskIds: string[];
+    edges: Array<{ from: string; to: string; status: WorkflowCanvasEdge["status"] }>;
+  } | null;
+  tasks: Array<{
+    id: string;
+    label: string;
+    status: string;
+    sliceId?: string;
+    requirementIds: string[];
+    dependsOn: string[];
+    purpose?: string;
+    nodeType?: string;
+    expectedOutputs: string[];
+    roleRef?: string;
+    agentProfileRef?: string;
+  }>;
+};
+
+export function buildWorkflowLineageReadModel(input: {
+  graphId: string;
+  mode: "draft" | "runtime";
+  slicePlan: unknown;
+  workflowTasks: DraftTaskShape[];
+  nodes: WorkflowCanvasNode[];
+  edges: WorkflowCanvasEdge[];
+}): WorkflowLineageReadModel {
+  const taskById = new Map(input.workflowTasks.map((task) => [task.id, task]));
+  const tasks = input.nodes.map((node) => {
+    const workflowTask = taskById.get(node.id);
+    return {
+      id: node.id,
+      label: node.label,
+      status: node.status,
+      ...(workflowTask?.sliceId ?? node.sliceId ? { sliceId: workflowTask?.sliceId ?? node.sliceId } : {}),
+      requirementIds: workflowTask?.requirementIds ?? node.requirementIds ?? [],
+      dependsOn: node.dependsOn,
+      ...(workflowTask?.purpose ?? node.purpose ? { purpose: workflowTask?.purpose ?? node.purpose } : {}),
+      ...(workflowTask?.nodeType ?? node.nodeType ? { nodeType: workflowTask?.nodeType ?? node.nodeType } : {}),
+      expectedOutputs: workflowTask?.expectedOutputs ?? node.expectedOutputs ?? [],
+      ...(node.roleRef ?? workflowTask?.roleRef ? { roleRef: node.roleRef ?? workflowTask?.roleRef } : {}),
+      ...(node.agentProfileRef ?? workflowTask?.agentProfileRef ? { agentProfileRef: node.agentProfileRef ?? workflowTask?.agentProfileRef } : {}),
+    };
+  });
+  return {
+    slicePlan: slicePlanFromUnknown(input.slicePlan),
+    workflowDag: input.nodes.length > 0 || input.edges.length > 0
+      ? {
+          id: input.graphId,
+          mode: input.mode,
+          taskIds: input.nodes.map((node) => node.id),
+          edges: input.edges.map((edge) => ({ from: edge.source, to: edge.target, status: edge.status })),
+        }
+      : null,
+    tasks,
+  };
+}
 
 type RuntimeRunRow = {
   id: string;
@@ -224,11 +299,22 @@ async function buildRuntimeWorkflowUiReadModel(db: SouthstarDb, runId: string, p
   });
   const runtimeContext = asRecord(run.runtime_context_json);
   const runtimeDraftId = stringValue(runtimeContext.draftId);
+  const runtimeDraft = runtimeDraftId ? await getResourceByKeyPg(db, "planner_draft", runtimeDraftId) : null;
+  const runtimeDraftPayload = asRecord(runtimeDraft?.payload);
+  const lineage = buildWorkflowLineageReadModel({
+    graphId: runId,
+    mode: "runtime",
+    slicePlan: asRecord(runtimeDraftPayload.goalDesignPackage).slicePlan ?? runtimeDraftPayload.slicePlan,
+    workflowTasks,
+    nodes,
+    edges,
+  });
   const librarySummary = agentLibrarySummary(domain, run.workflow_manifest_json);
   const mission = await buildGoalMissionReadModelPg(db, { runId });
 
   return {
     mission,
+    lineage,
     activeDraft: null,
     canvasModel: {
       graphId: runId,
@@ -298,6 +384,11 @@ async function buildDraftWorkflowUiReadModel(db: SouthstarDb, draftId: string, p
       status: draftNodeStatus(draft.status, nodeIssues.length > 0),
       dependsOn: task.dependsOn,
       sortOrder: index,
+      ...(task.sliceId ? { sliceId: task.sliceId } : {}),
+      ...(task.requirementIds && task.requirementIds.length > 0 ? { requirementIds: task.requirementIds } : {}),
+      ...(task.purpose ? { purpose: task.purpose } : {}),
+      ...(task.nodeType ? { nodeType: task.nodeType } : {}),
+      ...(task.expectedOutputs && task.expectedOutputs.length > 0 ? { expectedOutputs: task.expectedOutputs } : {}),
       ...(task.roleRef ? { roleRef: task.roleRef } : {}),
       ...(task.agentProfileRef ? { agentProfileRef: task.agentProfileRef } : {}),
       ...(task.artifactKind ? { artifactKind: task.artifactKind } : {}),
@@ -311,9 +402,18 @@ async function buildDraftWorkflowUiReadModel(db: SouthstarDb, draftId: string, p
     target: node.id,
     status: "pending",
   })));
+  const lineage = buildWorkflowLineageReadModel({
+    graphId: draftId,
+    mode: "draft",
+    slicePlan: asRecord(payload.goalDesignPackage).slicePlan ?? payload.slicePlan,
+    workflowTasks,
+    nodes,
+    edges,
+  });
 
   return {
     mission,
+    lineage,
     activeDraft: {
       draftId,
       workflowId: stringValue(summary.workflowId) ?? stringValue(workflow.workflowId) ?? draftId,
@@ -925,6 +1025,30 @@ function validationIssuesForTask(issues: ValidationIssue[], taskId: string, task
 function selectTaskId(ids: string[], preferredTaskId?: string): string | undefined {
   if (preferredTaskId && ids.includes(preferredTaskId)) return preferredTaskId;
   return ids[0];
+}
+
+function slicePlanFromUnknown(value: unknown): WorkflowLineageReadModel["slicePlan"] {
+  const plan = asRecord(value);
+  const revision = plan.revision;
+  const goalContractHash = stringValue(plan.goalContractHash);
+  if (!Number.isInteger(revision) || !goalContractHash || !Array.isArray(plan.slices)) return null;
+  const slices = plan.slices.map((value) => {
+    const slice = asRecord(value);
+    const id = stringValue(slice.id);
+    const outcome = stringValue(slice.outcome);
+    if (!id || !outcome) return null;
+    return {
+      id,
+      requirementIds: stringArray(slice.requirementIds),
+      outcome,
+      expectedArtifactRefs: stringArray(slice.expectedArtifactRefs),
+      evaluatorContractRefs: stringArray(slice.evaluatorContractRefs),
+      dependsOnSliceIds: stringArray(slice.dependsOnSliceIds),
+      dependencyArtifactRefs: stringArray(slice.dependencyArtifactRefs),
+    };
+  }).filter((slice): slice is NonNullable<typeof slice> => slice !== null);
+  if (slices.length !== plan.slices.length || slices.length === 0) return null;
+  return { revision, goalContractHash, slices };
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

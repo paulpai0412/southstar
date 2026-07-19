@@ -10,11 +10,14 @@ import type {
 const elk = new ELK();
 const NODE_WIDTH = 272;
 const NODE_HEIGHT = 142;
+const NODE_HEIGHT_COLLAPSED = 68;
 
 export async function buildWorkflowFlowLayout(input: {
   canvas: WorkflowCanvasModel;
   selectedTaskId: string | null;
   direction?: "DOWN" | "RIGHT";
+  collapsedTaskIds?: ReadonlySet<string>;
+  onToggleCollapse?: (taskId: string) => void;
 }): Promise<{ nodes: Array<Node<WorkflowTaskNodeData>>; edges: Array<Edge<WorkflowDependencyEdgeData>> }> {
   const nodeIds = new Set(input.canvas.nodes.map((node) => node.id));
   const dependencyByTarget = new Map<string, string[]>();
@@ -47,7 +50,7 @@ export async function buildWorkflowFlowLayout(input: {
     children: input.canvas.nodes.map((node) => ({
       id: node.id,
       width: NODE_WIDTH,
-      height: NODE_HEIGHT,
+      height: input.collapsedTaskIds?.has(node.id) ? NODE_HEIGHT_COLLAPSED : NODE_HEIGHT,
     })),
     edges: dependencies.map((edge) => ({
       id: edge.id,
@@ -68,11 +71,13 @@ export async function buildWorkflowFlowLayout(input: {
       type: "workflowTask",
       position,
       width: NODE_WIDTH,
-      height: NODE_HEIGHT,
+      height: input.collapsedTaskIds?.has(node.id) ? NODE_HEIGHT_COLLAPSED : NODE_HEIGHT,
       data: {
         ...node,
         status: normalizeWorkflowStatus(node.status),
         selected: input.selectedTaskId === node.id,
+        collapsed: input.collapsedTaskIds?.has(node.id) ?? false,
+        onToggleCollapse: input.onToggleCollapse,
       },
       draggable: true,
       selectable: true,

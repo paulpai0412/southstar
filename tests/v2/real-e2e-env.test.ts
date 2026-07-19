@@ -70,9 +70,9 @@ test("real E2E env probes HTTP Pi config when endpoints are present", async () =
 });
 
 test("real E2E runtime server uses canonical Pi planner timeout env parsing", () => {
-  assert.equal(realE2EPlannerTimeoutMs({}), 180_000);
+  assert.equal(realE2EPlannerTimeoutMs({}), 600_000);
   assert.equal(realE2EPlannerTimeoutMs({ SOUTHSTAR_PI_PLANNER_TIMEOUT_MS: "600000" }), 600_000);
-  assert.equal(realE2EPlannerTimeoutMs({ SOUTHSTAR_PI_PLANNER_TIMEOUT_MS: "not-a-number" }), 180_000);
+  assert.equal(realE2EPlannerTimeoutMs({ SOUTHSTAR_PI_PLANNER_TIMEOUT_MS: "not-a-number" }), 600_000);
 });
 
 test("real E2E env fails closed when shared Tork queue is not idle", async () => {

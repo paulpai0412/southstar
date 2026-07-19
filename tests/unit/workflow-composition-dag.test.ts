@@ -61,8 +61,8 @@ test("buildWorkflowDagFromCompositionPlanText maps composer JSON into a renderab
   assert.equal((dag.compositionPlan as { schemaVersion?: string }).schemaVersion, "southstar.workflow_composition_plan.v1");
   assert.deepEqual(dag.edges, [{ from: "task-understand", to: "task-implement" }]);
   assert.deepEqual(dag.nodes.map((node) => [node.id, node.label, node.role, node.provider, node.level]), [
-    ["task-understand", "Understand repo", "explorer", "codex", 0],
-    ["task-implement", "Implement feature", "maker", "pi", 1],
+    ["task-understand", "Understand repo", "explorer", undefined, 0],
+    ["task-implement", "Implement feature", "maker", undefined, 1],
   ]);
 });
 

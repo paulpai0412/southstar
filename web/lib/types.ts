@@ -181,6 +181,7 @@ export type GoalSliceSelection = {
   goalDesignPackageHash?: string;
   selectedSliceId: string;
   package?: unknown;
+  requirementDraft?: GoalRequirementDraftView;
 };
 
 export interface LibraryGraphContent {
@@ -193,6 +194,7 @@ export interface LibraryImportCandidatesContent {
   type: "libraryImportCandidates";
   draftId: string;
   candidates: import("@/lib/library/types").LibraryImportCandidate[];
+  documents?: import("@/lib/library/types").LibraryImportSourceDocument[];
   candidateCoverageTargets?: import("@/lib/library/types").LibraryImportCandidateCoverageTarget[];
   proposedEdges?: import("@/lib/library/types").LibraryImportProposedEdge[];
 }

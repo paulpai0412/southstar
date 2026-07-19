@@ -2761,6 +2761,24 @@ test("POST /api/v2/library/import-drafts creates a draft from a canonical paste 
   }
 });
 
+test("GET /api/v2/library/import-drafts/:draftId exposes linked source documents for the shared viewer", async () => {
+  const db = await createTestPostgresDb();
+  const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-route-read-"));
+
+  try {
+    const draft = await createBrowserSkillImportDraft(db);
+    const response = await handleRuntimeRoute({ db, libraryRoot } as any, new Request(`http://local/api/v2/library/import-drafts/${draft.draftId}`));
+
+    assert.equal(response.status, 200);
+    const envelope = await response.json() as any;
+    assert.equal(envelope.ok, true);
+    assert.deepEqual(envelope.result.documents, draft.documents);
+  } finally {
+    await db.close();
+    await rm(libraryRoot, { recursive: true, force: true });
+  }
+});
+
 test("POST /api/v2/library/import-drafts forwards configured import analysis providers for github sources", async () => {
   const db = await createTestPostgresDb();
   const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-route-github-"));

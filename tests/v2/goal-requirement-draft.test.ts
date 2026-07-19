@@ -304,6 +304,10 @@ test("LLM revision operation targets only host-selected requirement", async () =
   assert.equal(result.draft.requirements[0]!.statement, "The article opens offline in a browser");
   assert.deepEqual(deltas, ["validated-update"]);
   assert.match(prompts[0] ?? "", /Preserve the interaction-contract policy/);
+  assert.match(prompts[0] ?? "", /RevisionRequirementSemanticSchema/);
+  assert.match(prompts[0] ?? "", /"source":"explicit \| inferred"/);
+  assert.match(prompts[0] ?? "", /"blocking":"boolean"/);
+  assert.match(prompts[0] ?? "", /"riskTags":\["string"\]/);
 });
 
 test("LLM revision preserves explicit host mapping for multiple edited requirements", async () => {

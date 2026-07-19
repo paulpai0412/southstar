@@ -3060,6 +3060,9 @@ test("Postgres planner draft orchestration inspection helper returns public summ
     assert.deepEqual(inspection.validationIssues, []);
     assert.equal(inspection.taskSummaries.length, 6);
     assert.equal(inspection.taskSummaries[0]?.taskId, "understand-repo");
+    assert.equal(inspection.taskSummaries[0]?.harnessRef, "pi");
+    assert.equal(inspection.taskSummaries[0]?.provider, "pi");
+    assert.equal(inspection.taskSummaries[0]?.model, "pi-agent-default");
     assert.equal(inspection.orchestrationSnapshot?.validation.ok, true);
   });
 });

@@ -7,7 +7,7 @@ import type { SessionInfo, WorkspaceSurface } from "@/lib/types";
 import { ChatWindow } from "../ChatWindow";
 import { LibraryFileViewer } from "./LibraryFileViewer";
 import { LibraryReadinessBanner } from "./LibraryReadinessBanner";
-import type { LibraryGraphChartNode } from "./LibraryGraphChart";
+import type { LibraryGraphChartNode, LibraryGraphSelectionGraph } from "./LibraryGraphChart";
 import { LibrarySidebar } from "./LibrarySidebar";
 
 type LibraryWorkspaceContextValue = {
@@ -49,7 +49,13 @@ type LibraryWorkspaceContextValue = {
 };
 
 type SelectableLibraryObject = Pick<LibraryWorkspaceObject, "objectKey" | "title"> & {
+  objectKind?: string;
+  status?: string;
+  viewOnly?: boolean;
   sourcePath?: string;
+  sourceContent?: string;
+  metadata?: Record<string, unknown>;
+  selectionGraph?: LibraryGraphSelectionGraph;
 };
 
 const LibraryWorkspaceContext = createContext<LibraryWorkspaceContextValue | null>(null);
@@ -250,8 +256,6 @@ export function LibraryWorkspaceProvider({
   }, [resetSelectedFile, selectedScope]);
 
   const selectObjectReference = useCallback((object: SelectableLibraryObject) => {
-    if (object.objectKey === selectedObjectKey && selectedFilePath) return;
-
     const requestId = loadRequestRef.current + 1;
     loadRequestRef.current = requestId;
     const detailRequestId = detailRequestRef.current + 1;
@@ -264,6 +268,39 @@ export function LibraryWorkspaceProvider({
     setFileStatusMessage(undefined);
     setObjectDetail(null);
     setEdgeGraph(null);
+
+    if (object.viewOnly || object.status === "proposed" || object.status === "blocked" || object.status === "installed") {
+      const relativePath = object.sourcePath ? normalizeLibraryRelativePath(object.sourcePath) : undefined;
+      const syntheticState = {
+        ...(object.metadata ?? {}),
+        title: typeof object.metadata?.title === "string" ? object.metadata.title : object.title,
+        ...(relativePath ? { sourcePath: relativePath } : {}),
+      };
+      setObjectDetail({
+        object: {
+          objectKey: object.objectKey,
+          objectKind: object.objectKind ?? "library_candidate",
+          status: object.status ?? "proposed",
+          state: syntheticState,
+        },
+        inboundEdges: [],
+        outboundEdges: [],
+      });
+      setEdgeGraph(object.selectionGraph ? {
+        activeScope: object.selectionGraph.activeScope,
+        nodes: object.selectionGraph.nodes,
+        edges: object.selectionGraph.edges.map((edge) => ({
+          ...edge,
+          edgeType: edge.edgeType ?? "related",
+        })),
+      } : null);
+      selectedFilePathRef.current = relativePath;
+      setSelectedFilePath(relativePath);
+      setFileRecord(null);
+      updateDirtyFileContent(object.sourceContent ?? "");
+      onOpenFile?.({ objectKey: object.objectKey, title: object.title, ...(relativePath ? { sourcePath: relativePath } : {}) });
+      return;
+    }
 
     const loadSourcePath = (sourcePath: string) => {
       const relativePath = normalizeLibraryRelativePath(sourcePath);
@@ -322,7 +359,7 @@ export function LibraryWorkspaceProvider({
     }
 
     loadSourcePath(object.sourcePath);
-  }, [onOpenFile, selectedFilePath, selectedObjectKey, selectedScope, updateDirtyFileContent]);
+  }, [onOpenFile, selectedScope, updateDirtyFileContent]);
 
   const handleSelectObject = useCallback((object: LibraryWorkspaceObject) => {
     selectObjectReference(object);
@@ -333,6 +370,13 @@ export function LibraryWorkspaceProvider({
     selectObjectReference(object ?? {
       objectKey: node.objectKey,
       title: node.title ?? node.objectKey,
+      objectKind: node.objectKind,
+      status: node.status ?? "proposed",
+      ...(node.viewOnly || node.selectionGraph ? { viewOnly: true } : {}),
+      sourcePath: node.sourcePath,
+      sourceContent: node.sourceContent,
+      metadata: node.metadata,
+      selectionGraph: node.selectionGraph,
     });
   }, [model, selectObjectReference]);
 

@@ -137,8 +137,6 @@ export function WorkflowNodeProfileEditor({
   const harnessOptions = useMemo(() => uniqueOptionIds([
     form.harnessRef,
     ...profileOptions.map((profile) => profile.harnessRef),
-    "pi",
-    "codex",
   ]), [form.harnessRef, profileOptions]);
 
   const modelOptions = useMemo(() => uniqueOptionIds([
@@ -147,9 +145,12 @@ export function WorkflowNodeProfileEditor({
   ]), [form.model, profileOptions]);
 
   const providerOptions = useMemo(() => {
-    if (!isPiHost) return ["pi", "codex", "claude-code", "openai", "anthropic", "custom"];
-    return uniqueOptionIds([form.provider, ...piModelOptions.map((model) => model.provider)]);
-  }, [form.provider, isPiHost, piModelOptions]);
+    return uniqueOptionIds([
+      form.provider,
+      ...profileOptions.map((profile) => profile.provider),
+      ...piModelOptions.map((model) => model.provider),
+    ]);
+  }, [form.provider, piModelOptions, profileOptions]);
 
   const selectedProviderPiModelOptions = useMemo(() => {
     const options = !isPiHost || !form.provider
@@ -256,7 +257,8 @@ export function WorkflowNodeProfileEditor({
           <summary style={guideSummaryStyle}>How to use Agent Profile fields</summary>
           <div style={guideBodyStyle}>
             <div><strong>Candidate profile</strong> applies an approved Library profile; it is the safest starting point for a DAG node.</div>
-            <div><strong>Host / model</strong> selects the execution capability. <strong>Skills, MCP, tools, and vault leases</strong> grant runtime access; only values returned by approved candidates and host validation are usable.</div>
+            <div><strong>Host adapter</strong> selects the runtime harness. <strong>Provider</strong> selects the model API and <strong>Model</strong> is its model ID; they are separate persisted bindings.</div>
+            <div><strong>Skills, MCP, tools, and vault leases</strong> grant runtime access; only values returned by approved candidates and host validation are usable.</div>
             <div><strong>Instruction / node prompt</strong> describe the work and evidence. Runtime profiles are inspect-only; edit the draft, save, and let validation reject unsupported bindings instead of relying on defaults.</div>
           </div>
         </details>
@@ -303,6 +305,9 @@ export function WorkflowNodeProfileEditor({
             <h2 style={sectionTitleStyle}>Host and model</h2>
             <span style={sectionMetaStyle}>adapter / provider / thinking</span>
           </div>
+          <div data-testid="workflow-profile-binding-state" style={{ marginBottom: 8, color: "var(--text-muted)", fontSize: 11 }}>
+            Persisted binding: host adapter {form.harnessRef || "Unbound"} · provider {form.provider || "Unbound"} · model {form.model || "Unbound"}. Values are read from the selected definition; pi/codex are not inserted as defaults.
+          </div>
           <div style={twoColumnGridStyle}>
             <Field label="Host adapter">
               <select
@@ -312,7 +317,7 @@ export function WorkflowNodeProfileEditor({
                 onChange={(event) => update({ harnessRef: event.currentTarget.value })}
                 style={inputStyle}
               >
-                <option value="">Default</option>
+                <option value="">Unbound — choose a host adapter</option>
                 {harnessOptions.map((harness) => <option key={harness} value={harness}>{harness}</option>)}
               </select>
             </Field>
@@ -324,7 +329,7 @@ export function WorkflowNodeProfileEditor({
                 onChange={(event) => update({ provider: event.currentTarget.value, model: "", thinkingLevel: "" })}
                 style={inputStyle}
               >
-                <option value="">Default</option>
+                <option value="">Unbound — choose a provider</option>
                 {providerOptions.map((provider) => (
                   <option key={provider} value={provider}>{provider}</option>
                 ))}
@@ -340,7 +345,7 @@ export function WorkflowNodeProfileEditor({
                     onChange={(event) => update({ model: event.currentTarget.value, thinkingLevel: "" })}
                     style={inputStyle}
                   >
-                    <option value="">Default</option>
+                    <option value="">Unbound — choose a model</option>
                     {selectedProviderPiModelOptions.map((model) => (
                       <option key={`${model.provider}:${model.id}`} value={model.id}>
                         {model.name || model.id}

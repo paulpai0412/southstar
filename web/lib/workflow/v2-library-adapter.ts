@@ -6,6 +6,11 @@ export type V2PlannerDraftTaskSummary = {
   dependsOn: string[];
   roleRef?: string;
   agentProfileRef?: string;
+  agentRef?: string;
+  harnessRef?: string;
+  provider?: string;
+  model?: string;
+  thinkingLevel?: string;
   requirementIds?: string[];
   sliceId?: string;
   purpose?: string;
@@ -27,30 +32,6 @@ type V2Envelope<T> = {
   kind?: string;
   result?: T;
 };
-
-function toSlug(value: string): string {
-  return value
-    .replace(/^profile\./, "")
-    .replace(/[^a-zA-Z0-9]+/g, "-")
-    .replace(/^-+/, "")
-    .replace(/-+$/, "")
-    .toLowerCase();
-}
-
-function agentSegmentFromProfile(profileRef: string): string {
-  const withoutPrefix = profileRef.replace(/^profile\./, "");
-  const trimmedProviderSuffix = withoutPrefix.replace(/-(pi|codex|claude-code|openai|anthropic|custom)$/i, "");
-  const segment = toSlug(trimmedProviderSuffix);
-  return segment || "agent";
-}
-
-function providerFromProfileRef(profileRef: string): "pi" | "codex" {
-  return profileRef.includes("-pi") ? "pi" : "codex";
-}
-
-function modelFromProvider(provider: "pi" | "codex"): string {
-  return provider === "pi" ? "pi-agent-default" : "gpt-5-codex";
-}
 
 function profileResourcePathFromProfileRef(profileRef: string): string {
   const segment = profileRef
@@ -114,8 +95,6 @@ export function buildWorkflowDagFromPlannerDraft(input: V2PlannerDraftOrchestrat
   const readiness = readinessFromDraftStatus(input.status, input.validationIssues.length);
   const levels = dependencyLevels(input.taskSummaries);
   const nodes = input.taskSummaries.map((task, index) => {
-    const profileRef = task.agentProfileRef ?? `profile.${toSlug(task.taskId)}-codex`;
-    const provider = providerFromProfileRef(profileRef);
     return {
       id: task.taskId,
       taskId: task.taskId,
@@ -123,12 +102,16 @@ export function buildWorkflowDagFromPlannerDraft(input: V2PlannerDraftOrchestrat
       ...(runtime?.runId ? { runId: runtime.runId } : {}),
       mode: runtime?.runId ? "runtime" as const : "draft" as const,
       label: task.taskName || task.taskId,
-      role: task.roleRef ?? "maker",
-      agentRef: `agent.${agentSegmentFromProfile(profileRef)}`,
-      profileRef,
-      profileResourcePath: profileResourcePathFromProfileRef(profileRef),
-      provider,
-      model: modelFromProvider(provider),
+      ...(task.roleRef ? { role: task.roleRef } : {}),
+      ...(task.agentRef ? { agentRef: task.agentRef } : {}),
+      ...(task.agentProfileRef ? {
+        profileRef: task.agentProfileRef,
+        profileResourcePath: profileResourcePathFromProfileRef(task.agentProfileRef),
+      } : {}),
+      ...(task.harnessRef ? { harnessRef: task.harnessRef } : {}),
+      ...(task.provider ? { provider: task.provider } : {}),
+      ...(task.model ? { model: task.model } : {}),
+      ...(task.thinkingLevel ? { thinkingLevel: task.thinkingLevel } : {}),
       ...(task.requirementIds?.length ? { requirementIds: task.requirementIds } : {}),
       ...(task.sliceId ? { sliceId: task.sliceId } : {}),
       ...(task.purpose ? { purpose: task.purpose } : {}),

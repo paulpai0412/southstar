@@ -1,0 +1,51 @@
+schemaVersion: southstar.library.artifact_contract_file.v1
+id: artifact.bookkeeping-webapp-outcome-evidence
+title: "Bookkeeping Webapp Outcome Evidence"
+scope: "software"
+status: approved
+semanticTags:
+  - "bookkeeping"
+  - "transaction-entry"
+  - "income-expense"
+  - "balance"
+  - "summary"
+  - "financial-overview"
+  - "webapp"
+  - "runtime-access"
+  - "usability"
+artifactType: "bookkeeping-webapp-outcome-evidence"
+mediaTypes:
+  - "text/html"
+  - "text/plain"
+  - "application/json"
+  - "image/png"
+evidenceKinds:
+  - "command-output"
+  - "screenshot"
+  - "test-result"
+  - "url"
+validationRules:
+  - "Must include startup command evidence that yields an accessible web URL and a reachable page response."
+  - "Must include evidence for create, edit, and delete transaction operations, with resulting list state matching recorded values."
+  - "Must include summary evidence proving total income, total expense, and balance values are consistent with transaction records."
+  - "All screenshots, URLs, command outputs, and test results must be time-correlated and traceable to the same execution context."
+schemaRef: "southstar.artifact.bookkeeping_webapp_outcome_evidence.v1"
+requiredFields:
+  - "startupCommand"
+  - "startupCommandOutputRef"
+  - "runtimeUrl"
+  - "runtimeUrlCheckRef"
+  - "crudOperationEvidenceRefs"
+  - "postCrudListState"
+  - "summaryValues"
+  - "summaryComputationEvidenceRef"
+  - "uiScreenshotRefs"
+  - "testResultRefs"
+  - "evidenceTimestampRange"
+provenanceRequirements:
+  - "Evidence must originate from the same run/session and target environment."
+  - "URL, screenshots, command outputs, and test results must reference the same code revision or workspace state."
+  - "Recorded summary values must be derived from the transaction set captured in the same evidence bundle."
+importDraftId: "library-import-goal-e1aa4e2f8358207b7164edb9d7b5d04e"
+importCandidateKey: "artifact.bookkeeping-webapp-outcome-evidence"
+importSourcePath: "Confirmed-Goal-validation-gaps.md"

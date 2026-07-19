@@ -66,6 +66,9 @@ test("buildWorkflowDagFromPlannerDraft mapping preserves dependencies and readin
         dependsOn: ["understand"],
         roleRef: "maker",
         agentProfileRef: "profile.software-maker-pi",
+        harnessRef: "pi",
+        provider: "pi",
+        model: "pi-agent-default",
       },
     ],
   });
@@ -74,7 +77,27 @@ test("buildWorkflowDagFromPlannerDraft mapping preserves dependencies and readin
   assert.equal(dag.readiness, "ready");
   assert.equal(dag.nodes.length, 2);
   assert.equal(dag.nodes[1]?.provider, "pi");
+  assert.equal(dag.nodes[1]?.model, "pi-agent-default");
   assert.deepEqual(dag.edges, [{ from: "understand", to: "implement" }]);
+});
+
+test("buildWorkflowDagFromPlannerDraft does not invent profile bindings", () => {
+  const dag = buildWorkflowDagFromPlannerDraft({
+    draftId: "draft-unbound",
+    goalPrompt: "Inspect capability",
+    workflowId: "wf-unbound",
+    status: "validated",
+    validationIssues: [],
+    taskSummaries: [{
+      taskId: "inspect",
+      taskName: "Inspect capability",
+      dependsOn: [],
+    }],
+  });
+
+  assert.equal(dag.nodes[0]?.profileRef, undefined);
+  assert.equal(dag.nodes[0]?.provider, undefined);
+  assert.equal(dag.nodes[0]?.model, undefined);
 });
 
 

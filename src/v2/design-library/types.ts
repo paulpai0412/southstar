@@ -408,7 +408,7 @@ export type GeneratedComponentProposal = {
 
 export type GeneratedAgentProfile = {
   workerKind?: "execution_worker" | "validation_worker" | "repair_worker" | "review_worker";
-  provider?: "pi" | "codex" | "claude-code" | "openai" | "anthropic" | "custom";
+  provider?: "pi" | "codex" | "claude-code" | "openai" | "openai-codex" | "github-copilot" | "anthropic" | "custom";
   model?: string;
   thinkingLevel?: "auto" | "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | string;
   harnessRef?: "pi" | "codex";

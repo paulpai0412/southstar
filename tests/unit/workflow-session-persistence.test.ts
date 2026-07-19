@@ -61,6 +61,42 @@ test("workflow UI messages round-trip through the Pi custom-message payload", ()
   assert.equal(restored.timestamp, 3);
 });
 
+test("workflow UI replay keeps only the latest Goal Requirements projection", async () => {
+  const module = await import("../../web/lib/workflow/session-message.ts");
+  const filterLatest = (module as typeof module & {
+    filterLatestWorkflowUiProjections?: (messages: AgentMessage[], entryIds: string[]) => { messages: AgentMessage[]; entryIds: string[] };
+  }).filterLatestWorkflowUiProjections;
+  assert.equal(typeof filterLatest, "function");
+
+  const message = (hash: string): AgentMessage => ({
+    role: "assistant",
+    model: "workflow-state",
+    provider: "southstar",
+    content: [{
+      type: "goalRequirements",
+      draftId: "draft-goal-1",
+      status: "requirements_review",
+      goalRequirementDraftHash: hash,
+      confirmable: false,
+      draft: {
+        schemaVersion: "southstar.goal_requirement_draft.v1",
+        revision: 1,
+        originalPrompt: "Build a vocabulary trainer",
+        workspace: { cwd: "/tmp/southstar" },
+        summary: "Vocabulary trainer",
+        requirements: [],
+        nonGoals: [],
+        blockingInputs: [],
+        draftHash: hash,
+      },
+    }],
+  });
+
+  const result = filterLatest!([message("hash-1"), message("hash-2"), { role: "assistant", content: "unrelated" }], ["old", "latest", "other"]);
+  assert.deepEqual(result.entryIds, ["latest", "other"]);
+  assert.equal((result.messages[0]?.content as Array<{ type?: string; goalRequirementDraftHash?: string }>)[0]?.goalRequirementDraftHash, "hash-2");
+});
+
 test("workflow UI message payload rejects non-workflow roles and malformed content", () => {
   assert.equal(persistedWorkflowUiMessageFromUnknown({
     schemaVersion: "southstar.workflow_ui_message.v1",

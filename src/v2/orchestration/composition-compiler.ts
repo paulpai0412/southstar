@@ -1059,6 +1059,7 @@ function isProvider(value: string): value is AgentProfile["provider"] {
     value === "claude-code" ||
     value === "openai" ||
     value === "openai-codex" ||
+    value === "github-copilot" ||
     value === "anthropic" ||
     value === "custom";
 }

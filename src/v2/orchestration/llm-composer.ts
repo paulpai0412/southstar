@@ -11,6 +11,7 @@ import type { SouthstarDb } from "../db/postgres.ts";
 import type { ComposeWorkflowInput, WorkflowComposer } from "./composer.ts";
 import type { GoalContractV1 } from "./goal-contract.ts";
 import type { GoalDesignPackage } from "./goal-design.ts";
+import type { PiRuntimeProfileBinding } from "../planner/pi-planner.ts";
 import {
   GENERATED_AGENT_PROFILE_COMMAND_ENTRYPOINT,
 } from "./generated-agent-profile-policy.ts";
@@ -31,6 +32,7 @@ export type LlmWorkflowComposerOptions = {
   /** Optional host-selected packet budget. Omit to expose the complete packet. */
   candidatePacketCharBudget?: number;
   composerSop?: ResolvedWorkflowComposerSopV1 | (() => Promise<ResolvedWorkflowComposerSopV1>);
+  runtimeProfileBinding?: (cwd?: string) => Promise<PiRuntimeProfileBinding | undefined>;
 };
 
 export type ResolvedWorkflowComposerSopV1 = {
@@ -354,6 +356,7 @@ export class LlmWorkflowComposer implements WorkflowComposer {
     const composerSop = typeof this.options.composerSop === "function"
       ? await this.options.composerSop()
       : this.options.composerSop;
+    const runtimeProfileBinding = await this.options.runtimeProfileBinding?.(input.cwd);
     const prompt = renderComposerPrompt(
       input.goalPrompt,
       input.goalContract,
@@ -361,6 +364,7 @@ export class LlmWorkflowComposer implements WorkflowComposer {
       input.goalDesignPackage,
       composerSop,
       this.options.candidatePacketCharBudget,
+      runtimeProfileBinding,
     );
     const textInput = {
       model: this.options.model,
@@ -371,8 +375,33 @@ export class LlmWorkflowComposer implements WorkflowComposer {
     const text = this.options.client.generateTextStream
       ? await this.options.client.generateTextStream(textInput, { onDelta: input.onLlmDelta })
       : await this.options.client.generateText(textInput);
-    return parseWorkflowCompositionPlanFromText(text, this.options.maxOutputChars ?? 100_000);
+    const plan = parseWorkflowCompositionPlanFromText(text, this.options.maxOutputChars ?? 100_000);
+    return applyRuntimeProfileBinding(plan, runtimeProfileBinding);
   }
+}
+
+function applyRuntimeProfileBinding(
+  plan: WorkflowCompositionPlan,
+  binding: PiRuntimeProfileBinding | undefined,
+): WorkflowCompositionPlan {
+  if (!binding) return plan;
+  return {
+    ...plan,
+    generatedComponentProposals: plan.generatedComponentProposals.map((proposal) => {
+      if (proposal.kind !== "agent_profile" || proposal.validationStatus !== "validated" || !proposal.agentProfile) {
+        return proposal;
+      }
+      return {
+        ...proposal,
+        agentProfile: {
+          ...proposal.agentProfile,
+          harnessRef: binding.harnessRef,
+          provider: binding.provider,
+          model: binding.model,
+        },
+      };
+    }),
+  };
 }
 
 export async function loadWorkflowComposerSopPg(db: SouthstarDb): Promise<ResolvedWorkflowComposerSopV1> {
@@ -441,6 +470,7 @@ export function renderComposerPrompt(
   goalDesignPackage?: ComposeWorkflowInput["goalDesignPackage"],
   composerSop?: ResolvedWorkflowComposerSopV1,
   candidatePacketCharBudget?: number,
+  runtimeProfileBinding?: PiRuntimeProfileBinding,
 ): string {
   const packetBinding = boundCandidatePacket(candidatePacket, candidatePacketCharBudget, pinnedRefsForGoal(goalContract, goalDesignPackage));
   const boundedPacket = packetBinding.packet;
@@ -493,6 +523,15 @@ export function renderComposerPrompt(
     "Each agentProfile must define the workerKind, provider, model, thinkingLevel/effort, harnessRef host adapter, instruction, promptTemplateRef, contextPolicyRef, sessionPolicyRef, toolPolicy, budgetPolicy, memoryScopes, agentsMdRefs, vaultLeasePolicyRefs, and execution.",
     "agentProfile.execution must include all Docker/Tork worker input needed by the compiler: engine, image, command, env, mounts, timeoutSeconds, and infraRetry.",
     "Treat workerKind, provider, model, thinkingLevel, harnessRef, and execution.image as runtime binding data. Do not invent a fallback binding; the configured host validates whether the selected binding can execute.",
+    ...(runtimeProfileBinding
+      ? [
+          "DefaultRuntimeProfileBinding is the Pi registry's host-selected default for this draft. Use it for each newly generated agent profile unless an explicit user or persisted binding overrides it; do not invent or substitute provider, model, or harnessRef values.",
+          "DefaultRuntimeProfileBinding:",
+          JSON.stringify(runtimeProfileBinding),
+        ]
+      : [
+          "No DefaultRuntimeProfileBinding is available from the Pi registry. Do not invent provider, model, harnessRef, or execution image values; let validation fail closed if a required binding is absent.",
+        ]),
     "Design for harness engineering: choose workerKind per task from execution_worker, validation_worker, repair_worker, or review_worker based on the goal, risk, and required artifacts.",
     "For workflows that create or modify artifacts, include a positive validation path with validation_worker, review_worker, deterministic checks, or another graph-justified verifier.",
     "For ordinary initial workflow generation, do not pre-add repair/reverify nodes unless the user explicitly asks for a static bounded repair path in the initial DAG. Instead, make validation_worker nodePromptSpec produce repair-ready failure reports for Southstar runtime dynamic repair revision.",

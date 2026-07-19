@@ -786,6 +786,7 @@ export type LibraryImportCandidateDraft = {
   resourceId: string;
   status: string;
   payload: Record<string, unknown>;
+  documents: LibraryImportSourceDocument[];
   summary: Record<string, unknown>;
   candidates: LibraryImportCandidate[];
   candidateCoverageTargets: LibraryImportCandidateCoverageTarget[];
@@ -820,6 +821,7 @@ export async function loadLibraryImportCandidateDraft(
     resourceId: resource.id,
     status: resource.status,
     payload,
+    documents: asImportSourceDocuments(payload.documents),
     summary: asRecord(resource.summary_json),
     candidates,
     candidateCoverageTargets: asImportCandidateCoverageTargets(

@@ -1,5 +1,6 @@
 "use client";
 
+import { describeContractDeliverable, describeRiskTag, describeSideEffect, scopeEffortDescription, useLibraryObjectDetails } from "@/lib/workflow/goal-contract-display";
 import type { GoalMissionReadModel, WorkflowCommandDescriptor } from "@/lib/workflow/types";
 
 export function GoalContractCard({
@@ -20,6 +21,7 @@ export function GoalContractCard({
   approvalPending?: boolean;
 }) {
   const contract = mission.goalContract;
+  const libraryDetails = useLibraryObjectDetails(contract.expectedArtifactRefs);
   const acceptanceCriteria = contract.requirements.flatMap((requirement) => requirement.acceptanceCriteria).slice(0, 3);
   const needsInput = contract.blockingInputs.length > 0
     && mission.status.execution !== "completed"
@@ -44,9 +46,20 @@ export function GoalContractCard({
       <div className="goal-contract-card-grid">
         <GoalFact label="Workspace" values={[contract.workspace.cwd, contract.domain]} />
         <GoalFact label="Acceptance" values={acceptanceCriteria} />
-        <GoalFact label="Deliverables" values={contract.expectedArtifactRefs} />
+        <GoalFact
+          label="Deliverables"
+          values={contract.expectedArtifactRefs.map((ref) => describeContractDeliverable(ref, contract, libraryDetails))}
+          testId="goal-contract-deliverables"
+        />
         <GoalFact label="Assumptions" values={contract.assumptions} />
-        <GoalFact label="Risk / effects" values={[...contract.riskTags, ...contract.requestedSideEffects]} />
+        <GoalFact
+          label="Risk / effects"
+          values={[
+            ...contract.riskTags.map(describeRiskTag),
+            ...contract.requestedSideEffects.map(describeSideEffect),
+          ]}
+        />
+        <GoalFact label="Effort / scope" values={[scopeEffortDescription(contract)]} testId="goal-contract-effort-scope" />
       </div>
       <details data-testid="goal-requirement-chain" className="goal-contract-guide">
         <summary>Requirement → artifact → evaluator chain</summary>
@@ -83,6 +96,7 @@ export function GoalContractCard({
           <button
             type="button"
             data-testid="goal-contract-approve"
+            className="goal-contract-action goal-contract-action-primary"
             disabled={!approvalCommand.enabled || approvalPending}
             onClick={() => onApprove(approvalCommand)}
           >
@@ -91,16 +105,16 @@ export function GoalContractCard({
         ) : null}
       </div>
       <footer className="goal-contract-actions">
-        <button type="button" onClick={() => onReviseGoal()}>Revise goal</button>
-        <button type="button" data-testid="goal-contract-open-details" onClick={onOpenDetails}>View details</button>
+        <button type="button" className="goal-contract-action goal-contract-action-secondary" onClick={() => onReviseGoal()}>Revise goal</button>
+        <button type="button" className="goal-contract-action goal-contract-action-secondary" data-testid="goal-contract-open-details" onClick={onOpenDetails}>View details</button>
       </footer>
     </section>
   );
 }
 
-function GoalFact({ label, values }: { label: string; values: string[] }) {
+function GoalFact({ label, values, testId }: { label: string; values: string[]; testId?: string }) {
   return (
-    <div className="goal-contract-fact">
+    <div className="goal-contract-fact" data-testid={testId}>
       <span>{label}</span>
       <p>{values.length > 0 ? values.join(" · ") : "None"}</p>
     </div>

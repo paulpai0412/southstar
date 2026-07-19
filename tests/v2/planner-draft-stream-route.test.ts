@@ -18,7 +18,7 @@ import { preparePostgresGoalRequirementDraft } from "../../src/v2/orchestration/
 
 type SseFrame = { event: string; data: Record<string, unknown> };
 
-test("legacy planner draft stream route creates a reviewable Goal Design draft", async () => {
+test("planner draft stream keeps the original Goal Design flow when a composition plan is present", async () => {
   const db = await createTestPostgresDb();
   try {
     await seedGoalDesignSkill(db);
@@ -39,6 +39,7 @@ test("legacy planner draft stream route creates a reviewable Goal Design draft",
         orchestrationMode: "llm-constrained",
         composerMode: "llm",
         cwd: process.cwd(),
+        compositionPlan: { title: "Existing plan", tasks: [] },
       }),
     }));
 
@@ -193,6 +194,76 @@ test("requirement review revise stream is phase-aware and returns a goal_require
     assert.match(String(requirements?.goalRequirementDraftHash), /^[a-f0-9]{64}$/);
     assert.equal(requirements?.package?.goalRequirementDraft?.summary, "Updated review flow");
     assert.equal(requirements?.package?.goalRequirementDraft?.requirements?.[0]?.statement, "A learner can review a word and record the result.");
+    assert.equal(frames.at(-1)?.event, "done");
+  } finally {
+    await db.close();
+  }
+});
+
+test("requirement revision stream emits standard heartbeat frames while revision is pending", async () => {
+  const db = await createTestPostgresDb();
+  const cwd = process.cwd();
+  try {
+    await seedGoalDesignSkill(db);
+    const draft = finalizeGoalRequirementDraft({
+      goalPrompt: "Create a review flow",
+      cwd,
+      summary: "Review flow",
+      requirements: [{
+        title: "Review flow",
+        statement: "A learner can review a word.",
+        source: "explicit",
+        blocking: true,
+        userVisibleBehaviors: ["Show a word"],
+        businessRules: [],
+        acceptanceCriteria: [{ statement: "A review is persisted", evidenceIntent: ["artifact-ref"] }],
+        expectedOutcomeArtifacts: [{ description: "review UI", mediaType: "text/html" }],
+        verificationIntent: ["complete one review"],
+        assumptions: [],
+        openQuestions: [],
+        riskTags: [],
+        interactionContractRefs: [],
+      }],
+      nonGoals: [],
+      blockingInputs: [],
+    });
+    const prepared = await preparePostgresGoalRequirementDraft(db, {
+      goalPrompt: draft.originalPrompt,
+      cwd,
+      requirementInterpreter: {
+        async interpret() { return draft; },
+        async revise() { return { kind: "needs_input" as const, question: "No revision expected." }; },
+      },
+    });
+    const requirementId = prepared.goalRequirementDraft.requirements[0]!.id;
+    const context = {
+      db,
+      libraryChatHeartbeatMs: 1,
+      goalRequirementInterpreter: {
+        async interpret() { return draft; },
+        async revise(input: { currentDraft: typeof draft }) {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          return {
+            kind: "revision" as const,
+            draft: reviseGoalRequirementDraft(input.currentDraft, {
+              kind: "update",
+              requirementId,
+              patch: { statement: "A learner can review a word and record the result." },
+            }),
+            summary: "Updated review flow.",
+          };
+        },
+      },
+      plannerClient: { generate: async () => { throw new Error("planner not used"); } },
+      executorProvider: { executorType: "tork" as const, submit: async () => { throw new Error("executor not used"); } },
+    };
+    const response = await handleRuntimeRoute(context, new Request(`http://127.0.0.1/api/v2/planner/drafts/${prepared.draftId}/revise/stream`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Make the review result explicit", expectedDraftHash: prepared.goalRequirementDraftHash, selectedRequirementId: requirementId }),
+    }));
+    const frames = parseSse(await response.text());
+    assert.ok(frames.some((frame) => frame.event === "heartbeat" && frame.data.phase === "planner_draft_revision" && typeof frame.data.elapsedMs === "number"));
     assert.equal(frames.at(-1)?.event, "done");
   } finally {
     await db.close();

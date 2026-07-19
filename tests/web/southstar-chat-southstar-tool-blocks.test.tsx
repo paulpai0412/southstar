@@ -344,6 +344,61 @@ test("Chat MessageView lets streamed library import graph nodes open the library
   });
 });
 
+test("Chat MessageView hydrates source documents for replayed Library candidates", async () => {
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { MessageView } from "./web/components/MessageView";
+
+    window.__selectedLibraryNode = null;
+    const message = {
+      role: "assistant",
+      model: "library-chat",
+      provider: "southstar",
+      content: [{
+        type: "libraryImportCandidates",
+        draftId: "draft-import-replay",
+        candidates: [{
+          objectKey: "artifact.replayed-evidence",
+          kind: "artifact",
+          title: "Replayed Evidence",
+          scope: "software",
+          sourcePath: "replayed/source.md",
+          selectedByDefault: true,
+        }],
+        candidateCoverageTargets: [{
+          candidateObjectKey: "artifact.replayed-evidence",
+          gapRef: "gap-replay",
+          requirementId: "R1",
+          criterionIds: ["AC1"],
+        }],
+      }],
+    };
+
+    createRoot(document.getElementById("root")).render(
+      <MessageView
+        message={message}
+        onLibraryGraphNodeSelect={(node) => { window.__selectedLibraryNode = node; }}
+      />,
+    );
+  `, async (page) => {
+    await page.getByRole("button", { name: "View Replayed Evidence", exact: true }).waitFor();
+    await page.getByRole("button", { name: "View Replayed Evidence", exact: true }).click();
+    await page.waitForFunction(() => window.__selectedLibraryNode?.sourceContent === "# replayed evidence");
+    const selected = await page.evaluate(() => window.__selectedLibraryNode);
+    assert.equal(selected.objectKey, "artifact.replayed-evidence");
+    assert.equal(selected.sourceContent, "# replayed evidence");
+    assert.equal(selected.selectionGraph?.nodes.length, 3);
+  }, async (page) => {
+    await page.route("**/api/library/import-drafts/draft-import-replay", async (route) => {
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({ ok: true, result: { documents: [{ path: "replayed/source.md", label: "Replayed source", content: "# replayed evidence" }] } }),
+      });
+    });
+  });
+});
+
 test("Chat MessageView renders Southstar workflow draft tool results as a workflow DAG block", async () => {
   await withBrowserHarness(`
     import React from "react";

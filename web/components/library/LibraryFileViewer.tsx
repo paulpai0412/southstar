@@ -8,7 +8,7 @@ import type {
   LibraryGraphReadModel,
   LibraryObjectDetail,
 } from "@/lib/library/types";
-import { LibraryGraphChart, type LibraryGraphChartNode } from "./LibraryGraphChart";
+import { LibraryGraphChart, prepareGraphNodeSelection, type LibraryGraphChartNode } from "./LibraryGraphChart";
 
 type FileViewerTab = "Edges" | "Preview" | "Edit" | "Validate" | "Usage";
 
@@ -150,7 +150,7 @@ export function LibraryFileViewer({
             />
           </div>
         ) : effectiveActiveTab === "Edges" ? (
-          <EdgesPanel graph={graph} objectDetail={objectDetail ?? null} parsedFile={parsedFile} onSelectGraphNode={onSelectGraphNode} />
+          <EdgesPanel graph={graph} objectDetail={objectDetail ?? null} parsedFile={parsedFile} selectedFilePath={selectedFilePath} content={content} onSelectGraphNode={onSelectGraphNode} />
         ) : effectiveActiveTab === "Preview" ? (
           <PreviewPanel fileRecord={fileRecord ?? null} objectDetail={objectDetail ?? null} content={content} />
         ) : effectiveActiveTab === "Validate" ? (
@@ -167,39 +167,157 @@ function EdgesPanel({
   graph,
   objectDetail,
   parsedFile,
+  selectedFilePath,
+  content,
   onSelectGraphNode,
 }: {
   graph: LibraryGraphReadModel | null;
   objectDetail: LibraryObjectDetail | null;
   parsedFile: LibraryFileRecord | null;
+  selectedFilePath?: string;
+  content: string;
   onSelectGraphNode?: (node: LibraryGraphChartNode) => void;
 }) {
   const nodes = graph?.nodes ?? [];
   const edges = graph?.edges ?? [];
-  if (nodes.length === 0) {
-    return (
-      <div style={{ padding: 12, display: "grid", gap: 8, fontSize: 12 }}>
-        <div style={{ fontWeight: 700 }}>No graph edges</div>
-        <pre style={{ margin: 0, whiteSpace: "pre-wrap", fontFamily: "var(--font-mono)" }}>
-          {JSON.stringify(objectDetail ? { inboundEdges: objectDetail.inboundEdges, outboundEdges: objectDetail.outboundEdges } : edgeRefs(parsedFile?.frontmatter), null, 2)}
-        </pre>
-      </div>
-    );
-  }
   return (
     <div style={{ padding: 10, display: "grid", gap: 8 }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12, color: "var(--text-muted)" }}>
         <span>{nodes.length} nodes / {edges.length} edges</span>
         <span>{graph?.activeScope ?? parsedFile?.scope ?? stringValue(objectDetail?.object.state?.scope) ?? "all"}</span>
       </div>
-      <LibraryGraphChart
-        nodes={nodes}
-        edges={edges}
-        onSelectNode={onSelectGraphNode}
-        persistLayoutKey={`file-viewer:${objectDetail?.object.objectKey ?? parsedFile?.objectKey ?? "unknown"}`}
-      />
+      {nodes.length > 0 ? (
+        <LibraryGraphChart
+          nodes={nodes}
+          edges={edges}
+          onSelectNode={(node) => onSelectGraphNode?.(
+            node.viewOnly
+              ? prepareGraphNodeSelection({ activeScope: graph?.activeScope, nodes, edges }, node)
+              : node,
+          )}
+          persistLayoutKey={`file-viewer:${objectDetail?.object.objectKey ?? parsedFile?.objectKey ?? "unknown"}`}
+        />
+      ) : (
+        <section style={{ display: "grid", gap: 6, fontSize: 12 }}>
+          <div style={{ fontWeight: 700 }}>No graph edges</div>
+          <pre style={{ margin: 0, whiteSpace: "pre-wrap", fontFamily: "var(--font-mono)" }}>
+            {JSON.stringify(objectDetail ? { inboundEdges: objectDetail.inboundEdges, outboundEdges: objectDetail.outboundEdges } : edgeRefs(parsedFile?.frontmatter), null, 2)}
+          </pre>
+        </section>
+      )}
+      <NodeContentPanel objectDetail={objectDetail} parsedFile={parsedFile} content={content} />
+      {selectedFilePath ? (
+        <section data-testid="library-file-content-preview" style={{ display: "grid", gap: 5 }}>
+          <strong style={{ fontSize: 12 }}>Source content · {selectedFilePath}</strong>
+          <pre style={{ margin: 0, padding: 8, whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontFamily: "var(--font-mono)", fontSize: 11, background: "var(--bg-subtle)", border: "1px solid var(--border)", borderRadius: 6 }}>
+            {content || "(empty source file)"}
+          </pre>
+        </section>
+      ) : null}
     </div>
   );
+}
+
+function NodeContentPanel({
+  objectDetail,
+  parsedFile,
+  content,
+}: {
+  objectDetail: LibraryObjectDetail | null;
+  parsedFile: LibraryFileRecord | null;
+  content: string;
+}) {
+  const state = objectDetail?.object.state ?? {};
+  const parsedContent = parsedFile ? { ...(parsedFile.frontmatter ?? {}), ...(parsedFile.definition ?? {}) } : parseStructuredContent(content);
+  const stateHasContent = Object.keys(state).some((key) => !isTechnicalContentKey(key) && key !== "title");
+  const record = stateHasContent ? { ...parsedContent, ...state } : { ...parseStructuredContent(content), ...parsedContent, ...state };
+  const title = stringValue(record.title)
+    ?? parsedFile?.title
+    ?? objectDetail?.object.objectKind
+    ?? "Selected node";
+  const summary = stringValue(record.statement)
+    ?? stringValue(record.description)
+    ?? stringValue(record.responsibility)
+    ?? firstBodyParagraph(parsedFile?.body ?? "");
+  const entries = Object.entries(record).filter(([key, value]) => (
+    key !== "title" && key !== "statement" && key !== "description" && key !== "responsibility" && value !== undefined && !isTechnicalContentKey(key)
+  ));
+
+  return (
+    <section data-testid="library-node-content" style={{ display: "grid", gap: 7 }}>
+      <strong style={{ fontSize: 12 }}>Node content · {title}</strong>
+      {summary ? <p style={{ margin: 0, lineHeight: 1.5, fontSize: 12 }}>{summary}</p> : null}
+      {entries.length > 0 ? (
+        <dl style={{ display: "grid", gap: 7, margin: 0, fontSize: 12 }}>
+          {entries.map(([key, value]) => (
+            <div key={key} style={{ display: "grid", gap: 3 }}>
+              <dt style={{ color: "var(--text-muted)", fontWeight: 650 }}>{humanizeContentKey(key)}</dt>
+              <dd style={{ margin: 0 }}><NormalizedContentValue value={value} /></dd>
+            </div>
+          ))}
+        </dl>
+      ) : (
+        <span style={{ color: "var(--text-muted)", fontSize: 12 }}>No structured node content</span>
+      )}
+    </section>
+  );
+}
+
+function NormalizedContentValue({ value }: { value: unknown }) {
+  if (Array.isArray(value)) {
+    return value.length > 0 ? (
+      <ul style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 4 }}>
+        {value.map((item, index) => <li key={index}><NormalizedContentValue value={item} /></li>)}
+      </ul>
+    ) : <span style={{ color: "var(--text-muted)" }}>None</span>;
+  }
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>).filter(([key]) => !isTechnicalContentKey(key));
+    return entries.length > 0 ? (
+      <div style={{ display: "grid", gap: 4, paddingLeft: 8, borderLeft: "2px solid var(--border)" }}>
+        {entries.map(([key, nestedValue]) => (
+          <div key={key}>
+            <span style={{ color: "var(--text-muted)" }}>{humanizeContentKey(key)}: </span>
+            <NormalizedContentValue value={nestedValue} />
+          </div>
+        ))}
+      </div>
+    ) : <span style={{ color: "var(--text-muted)" }}>None</span>;
+  }
+  if (typeof value === "boolean") return <span>{value ? "Yes" : "No"}</span>;
+  if (value === null || value === undefined || value === "") return <span style={{ color: "var(--text-muted)" }}>None</span>;
+  return <span>{String(value)}</span>;
+}
+
+function parseStructuredContent(content: string): Record<string, unknown> {
+  const trimmed = content.trim();
+  if (!trimmed) return {};
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+  } catch {
+    const frontmatter = markdownFrontmatter(content);
+    if (frontmatter.issues.length > 0) return {};
+    return Object.fromEntries(parseTopLevelYaml(frontmatter.content, frontmatter.offset).values);
+  }
+}
+
+function isTechnicalContentKey(key: string): boolean {
+  return key === "id"
+    || key === "objectKey"
+    || key === "sourcePath"
+    || key === "sourceHash"
+    || key === "headVersionId"
+    || key === "schemaVersion"
+    || key.endsWith("Hash")
+    || key.endsWith("Ref")
+    || key.endsWith("Refs");
+}
+
+function humanizeContentKey(key: string): string {
+  return key
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/^./, (value) => value.toUpperCase());
 }
 
 function PreviewPanel({

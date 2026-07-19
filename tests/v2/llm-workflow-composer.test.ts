@@ -103,6 +103,47 @@ test("LLM composer sends the complete candidate packet and explicit output schem
   );
 });
 
+test("LLM composer receives the host-selected default runtime profile binding", async () => {
+  const prompts: string[] = [];
+  const composer = new LlmWorkflowComposer({
+    model: "test-model",
+    runtimeProfileBinding: async () => ({
+      harnessRef: "pi",
+      provider: "github-copilot",
+      model: "gpt-5.3-codex",
+    }),
+    client: {
+      async generateText(input) {
+        prompts.push(input.prompt);
+        const plan = validPlan();
+        for (const proposal of plan.generatedComponentProposals) {
+          if (proposal.agentProfile) {
+            proposal.agentProfile.harnessRef = "codex";
+            proposal.agentProfile.provider = "codex";
+            proposal.agentProfile.model = "gpt-5-codex";
+          }
+        }
+        return JSON.stringify(plan);
+      },
+    },
+  });
+
+  const plan = await composer.compose({
+    goalPrompt: "implement calc sum",
+    goalContract: GOAL_CONTRACT,
+    candidatePacket: candidatePacket(),
+    cwd: "/workspace/project",
+  });
+
+  assert.match(prompts[0] ?? "", /DefaultRuntimeProfileBinding/);
+  assert.match(prompts[0] ?? "", /"harnessRef":"pi"/);
+  assert.match(prompts[0] ?? "", /"provider":"github-copilot"/);
+  assert.match(prompts[0] ?? "", /"model":"gpt-5\.3-codex"/);
+  assert.equal(plan.generatedComponentProposals[0]?.agentProfile?.harnessRef, "pi");
+  assert.equal(plan.generatedComponentProposals[0]?.agentProfile?.provider, "github-copilot");
+  assert.equal(plan.generatedComponentProposals[0]?.agentProfile?.model, "gpt-5.3-codex");
+});
+
 test("LLM composer applies an explicit packet budget without dropping graph metadata", async () => {
   const prompts: string[] = [];
   const composer = new LlmWorkflowComposer({

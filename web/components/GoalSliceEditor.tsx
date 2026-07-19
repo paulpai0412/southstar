@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
+import { readLibraryObjectDetail } from "@/lib/library/api";
+import type { LibraryObjectDetail } from "@/lib/library/types";
 import type { GoalSliceSelection } from "@/lib/types";
 
 type GoalSliceView = {
@@ -17,10 +19,44 @@ type GoalSliceView = {
   mergeReason?: string;
 };
 
+type ExpectedArtifactView = {
+  description: string;
+  mediaType?: string;
+  path?: string;
+};
+
+type GoalContractRequirementView = {
+  id: string;
+  expectedArtifacts: ExpectedArtifactView[];
+};
+
+type ValidationBindingView = {
+  id: string;
+  requirementId: string;
+  artifactContractRefs: string[];
+  artifactContractVersionRefs: string[];
+  evaluatorProfileRef?: string;
+  evaluatorProfileVersionRef?: string;
+  acceptanceCriteria: string[];
+  verificationMode?: string;
+  requiredEvidenceKinds: string[];
+};
+
+type EvaluatorContractView = {
+  id: string;
+  requirementId: string;
+  acceptanceCriteria: string[];
+  requiredEvidenceKinds: string[];
+  independence?: string;
+  failureClassifications?: string[];
+};
+
 type GoalDesignPackageView = {
   revision?: number;
   packageHash?: string;
-  goalContract?: { summary?: string };
+  goalContract?: { summary?: string; requirements: GoalContractRequirementView[] };
+  validationBindings: ValidationBindingView[];
+  evaluatorContracts: EvaluatorContractView[];
   slicePlan?: { slices?: GoalSliceView[] };
   compositionStrategy?: { mode?: string; rationale?: string };
 };
@@ -55,6 +91,25 @@ export function GoalSliceEditor({
   );
   const [form, setForm] = useState<SliceForm>(() => slice ? formFromSlice(slice) : emptyForm());
   const [state, setState] = useState<{ status: "idle" | "saving" | "saved" | "error"; message?: string }>({ status: "idle" });
+  const [libraryDetails, setLibraryDetails] = useState<Record<string, LibraryObjectDetail>>({});
+  const libraryRefs = useMemo(() => libraryRefsForSlice(slice, pkg), [pkg, slice]);
+
+  useEffect(() => {
+    let active = true;
+    setLibraryDetails({});
+    if (libraryRefs.length === 0) return () => { active = false; };
+    void Promise.all(libraryRefs.map(async (ref) => {
+      try {
+        return [ref, await readLibraryObjectDetail(ref)] as const;
+      } catch {
+        return null;
+      }
+    })).then((entries) => {
+      if (!active) return;
+      setLibraryDetails(Object.fromEntries(entries.filter((entry): entry is readonly [string, LibraryObjectDetail] => Boolean(entry))));
+    });
+    return () => { active = false; };
+  }, [libraryRefs]);
 
   useEffect(() => {
     setForm(slice ? formFromSlice(slice) : emptyForm());
@@ -139,18 +194,46 @@ export function GoalSliceEditor({
         </Field>
         <Field label="Requirement IDs" help="The requirement IDs this slice covers, one per line.">
           <TextareaList value={form.requirementIds} onChange={(value) => setForm((current) => ({ ...current, requirementIds: value }))} />
+          <ReferenceList
+            testId="goal-slice-reference-list-requirements"
+            items={slice.requirementIds}
+            describe={(id) => requirementDescription(id, selection.requirementDraft)}
+          />
         </Field>
         <Field label="Expected artifact refs" help="Product evidence this slice must produce, not a generic status report.">
           <TextareaList value={form.expectedArtifactRefs} onChange={(value) => setForm((current) => ({ ...current, expectedArtifactRefs: value }))} />
+          <ReferenceList
+            testId="goal-slice-reference-list-artifacts"
+            items={slice.expectedArtifactRefs}
+            describe={(id) => expectedArtifactDescription(id, slice, pkg, selection, libraryDetails)}
+          />
         </Field>
         <Field label="Evaluator contract refs" help="Evaluator definitions that decide whether the slice evidence passes.">
           <TextareaList value={form.evaluatorContractRefs} onChange={(value) => setForm((current) => ({ ...current, evaluatorContractRefs: value }))} />
+          <ReferenceList
+            testId="goal-slice-reference-list-evaluators"
+            items={slice.evaluatorContractRefs}
+            describe={(id) => evaluatorDescription(id, slice, pkg, libraryDetails)}
+          />
         </Field>
         <Field label="Depends on slice IDs" help="Slices that must complete first.">
           <TextareaList value={form.dependsOnSliceIds} onChange={(value) => setForm((current) => ({ ...current, dependsOnSliceIds: value }))} />
+          <ReferenceList
+            testId="goal-slice-reference-list-depends"
+            items={slice.dependsOnSliceIds}
+            describe={(id) => {
+              const dependency = pkg.slicePlan?.slices?.find((candidate) => candidate.id === id);
+              return dependency ? `Slice outcome: ${dependency.outcome}` : "Referenced slice is not in this package";
+            }}
+          />
         </Field>
         <Field label="Dependency artifact refs" help="Upstream artifacts this slice consumes.">
           <TextareaList value={form.dependencyArtifactRefs} onChange={(value) => setForm((current) => ({ ...current, dependencyArtifactRefs: value }))} />
+          <ReferenceList
+            testId="goal-slice-reference-list-dependencies"
+            items={slice.dependencyArtifactRefs}
+            describe={(id) => expectedArtifactDescription(id, slice, pkg, selection, libraryDetails)}
+          />
         </Field>
         <Field label="Merge reason" help="Why this slice is merged with or kept separate from adjacent work.">
           <textarea value={form.mergeReason} onChange={(event) => setForm((current) => ({ ...current, mergeReason: event.target.value }))} rows={2} style={textareaStyle} />
@@ -193,6 +276,20 @@ function TextareaList({ value, onChange }: { value: string; onChange: (value: st
   return <textarea value={value} onChange={(event) => onChange(event.target.value)} rows={3} style={textareaStyle} placeholder="One item per line, or comma-separated" />;
 }
 
+function ReferenceList({ testId, items, describe }: { testId: string; items: string[]; describe: (id: string) => string }) {
+  if (items.length === 0) return null;
+  return (
+    <div data-testid={testId} style={{ display: "flex", flexDirection: "column", gap: 3, padding: "5px 7px", borderLeft: "2px solid var(--accent)", color: "var(--text-muted)", fontSize: 10, lineHeight: 1.4 }}>
+      {items.map((id) => (
+        <div key={id}>
+          <span style={{ fontFamily: "var(--font-mono)", color: "var(--text-dim)" }}>{id}</span>
+          <span> — {describe(id)}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function formFromSlice(slice: GoalSliceView): SliceForm {
   return {
     outcome: slice.outcome,
@@ -205,6 +302,125 @@ function formFromSlice(slice: GoalSliceView): SliceForm {
     dependencyArtifactRefs: slice.dependencyArtifactRefs.join("\n"),
     mergeReason: slice.mergeReason ?? "",
   };
+}
+
+function requirementDescription(id: string, draft?: GoalSliceSelection["requirementDraft"]): string {
+  const requirement = draft?.requirements.find((candidate) => candidate.id === id);
+  return requirement
+    ? `${requirement.title} — ${requirement.statement}`
+    : "Requirement content is not attached to this Goal Design package";
+}
+
+function expectedArtifactDescription(
+  ref: string,
+  slice: GoalSliceView,
+  pkg: GoalDesignPackageView,
+  selection: GoalSliceSelection,
+  libraryDetails: Record<string, LibraryObjectDetail>,
+): string {
+  const libraryDetail = libraryDetails[ref];
+  if (libraryDetail) return libraryObjectDescription(libraryDetail, "artifact");
+  const binding = pkg.validationBindings.find((candidate) => (
+    slice.requirementIds.includes(candidate.requirementId) && candidate.artifactContractRefs.includes(ref)
+  ));
+  const artifactIndex = binding?.artifactContractRefs.indexOf(ref) ?? -1;
+  const contractRequirement = binding
+    ? pkg.goalContract?.requirements.find((requirement) => requirement.id === binding.requirementId)
+    : undefined;
+  const draftRequirement = binding
+    ? selection.requirementDraft?.requirements.find((requirement) => requirement.id === binding.requirementId)
+    : undefined;
+  const generatedArtifact = generatedArtifactView(ref, pkg, selection);
+  const artifact = artifactIndex >= 0
+    ? contractRequirement?.expectedArtifacts[artifactIndex] ?? expectedArtifactFromDraft(draftRequirement?.expectedOutcomeArtifacts[artifactIndex])
+    : generatedArtifact;
+  if (!artifact) return "Artifact contract content is not attached to this package";
+  return [
+    artifact.description,
+    artifact.mediaType ? `media type: ${artifact.mediaType}` : undefined,
+    artifact.path ? `path: ${artifact.path}` : undefined,
+    binding?.artifactContractVersionRefs[artifactIndex] ? `version: ${binding.artifactContractVersionRefs[artifactIndex]}` : undefined,
+  ].filter(Boolean).join(" · ");
+}
+
+function evaluatorDescription(ref: string, slice: GoalSliceView, pkg: GoalDesignPackageView, libraryDetails: Record<string, LibraryObjectDetail>): string {
+  const binding = pkg.validationBindings.find((candidate) => (
+    slice.requirementIds.includes(candidate.requirementId) && (candidate.id === ref || candidate.evaluatorProfileRef === ref)
+  ));
+  if (binding) {
+    const profileDetail = binding.evaluatorProfileRef ? libraryDetails[binding.evaluatorProfileRef] : undefined;
+    return [
+      profileDetail ? libraryObjectDescription(profileDetail, "evaluator") : `profile: ${binding.evaluatorProfileRef ?? "unresolved"}`,
+      binding.evaluatorProfileVersionRef ? `version: ${binding.evaluatorProfileVersionRef}` : undefined,
+      binding.verificationMode ? `mode: ${binding.verificationMode}` : undefined,
+      binding.requiredEvidenceKinds.length > 0 ? `evidence: ${binding.requiredEvidenceKinds.join(", ")}` : undefined,
+      binding.acceptanceCriteria.length > 0 ? `criteria: ${binding.acceptanceCriteria.join(" / ")}` : undefined,
+    ].filter(Boolean).join(" · ");
+  }
+  const contract = pkg.evaluatorContracts.find((candidate) => (
+    slice.requirementIds.includes(candidate.requirementId) && candidate.id === ref
+  ));
+  if (contract) {
+    const profileDetail = libraryDetails[ref];
+    return [
+      profileDetail ? libraryObjectDescription(profileDetail, "evaluator") : undefined,
+      contract.acceptanceCriteria.length > 0 ? `criteria: ${contract.acceptanceCriteria.join(" / ")}` : undefined,
+      contract.requiredEvidenceKinds.length > 0 ? `evidence: ${contract.requiredEvidenceKinds.join(", ")}` : undefined,
+      contract.independence ? `independence: ${contract.independence}` : undefined,
+    ].filter(Boolean).join(" · ");
+  }
+  return "Evaluator contract content is not attached to this package";
+}
+
+function libraryRefsForSlice(slice: GoalSliceView | null, pkg: GoalDesignPackageView | null): string[] {
+  if (!slice || !pkg) return [];
+  const profileRefs = pkg.validationBindings
+    .filter((binding) => slice.requirementIds.includes(binding.requirementId))
+    .map((binding) => binding.evaluatorProfileRef)
+    .filter((ref): ref is string => Boolean(ref));
+  const evaluatorRefs = pkg.evaluatorContracts
+    .filter((contract) => slice.requirementIds.includes(contract.requirementId))
+    .map((contract) => contract.id);
+  return [...new Set([
+    ...slice.expectedArtifactRefs.filter((ref) => !ref.startsWith("artifact.goal.")),
+    ...slice.dependencyArtifactRefs.filter((ref) => !ref.startsWith("artifact.goal.")),
+    ...profileRefs,
+    ...evaluatorRefs,
+  ])];
+}
+
+function generatedArtifactView(ref: string, pkg: GoalDesignPackageView, selection: GoalSliceSelection): ExpectedArtifactView | undefined {
+  const match = /^artifact\.goal\.(.+)\.(\d+)$/.exec(ref);
+  if (!match) return undefined;
+  const index = Number(match[2]) - 1;
+  if (!Number.isInteger(index) || index < 0) return undefined;
+  const requirementId = match[1]!;
+  const contractRequirement = pkg.goalContract?.requirements.find((requirement) => requirement.id === requirementId);
+  const draftRequirement = selection.requirementDraft?.requirements.find((requirement) => requirement.id === requirementId);
+  return contractRequirement?.expectedArtifacts[index] ?? expectedArtifactFromDraft(draftRequirement?.expectedOutcomeArtifacts[index]);
+}
+
+function expectedArtifactFromDraft(value: { description: string; mediaType?: string } | undefined): ExpectedArtifactView | undefined {
+  return value ? { description: value.description, ...(value.mediaType ? { mediaType: value.mediaType } : {}) } : undefined;
+}
+
+function libraryObjectDescription(detail: LibraryObjectDetail, kind: "artifact" | "evaluator"): string {
+  const state = detail.object.state ?? {};
+  const title = typeof state.title === "string" ? state.title : detail.object.objectKey;
+  const fields = kind === "artifact"
+    ? [
+        title,
+        typeof state.schemaRef === "string" ? `schema: ${state.schemaRef}` : undefined,
+        stringArray(state.mediaTypes).length > 0 ? `media: ${stringArray(state.mediaTypes).join(", ")}` : undefined,
+        stringArray(state.requiredFields).length > 0 ? `fields: ${stringArray(state.requiredFields).join(", ")}` : undefined,
+      ]
+    : [
+        title,
+        stringArray(state.verificationModes).length > 0 ? `modes: ${stringArray(state.verificationModes).join(", ")}` : undefined,
+        typeof state.resultSchemaRef === "string" ? `result: ${state.resultSchemaRef}` : undefined,
+        stringArray(state.requiredInputs).length > 0 ? `inputs: ${stringArray(state.requiredInputs).join(", ")}` : undefined,
+      ];
+  return fields.filter(Boolean).join(" · ");
 }
 
 function emptyForm(): SliceForm {
@@ -251,7 +467,20 @@ function goalDesignPackageView(value: unknown): GoalDesignPackageView | null {
   return {
     revision: typeof value.revision === "number" ? value.revision : undefined,
     packageHash: typeof value.packageHash === "string" ? value.packageHash : undefined,
-    goalContract: isRecord(value.goalContract) ? { summary: typeof value.goalContract.summary === "string" ? value.goalContract.summary : undefined } : undefined,
+    goalContract: isRecord(value.goalContract)
+      ? {
+          summary: typeof value.goalContract.summary === "string" ? value.goalContract.summary : undefined,
+          requirements: Array.isArray(value.goalContract.requirements)
+            ? value.goalContract.requirements.map(goalContractRequirementView).filter((requirement): requirement is GoalContractRequirementView => Boolean(requirement))
+            : [],
+        }
+      : undefined,
+    validationBindings: Array.isArray(value.validationBindings)
+      ? value.validationBindings.map(validationBindingView).filter((binding): binding is ValidationBindingView => Boolean(binding))
+      : [],
+    evaluatorContracts: Array.isArray(value.evaluatorContracts)
+      ? value.evaluatorContracts.map(evaluatorContractView).filter((contract): contract is EvaluatorContractView => Boolean(contract))
+      : [],
     slicePlan: { slices },
     compositionStrategy: isRecord(value.compositionStrategy)
       ? {
@@ -259,6 +488,52 @@ function goalDesignPackageView(value: unknown): GoalDesignPackageView | null {
           rationale: typeof value.compositionStrategy.rationale === "string" ? value.compositionStrategy.rationale : undefined,
         }
       : undefined,
+  };
+}
+
+function goalContractRequirementView(value: unknown): GoalContractRequirementView | null {
+  if (!isRecord(value) || typeof value.id !== "string") return null;
+  return {
+    id: value.id,
+    expectedArtifacts: Array.isArray(value.expectedArtifacts)
+      ? value.expectedArtifacts.map(expectedArtifactView).filter((artifact): artifact is ExpectedArtifactView => Boolean(artifact))
+      : [],
+  };
+}
+
+function expectedArtifactView(value: unknown): ExpectedArtifactView | null {
+  if (!isRecord(value) || typeof value.description !== "string") return null;
+  return {
+    description: value.description,
+    ...(typeof value.mediaType === "string" ? { mediaType: value.mediaType } : {}),
+    ...(typeof value.path === "string" ? { path: value.path } : {}),
+  };
+}
+
+function validationBindingView(value: unknown): ValidationBindingView | null {
+  if (!isRecord(value) || typeof value.id !== "string" || typeof value.requirementId !== "string") return null;
+  return {
+    id: value.id,
+    requirementId: value.requirementId,
+    artifactContractRefs: stringArray(value.artifactContractRefs),
+    artifactContractVersionRefs: stringArray(value.artifactContractVersionRefs),
+    evaluatorProfileRef: typeof value.evaluatorProfileRef === "string" ? value.evaluatorProfileRef : undefined,
+    evaluatorProfileVersionRef: typeof value.evaluatorProfileVersionRef === "string" ? value.evaluatorProfileVersionRef : undefined,
+    acceptanceCriteria: stringArray(value.acceptanceCriteria),
+    verificationMode: typeof value.verificationMode === "string" ? value.verificationMode : undefined,
+    requiredEvidenceKinds: stringArray(value.requiredEvidenceKinds),
+  };
+}
+
+function evaluatorContractView(value: unknown): EvaluatorContractView | null {
+  if (!isRecord(value) || typeof value.id !== "string" || typeof value.requirementId !== "string") return null;
+  return {
+    id: value.id,
+    requirementId: value.requirementId,
+    acceptanceCriteria: stringArray(value.acceptanceCriteria),
+    requiredEvidenceKinds: stringArray(value.requiredEvidenceKinds),
+    independence: typeof value.independence === "string" ? value.independence : undefined,
+    failureClassifications: stringArray(value.failureClassifications),
   };
 }
 

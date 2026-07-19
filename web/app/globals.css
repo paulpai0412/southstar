@@ -693,12 +693,47 @@ span.linenumber {
   box-shadow: 0 10px 22px rgba(15, 23, 42, 0.08);
 }
 
+.ss-flow-node-collapsed {
+  min-height: 0;
+}
+
 .ss-flow-node-header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 10px;
   margin-bottom: 8px;
+}
+
+.ss-flow-node-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.ss-flow-node-toggle {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 16px;
+}
+
+.ss-flow-node-toggle:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.ss-flow-node-collapsed-summary {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 10.5px;
 }
 
 .ss-flow-node-header strong {
@@ -1820,6 +1855,29 @@ span.linenumber {
   padding: 5px 9px;
   font-size: 11px;
   cursor: pointer;
+}
+
+.goal-contract-card .goal-contract-action {
+  min-height: 30px;
+  padding: 7px 10px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.goal-contract-card .goal-contract-action-primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.goal-contract-card .goal-contract-action-primary:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.goal-contract-card .goal-contract-action-secondary {
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg));
+  color: var(--accent);
 }
 
 .goal-contract-status-row {

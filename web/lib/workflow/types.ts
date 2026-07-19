@@ -114,6 +114,7 @@ export type GoalContractV1 = {
     statement: string;
     acceptanceCriteria: string[];
     semanticTags?: string[];
+    expectedArtifacts?: Array<{ description: string; path?: string; mediaType?: string }>;
     blocking: boolean;
     source: "explicit" | "inferred";
   }>;
@@ -169,6 +170,41 @@ export type GoalMissionReadModel = {
   };
 };
 
+export type WorkflowLineageReadModel = {
+  slicePlan: {
+    revision: number;
+    goalContractHash: string;
+    slices: Array<{
+      id: string;
+      requirementIds: string[];
+      outcome: string;
+      expectedArtifactRefs: string[];
+      evaluatorContractRefs: string[];
+      dependsOnSliceIds: string[];
+      dependencyArtifactRefs: string[];
+    }>;
+  } | null;
+  workflowDag: {
+    id: string;
+    mode: "draft" | "runtime";
+    taskIds: string[];
+    edges: Array<{ from: string; to: string; status: string }>;
+  } | null;
+  tasks: Array<{
+    id: string;
+    label: string;
+    status: string;
+    sliceId?: string;
+    requirementIds: string[];
+    dependsOn: string[];
+    purpose?: string;
+    nodeType?: string;
+    expectedOutputs: string[];
+    roleRef?: string;
+    agentProfileRef?: string;
+  }>;
+};
+
 export type WorkflowCommandDescriptor = {
   id: string;
   label: string;
@@ -187,12 +223,14 @@ export interface WorkflowDagNode {
   runId?: string;
   mode?: "draft" | "runtime";
   label: string;
-  role: string;
-  agentRef: string;
-  profileRef: string;
-  profileResourcePath: string;
-  provider: string;
-  model: string;
+  role?: string;
+  agentRef?: string;
+  profileRef?: string;
+  profileResourcePath?: string;
+  harnessRef?: string;
+  provider?: string;
+  model?: string;
+  thinkingLevel?: string;
   requirementIds?: string[];
   sliceId?: string;
   purpose?: string;
@@ -219,6 +257,11 @@ export type PlannerDraftTaskSummary = {
   dependsOn: string[];
   roleRef?: string;
   agentProfileRef?: string;
+  agentRef?: string;
+  harnessRef?: string;
+  provider?: string;
+  model?: string;
+  thinkingLevel?: string;
   requirementIds?: string[];
   sliceId?: string;
   purpose?: string;
@@ -244,6 +287,8 @@ export type PlannerDraftOrchestrationView = PlannerDraftResult & {
 export type WorkflowRunResult = {
   runId: string;
   taskIds: string[];
+  runStatus?: "created" | "awaiting_approval" | "scheduling";
+  approvalId?: string;
 };
 
 export type WorkflowExecuteResult = {

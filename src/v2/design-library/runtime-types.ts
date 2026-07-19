@@ -58,7 +58,7 @@ export type RoleDefinition = {
   stopAuthority: "none" | "can-suggest" | "can-accept" | "can-reject";
 };
 
-export type AgentProvider = "pi" | "codex" | "claude-code" | "openai" | "openai-codex" | "anthropic" | "custom";
+export type AgentProvider = "pi" | "codex" | "claude-code" | "openai" | "openai-codex" | "github-copilot" | "anthropic" | "custom";
 
 export type PlannerDraftTaskProfileOverride = {
   harnessRef?: string;

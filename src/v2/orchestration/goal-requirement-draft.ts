@@ -849,6 +849,22 @@ const REQUIREMENT_SEMANTIC_KEYS = [
 const REQUIREMENT_CRITERION_KEYS = ["statement", "evidenceIntent"] as const;
 const REQUIREMENT_ARTIFACT_KEYS = ["description", "mediaType"] as const;
 const REQUIREMENT_TOP_LEVEL_KEYS = ["summary", "requirements", "nonGoals", "blockingInputs"] as const;
+const REQUIREMENT_SEMANTIC_PROMPT_SCHEMA = {
+  title: "string",
+  statement: "string",
+  semanticTags: ["lower-case outcome or domain tag"],
+  source: "explicit | inferred",
+  blocking: "boolean",
+  userVisibleBehaviors: ["string"],
+  businessRules: ["string"],
+  acceptanceCriteria: [{ statement: "string", evidenceIntent: ["EvidenceKind"] }],
+  expectedOutcomeArtifacts: [{ description: "string", mediaType: "string?" }],
+  verificationIntent: ["string"],
+  assumptions: ["string"],
+  openQuestions: ["string"],
+  riskTags: ["string"],
+  interactionContractRefs: ["string"],
+} as const;
 
 type GoalRequirementDraftSemanticV1 = Omit<GoalRequirementDraftInputV1, "goalPrompt" | "cwd" | "projectRef">;
 type GoalRequirementDraftSemanticPatchV1 = Partial<Omit<GoalRequirementDraftItemInputV1, "id" | "status">>;
@@ -880,22 +896,7 @@ function renderRequirementInterpretationPrompt(input: {
     "GoalRequirementDraftOutputSchema:",
     JSON.stringify({
       summary: "string",
-      requirements: [{
-        title: "string",
-        statement: "string",
-        semanticTags: ["lower-case outcome or domain tag"],
-        source: "explicit | inferred",
-        blocking: "boolean",
-        userVisibleBehaviors: ["string"],
-        businessRules: ["string"],
-        acceptanceCriteria: [{ statement: "string", evidenceIntent: ["EvidenceKind"] }],
-        expectedOutcomeArtifacts: [{ description: "string", mediaType: "string?" }],
-        verificationIntent: ["string"],
-        assumptions: ["string"],
-        openQuestions: ["string"],
-        riskTags: ["string"],
-        interactionContractRefs: ["string"],
-      }],
+      requirements: [REQUIREMENT_SEMANTIC_PROMPT_SCHEMA],
       nonGoals: ["string"],
       blockingInputs: ["string"],
     }),
@@ -934,7 +935,7 @@ function renderRequirementRevisionPrompt(input: {
       summary: "string (revision only)",
       draft: {
         summary: "string",
-        requirements: [{ "...semantic requirement fields": "same as RequirementDraftOutputSchema" }],
+        requirements: [REQUIREMENT_SEMANTIC_PROMPT_SCHEMA],
         nonGoals: ["string"],
         blockingInputs: ["string"],
       },
@@ -947,6 +948,9 @@ function renderRequirementRevisionPrompt(input: {
       question: "string (needs_input only)",
     }),
     "For kind=revision, return exactly kind, summary, and either draft or operation. Draft contains exactly summary, requirements, nonGoals, blockingInputs. Operation contains semantic fields only; the host chooses target ids from the host selections below.",
+    "RevisionRequirementSemanticSchema:",
+    JSON.stringify(REQUIREMENT_SEMANTIC_PROMPT_SCHEMA),
+    "Every requirement in draft, create, merge, or split must include every field in RevisionRequirementSemanticSchema, including unchanged source, blocking, and riskTags. An update patch may include only changed semantic fields.",
     "For kind=needs_input, return exactly kind and question.",
     `Every revised acceptanceCriteria.evidenceIntent value must remain one of these exact host evidence kinds: ${EVIDENCE_KINDS.join(", ")}. Never put prose in evidenceIntent.`,
     "For every remaining openQuestions or blockingInputs item with a finite decision set, include 2-4 concise answer options in the same string using: Question? Options: A) ...; B) ...; C) ... . Use a short-answer question only when finite options are not reasonable.",
@@ -1041,7 +1045,7 @@ function renderRequirementRepairPrompt(basePrompt: string, response: string, err
     basePrompt,
     "",
     `The previous response was invalid: ${error instanceof Error ? error.message : String(error)}`,
-    "Return one corrected JSON object only. Preserve valid semantic meaning and remove every host-owned or workflow field.",
+    "Return one corrected JSON object only. Preserve valid semantic meaning, include every field in RevisionRequirementSemanticSchema for complete requirements, and remove every host-owned or workflow field.",
     `PreviousResponse: ${response.slice(0, MAX_REQUIREMENT_RESPONSE_CHARS)}`,
   ].join("\n");
 }

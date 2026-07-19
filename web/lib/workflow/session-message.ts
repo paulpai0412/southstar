@@ -58,6 +58,32 @@ export function isWorkflowUiCheckpointMessage(message: AgentMessage): boolean {
   return block?.type === "text" && block.text === SOUTHSTAR_WORKFLOW_UI_CHECKPOINT_TEXT;
 }
 
+export function filterLatestWorkflowUiProjections(messages: AgentMessage[], entryIds: string[]): { messages: AgentMessage[]; entryIds: string[] } {
+  const latestByKey = new Map<string, number>();
+  for (let index = 0; index < messages.length; index += 1) {
+    const key = workflowUiProjectionKey(messages[index]);
+    if (key) latestByKey.set(key, index);
+  }
+
+  const displayMessages: AgentMessage[] = [];
+  const displayEntryIds: string[] = [];
+  for (let index = 0; index < messages.length; index += 1) {
+    const key = workflowUiProjectionKey(messages[index]);
+    if (key && latestByKey.get(key) !== index) continue;
+    displayMessages.push(messages[index]);
+    displayEntryIds.push(entryIds[index] ?? "");
+  }
+  return { messages: displayMessages, entryIds: displayEntryIds };
+}
+
+function workflowUiProjectionKey(message: AgentMessage | undefined): string | null {
+  if (message?.role !== "assistant" || !Array.isArray(message.content)) return null;
+  const block = message.content.find((item) => item.type === "goalRequirements");
+  return block?.type === "goalRequirements" && typeof block.draftId === "string"
+    ? `goalRequirements:${block.draftId}`
+    : null;
+}
+
 function isPersistableWorkflowUiMessage(value: unknown): value is AgentMessage {
   if (!value || typeof value !== "object") return false;
   const message = value as { role?: unknown; content?: unknown };

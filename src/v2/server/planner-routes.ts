@@ -59,12 +59,10 @@ import {
   revisePostgresPlannerDraft,
   validatePostgresPlannerDraft,
 } from "../ui-api/postgres-run-api.ts";
+import { resolvePiDefaultRuntimeProfileBinding } from "../planner/pi-planner.ts";
 import type { RuntimeServerContext } from "./runtime-context.ts";
 import type { ApiEnvelope } from "./types.ts";
-import {
-  buildRunGoalRequestFromPlannerDraftBody,
-  plannerDraftReceiptFromGoalResult,
-} from "../orchestration/planner-intake.ts";
+import { buildRunGoalRequestFromPlannerDraftBody, plannerDraftReceiptFromGoalResult } from "../orchestration/planner-intake.ts";
 
 export async function handlePlannerRoute(
   context: RuntimeServerContext,
@@ -127,7 +125,6 @@ export async function handlePlannerRoute(
       composerMode?: unknown;
       cwd?: unknown;
       projectRef?: unknown;
-      compositionPlan?: unknown;
       libraryHints?: unknown;
     }>(request);
     return createPlannerDraftStreamResponse(context, body);
@@ -308,7 +305,6 @@ export async function handlePlannerRoute(
       composerMode?: unknown;
       cwd?: unknown;
       projectRef?: unknown;
-      compositionPlan?: unknown;
       libraryHints?: unknown;
       idempotencyKey?: unknown;
       goalDesignMode?: unknown;
@@ -518,6 +514,9 @@ function createGoalDesignConfirmationStreamResponse(
           libraryImportSourceFetcher: context.libraryImportSourceFetcher,
           onStage(stage, data) {
             if (stage !== "done") send("planner.stage", { stage, ...(data ?? {}) });
+          },
+          onLlmDelta(text) {
+            send("message.delta", { text });
           },
         }, input);
         sendGoalDesignConfirmationResultFrames(send, result);
@@ -731,7 +730,6 @@ function createPlannerDraftStreamResponse(
     composerMode?: unknown;
     cwd?: unknown;
     projectRef?: unknown;
-    compositionPlan?: unknown;
     libraryHints?: unknown;
     idempotencyKey?: unknown;
     goalDesignMode?: unknown;
@@ -775,6 +773,9 @@ function createPlannerDraftStreamResponse(
             if (stage === "goal_design.persisted") send("goal_design", data ?? {});
             if (stage === "requirements.persisted") send("goal_requirements", data ?? {});
             if (stage !== "done") send("planner.stage", { stage, ...(data ?? {}) });
+          },
+          onLlmDelta(text) {
+            send("message.delta", { text });
           },
         }, request);
         const draft = plannerDraftReceiptFromGoalResult(result, request.goalPrompt);
@@ -1019,9 +1020,11 @@ function startPlannerSseHeartbeat(
   data: Record<string, unknown>,
 ): ReturnType<typeof setInterval> {
   const intervalMs = Math.max(1, context.libraryChatHeartbeatMs ?? 15_000);
+  const startedAt = Date.now();
   return setInterval(() => {
-    send("planner.progress.keepalive", {
+    send("heartbeat", {
       ...data,
+      elapsedMs: Date.now() - startedAt,
       at: new Date().toISOString(),
     });
   }, intervalMs);
@@ -1097,6 +1100,7 @@ function resolvePlannerWorkflowComposer(
   return new LlmWorkflowComposer({
     model: process.env.SOUTHSTAR_WORKFLOW_COMPOSER_MODEL ?? "southstar-runtime-workflow-composer",
     composerSop: () => loadWorkflowComposerSopPg(context.db),
+    runtimeProfileBinding: resolvePiDefaultRuntimeProfileBinding,
     client: {
       async generateText(input) {
         return await context.plannerClient.generate(input.prompt);

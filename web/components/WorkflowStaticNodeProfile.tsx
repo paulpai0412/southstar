@@ -20,7 +20,7 @@ export function WorkflowStaticNodeProfile({ node }: { node: WorkflowDagNode }) {
           <summary style={guideSummaryStyle}>How Agent Profile works</summary>
           <div style={guideBodyStyle}>
             <div><strong>Agent Profile</strong> binds this DAG task to its role, approved Library profile, host adapter, model, instructions, and grants.</div>
-            <div><strong>Role</strong> explains responsibility; <strong>Agent / Profile</strong> identify the approved reusable capability; <strong>Host</strong> is the runtime provider/model binding.</div>
+            <div><strong>Role</strong> explains responsibility; <strong>Agent / Profile</strong> identify the approved reusable capability; <strong>Host adapter</strong>, <strong>Provider</strong>, and <strong>Model</strong> are separate persisted bindings.</div>
             <div>Not every profile field is freely usable. Candidate approval and host capability validation decide what can run. Missing or unsupported bindings block the workflow; they do not silently become defaults.</div>
             <div>Use the task purpose and requirement/slice lineage below to check that the profile is doing the intended work.</div>
           </div>
@@ -32,10 +32,12 @@ export function WorkflowStaticNodeProfile({ node }: { node: WorkflowDagNode }) {
           </header>
           <dl style={gridStyle}>
             <dt style={termStyle}>Task</dt><dd style={valueStyle}>{node.label || node.taskId || node.id}</dd>
-            <dt style={termStyle}>Role</dt><dd style={valueStyle}>{node.role || "role:auto"}</dd>
-            <dt style={termStyle}>Agent</dt><dd style={valueStyle}>{node.agentRef || "agent:auto"}</dd>
-            <dt style={termStyle}>Profile</dt><dd style={valueStyle}>{node.profileRef || "profile:auto"}</dd>
-            <dt style={termStyle}>Host</dt><dd style={valueStyle}>{[node.provider, node.model].filter(Boolean).join(" / ") || "provider:auto / model:auto"}</dd>
+            <dt style={termStyle}>Role</dt><dd style={valueStyle}>{node.role || "Unbound"}</dd>
+            <dt style={termStyle}>Agent</dt><dd style={valueStyle}>{node.agentRef || "Unbound"}</dd>
+            <dt style={termStyle}>Profile</dt><dd style={valueStyle}>{node.profileRef || "Unbound"}</dd>
+            <dt style={termStyle}>Host adapter</dt><dd style={valueStyle}>{node.harnessRef || "Unbound — no persisted binding"}</dd>
+            <dt style={termStyle}>Provider</dt><dd style={valueStyle}>{node.provider || "Unbound — no persisted binding"}</dd>
+            <dt style={termStyle}>Model</dt><dd style={valueStyle}>{node.model || "Unbound — no persisted binding"}</dd>
             <dt style={termStyle}>Does</dt><dd style={valueStyle}>{node.purpose || "Purpose is not attached to this task."}</dd>
             <dt style={termStyle}>Covers</dt><dd style={valueStyle}>{node.requirementIds?.join(", ") || "requirements not attached"}</dd>
             <dt style={termStyle}>Slice</dt><dd style={valueStyle}>{node.sliceId || "slice not attached"}</dd>
