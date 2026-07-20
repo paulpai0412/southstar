@@ -11,6 +11,7 @@ import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../../sr
 import { createSandboxExperiment, recordSandboxTrial, evaluateSandboxExperiment, startSandboxExecutionPg, recordSandboxEvaluatorOutputPg } from "../../src/v2/evolution/sandbox.ts";
 import { DeterministicFixtureComposer, seedDeterministicWorkflowGraph } from "./fixtures/deterministic-workflow-composer.ts";
 import { fixedGoalInterpreter, softwareGoalContract } from "./fixtures/goal-contract.ts";
+import { canonicalGoalDesignPackageFixture } from "./fixtures/goal-design.ts";
 
 test("sandbox experiment passes when candidate is no worse than baseline and fixes targeted replay", async () => {
   await withDb(async (db) => {
@@ -101,9 +102,11 @@ test("sandbox execution materializes baseline and candidate runs with env marker
   await withDb(async (db) => {
     await seedDelta(db, "delta-sandbox-execution");
     await seedDeterministicWorkflowGraph(db);
+    const goalContract = softwareGoalContract("sandbox replay implementation");
     const draft = await createPostgresPlannerDraft(db, {
       goalPrompt: "sandbox replay implementation",
-      goalInterpreter: fixedGoalInterpreter(softwareGoalContract("sandbox replay implementation")),
+      goalInterpreter: fixedGoalInterpreter(goalContract),
+      goalDesignPackage: canonicalGoalDesignPackageFixture(goalContract),
       composer: new DeterministicFixtureComposer(),
     });
     const replayRun = await createPostgresRunFromDraft(db, { draftId: draft.draftId });
@@ -190,9 +193,11 @@ test("sandbox execution rejects asset refs that are not materializable from the 
   await withDb(async (db) => {
     await seedDelta(db, "delta-sandbox-unmaterializable");
     await seedDeterministicWorkflowGraph(db);
+    const goalContract = softwareGoalContract("sandbox asset validation");
     const draft = await createPostgresPlannerDraft(db, {
       goalPrompt: "sandbox asset validation",
-      goalInterpreter: fixedGoalInterpreter(softwareGoalContract("sandbox asset validation")),
+      goalInterpreter: fixedGoalInterpreter(goalContract),
+      goalDesignPackage: canonicalGoalDesignPackageFixture(goalContract),
       composer: new DeterministicFixtureComposer(),
     });
     const replayRun = await createPostgresRunFromDraft(db, { draftId: draft.draftId });

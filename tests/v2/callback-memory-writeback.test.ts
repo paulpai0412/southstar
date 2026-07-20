@@ -6,6 +6,10 @@ import { collectContextSourcesPg } from "../../src/v2/context/source-builder.ts"
 import { ingestTaskRunResultPg } from "../../src/v2/executor/postgres-tork-callback.ts";
 import { createWorkflowRunPg, createWorkflowTaskPg, listHistoryForRunPg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
+import {
+  canonicalNonBlockingGoalDesignLineageFixture,
+  persistCanonicalGoalDesignLineageFixture,
+} from "./fixtures/goal-design.ts";
 
 test("callback ingestion writes run-local memory and long-term memory delta without approving cross-run memory", async () => {
   await withDb(async (db) => {
@@ -246,17 +250,20 @@ test("callback run-local memory is available to downstream managed context witho
 });
 
 async function seedRunTask(db: SouthstarDb, runId: string, taskId: string, status = "running"): Promise<void> {
+  const goalPrompt = "callback memory writeback";
+  const lineage = canonicalNonBlockingGoalDesignLineageFixture(runId, goalPrompt);
   await createWorkflowRunPg(db, {
     id: runId,
     status: "running",
     domain: "software",
-    goalPrompt: "callback memory writeback",
+    goalPrompt,
     workflowManifestJson: JSON.stringify({ schemaVersion: "southstar.v2", workflowId: "wf-callback-memory", tasks: [{ id: taskId }] }),
     executionProjectionJson: JSON.stringify({ executor: "tork" }),
     snapshotJson: JSON.stringify({}),
-    runtimeContextJson: JSON.stringify({}),
+    runtimeContextJson: JSON.stringify(lineage.runtimeContext),
     metricsJson: JSON.stringify({}),
   });
+  await persistCanonicalGoalDesignLineageFixture(db, runId, lineage);
   await createWorkflowTaskPg(db, {
     id: taskId,
     runId,

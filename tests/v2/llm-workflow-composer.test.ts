@@ -7,7 +7,7 @@ import {
   parseWorkflowCompositionPlanFromText,
   WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA,
 } from "../../src/v2/orchestration/llm-composer.ts";
-import { finalizeGoalDesignPackage, finalizeGoalDesignPackageV2 } from "../../src/v2/orchestration/goal-design.ts";
+import { finalizeGoalDesignPackageV2 } from "../../src/v2/orchestration/goal-design.ts";
 import { softwareGoalContract } from "./fixtures/goal-contract.ts";
 
 const GOAL_CONTRACT = softwareGoalContract();
@@ -186,7 +186,7 @@ test("LLM composer prompt forbids using Goal Design skill refs as DAG primitives
     goalPrompt: "implement calc sum",
     goalContract: GOAL_CONTRACT,
     candidatePacket: candidatePacket(),
-    goalDesignPackage: goalDesignPackage(),
+    goalDesignPackage: goalDesignPackageV2(),
   });
 
   assert.match(prompts[0] ?? "", /ForbiddenGoalDesignRefs:/);
@@ -661,51 +661,6 @@ function candidatePacket(): CandidatePacket {
     },
     unavailableRequirements: [],
   };
-}
-
-function goalDesignPackage() {
-  const requirement = GOAL_CONTRACT.requirements[0]!;
-  const artifactRef = GOAL_CONTRACT.expectedArtifactRefs[0]!;
-  return finalizeGoalDesignPackage({
-    schemaVersion: "southstar.goal_design_package.v1",
-    revision: 1,
-    goalContract: GOAL_CONTRACT,
-    evaluatorContracts: [{
-      schemaVersion: "southstar.requirement_evaluator_contract.v1",
-      id: "eval-main",
-      requirementId: requirement.id,
-      acceptanceCriteria: [...requirement.acceptanceCriteria],
-      requiredEvidenceKinds: ["test_result"],
-      independence: "independent",
-      failureClassifications: ["implementation_gap"],
-    }],
-    slicePlan: {
-      schemaVersion: "southstar.goal_slice_plan.v1",
-      goalContractHash: "host-filled",
-      revision: 1,
-      slices: [{
-        id: "slice-main",
-        requirementIds: [requirement.id],
-        outcome: requirement.statement,
-        stateOrArtifactOwner: artifactRef,
-        mutationBoundary: "one cohesive implementation boundary",
-        expectedArtifactRefs: [artifactRef],
-        evaluatorContractRefs: ["eval-main"],
-        dependsOnSliceIds: [],
-        dependencyArtifactRefs: [],
-      }],
-    },
-    compositionStrategy: {
-      mode: "single-run",
-      sliceIds: ["slice-main"],
-      rationale: "one atomic requirement boundary",
-    },
-    templatePolicy: { mode: "auto" },
-    goalDesignSkillRef: "skill.southstar-goal-design",
-    goalDesignSkillVersionRef: "skill.southstar-goal-design@test",
-    workspaceDiscoveryHash: "workspace-test",
-    mode: "auto_until_blocked",
-  });
 }
 
 function goalDesignPackageV2() {

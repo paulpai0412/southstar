@@ -19,6 +19,10 @@ import {
 } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 import { createGitWorkspaceSnapshotProvider } from "../../src/v2/workspace/git-provider.ts";
+import {
+  canonicalNonBlockingGoalDesignLineageFixture,
+  persistCanonicalGoalDesignLineageFixture,
+} from "./fixtures/goal-design.ts";
 
 test("callback completes current hand execution and writes accepted artifact_ref", async () => {
   await withDb(async (db) => {
@@ -220,7 +224,7 @@ test("callback preserves a conflicting worktree and blocks the task for operator
       assert.equal(asRecord(allocation?.payload).mergeRetryLimit, 1);
       assert.equal(asRecord(allocation?.payload).mergeAttempts, 2);
       const exception = await db.one<{ status: string; payload_json: unknown }>(
-        "select status, payload_json from southstar.runtime_resources where run_id = $1 and resource_type = 'runtime_exception'",
+        "select status, payload_json from southstar.runtime_resources where run_id = $1 and resource_type = 'runtime_exception' and payload_json->>'kind' = 'workspace_merge_conflict'",
         ["run-callback-workspace-conflict"],
       );
       assert.equal(exception.status, "observed");
@@ -770,7 +774,7 @@ test("late terminal callback records runtime exception and observe-only recovery
 
     assert.equal(late.accepted, false);
     const exceptions = (await listResourcesPg(db, { resourceType: "runtime_exception" }))
-      .filter((resource) => resource.runId === "run-callback-late-exception");
+      .filter((resource) => resource.runId === "run-callback-late-exception" && resource.payload.kind === "late_callback");
     assert.equal(exceptions.length, 1);
     assert.equal(exceptions[0]?.payload.kind, "late_callback");
     assert.equal(exceptions[0]?.payload.source, "callback");
@@ -898,17 +902,24 @@ async function seedRunTask(
   db: SouthstarDb,
   input: { runId: string; taskId: string; runStatus: string; taskStatus: string; sessionId?: string; runtimeContextJson?: Record<string, unknown> },
 ): Promise<void> {
+  const goalPrompt = "managed callback state";
+  const lineage = canonicalNonBlockingGoalDesignLineageFixture(
+    input.runId,
+    goalPrompt,
+    typeof input.runtimeContextJson?.projectRoot === "string" ? input.runtimeContextJson.projectRoot : undefined,
+  );
   await createWorkflowRunPg(db, {
     id: input.runId,
     status: input.runStatus,
     domain: "software",
-    goalPrompt: "managed callback state",
+    goalPrompt,
     workflowManifestJson: JSON.stringify({ schemaVersion: "southstar.v2", workflowId: `wf-${input.runId}`, tasks: [{ id: input.taskId }] }),
     executionProjectionJson: JSON.stringify({ executor: "tork" }),
     snapshotJson: JSON.stringify({}),
-    runtimeContextJson: JSON.stringify(input.runtimeContextJson ?? {}),
+    runtimeContextJson: JSON.stringify({ ...(input.runtimeContextJson ?? {}), ...lineage.runtimeContext }),
     metricsJson: JSON.stringify({}),
   });
+  await persistCanonicalGoalDesignLineageFixture(db, input.runId, lineage);
   await createWorkflowTaskPg(db, {
     id: input.taskId,
     runId: input.runId,

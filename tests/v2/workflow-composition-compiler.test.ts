@@ -7,7 +7,6 @@ import { upsertLibraryObject } from "../../src/v2/design-library/library-graph-s
 import { DeterministicFixtureComposer } from "./fixtures/deterministic-workflow-composer.ts";
 import { goalContractHash, requirementSpecFromGoalContract } from "../../src/v2/orchestration/goal-contract.ts";
 import {
-  finalizeGoalDesignPackage,
   finalizeGoalDesignPackageV2,
   type GoalDesignPackageV2,
 } from "../../src/v2/orchestration/goal-design.ts";
@@ -280,99 +279,6 @@ test("compiler preserves custom workflow scope while using general task domain",
     assert.equal(compiled.workflow.domain, "design/article");
     assert.equal(compiled.workflow.tasks.every((task) => task.domain === "general"), true);
     assert.equal(compiled.workflow.harnessDefinitions.every((harness) => harness.capabilities.includes("design/article")), true);
-  } finally {
-    await db.close();
-  }
-});
-
-test("compiler materializes Goal Design host artifact and evaluator contracts without Library graph objects", async () => {
-  const db = await createTestPostgresDb();
-  try {
-    await seedSoftwareLibraryGraph(db);
-    const goalContract = softwareGoalContract();
-    const requirement = goalContract.requirements[0]!;
-    const hostArtifactRef = goalContract.expectedArtifactRefs[0]!;
-    const hostEvaluatorRef = "evaluator.goal_design_requirement_check";
-    const packageValue = finalizeGoalDesignPackage({
-      schemaVersion: "southstar.goal_design_package.v1",
-      revision: 1,
-      goalContract,
-      evaluatorContracts: [{
-        schemaVersion: "southstar.requirement_evaluator_contract.v1",
-        id: hostEvaluatorRef,
-        requirementId: requirement.id,
-        acceptanceCriteria: [...requirement.acceptanceCriteria],
-        requiredEvidenceKinds: ["test_result"],
-        independence: "independent",
-        failureClassifications: ["implementation_gap"],
-      }],
-      slicePlan: {
-        schemaVersion: "southstar.goal_slice_plan.v1",
-        goalContractHash: "host-filled",
-        revision: 1,
-        slices: [{
-          id: "slice-main",
-          requirementIds: [requirement.id],
-          outcome: requirement.statement,
-          stateOrArtifactOwner: hostArtifactRef,
-          mutationBoundary: "single feature boundary",
-          expectedArtifactRefs: [hostArtifactRef],
-          evaluatorContractRefs: [hostEvaluatorRef],
-          dependsOnSliceIds: [],
-          dependencyArtifactRefs: [],
-        }],
-      },
-      compositionStrategy: {
-        mode: "single-run",
-        sliceIds: ["slice-main"],
-        rationale: "single cohesive requirement",
-      },
-      templatePolicy: { mode: "auto" },
-      goalDesignSkillRef: "skill.southstar-goal-design",
-      goalDesignSkillVersionRef: "skill.southstar-goal-design@test",
-      workspaceDiscoveryHash: "1".repeat(64),
-      mode: "review_before_compose",
-    });
-    const requirementSpec = requirementSpecFromGoalContract(goalContract);
-    const candidatePacket = await resolveWorkflowCandidates(db, { requirementSpec, scope: "software" });
-    await db.query(
-      "delete from southstar.library_edges where from_object_key = $1 or to_object_key = $1 or from_object_key = $2 or to_object_key = $2",
-      [hostArtifactRef, hostEvaluatorRef],
-    );
-    await db.query("delete from southstar.library_objects where object_key in ($1, $2)", [hostArtifactRef, hostEvaluatorRef]);
-    const hostOnlyCandidatePacket = withoutHostContractCandidates(candidatePacket, [hostArtifactRef, hostEvaluatorRef]);
-    const composition = hostContractComposition(goalContract, { hostArtifactRef, hostEvaluatorRef });
-
-    const compiled = await compileWorkflowComposition(db, {
-      runId: "draft-host-goal-design-contracts",
-      goalPrompt: goalContract.originalPrompt,
-      goalContract,
-      goalDesignPackage: packageValue,
-      candidatePacket: hostOnlyCandidatePacket,
-      composition,
-    });
-
-    assert.equal(compiled.workflow.compiledFrom?.sourceKind, "library_primitives");
-    assert.equal(compiled.workflow.compiledFrom && "templateDefinitionId" in compiled.workflow.compiledFrom, false);
-    assert.equal(compiled.workflow.artifactContracts?.some((contract) =>
-      contract.id === hostArtifactRef.replace(/^artifact\./, "")
-        && contract.artifactType === hostArtifactRef
-        && contract.evidenceFields.includes("requiredEvidenceKinds")
-    ), true);
-    assert.equal(compiled.workflow.evaluatorPipelines?.some((pipeline) =>
-      pipeline.id === "goal_design_requirement_check"
-        && pipeline.evaluators.some((evaluator) =>
-          evaluator.kind === "evidence"
-            && evaluator.config.requirementId === requirement.id
-            && evaluator.config.requiredEvidenceKinds?.includes("test_result")
-        )
-    ), true);
-    assert.equal(
-      compiled.workflow.compiledFrom?.libraryObjectVersionRefs.some((pair) =>
-        pair.objectKey === hostArtifactRef || pair.objectKey === hostEvaluatorRef
-      ),
-      false,
-    );
   } finally {
     await db.close();
   }

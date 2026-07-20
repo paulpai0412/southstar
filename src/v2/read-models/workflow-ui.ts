@@ -1,8 +1,13 @@
 import { acceptedArtifactTaskIdsForRunPg } from "../artifacts/artifact-ref-store.ts";
+import { CANONICAL_DIAGNOSTIC_CODES, canonicalDiagnostic, canonicalDiagnosticCode } from "../canonical-diagnostics.ts";
 import type { SouthstarDb } from "../db/postgres.ts";
 import { runtimeAttemptNumber } from "../executor/attempt-identity.ts";
 import { listUnresolvedRuntimeExceptionsForRunsPg } from "../exceptions/postgres-runtime-exceptions.ts";
-import { loadFrozenCoverageContextsPg } from "../evaluators/requirement-evaluator-results.ts";
+import {
+  frozenCoverageUnavailableDiagnosticPg,
+  loadFrozenCoverageContextsPg,
+  requirementEvaluatorResultIncompatibility,
+} from "../evaluators/requirement-evaluator-results.ts";
 import {
   goalContractHash,
   storedGoalContract,
@@ -533,12 +538,15 @@ async function buildRuntimeGoalMissionReadModels(
   }
   const result = new Map<string, GoalMissionReadModel | null>();
   for (const run of runs.rows) {
-    const context = contexts.get(run.id);
-    if (!context) {
-      result.set(run.id, null);
-      continue;
-    }
     const rows = resourcesByRun.get(run.id) ?? [];
+    const evaluatorRows = rows.filter(
+      (row) => row.resource_type === "requirement_evaluator_result" || row.resource_type === "evaluator_result",
+    );
+    const evaluatorResultBlockers = evaluatorRows.flatMap((row) => {
+      if (row.resource_type !== "requirement_evaluator_result") return [];
+      const diagnostic = requirementEvaluatorResultIncompatibility({ resourceKey: row.resource_key, payload: row.payload_json });
+      return diagnostic ? [diagnostic.message] : [];
+    });
     const outcomeResource = rows.find((row) => row.resource_type === "goal_outcome");
     const outcomePayload = asRecord(outcomeResource?.payload_json);
     const outcome = outcomeResource
@@ -546,12 +554,46 @@ async function buildRuntimeGoalMissionReadModels(
       : "in_progress";
     if (!outcome) throw new Error(`invalid goal outcome for run ${run.id}`);
     const runExceptions = exceptionsByRun.get(run.id) ?? [];
+    const runtimeIncompatibilityBlockers = runExceptions.flatMap((exception) => {
+      const providerEvidence = asRecord(exception.payload.providerEvidence);
+      return canonicalDiagnosticCode(providerEvidence.code) && stringValue(providerEvidence.message)
+        ? [stringValue(providerEvidence.message)!]
+        : [];
+    });
     const health = runExceptions.some((exception) => ["blocking", "terminal", "critical"].includes(exception.payload.severity))
       ? "critical" as const
       : runExceptions.length > 0 || hasDegradedProviderHealth(providerObservations(rows))
         ? "degraded" as const
         : "healthy" as const;
     const runtimeContext = asRecord(run.runtime_context_json);
+    const context = contexts.get(run.id);
+    if (!context) {
+      const draftId = stringValue(runtimeContext.draftId);
+      const draft = draftId ? await getResourceByKeyPg(db, "planner_draft", draftId) : null;
+      const goalContract = storedGoalContract(asRecord(draft?.payload).goalContract);
+      if (!goalContract) {
+        result.set(run.id, null);
+        continue;
+      }
+      const unavailableDiagnostic = await frozenCoverageUnavailableDiagnosticPg(db, run.id)
+        ?? canonicalDiagnostic(
+          CANONICAL_DIAGNOSTIC_CODES.goalRequirementCoverageMissing,
+          `run ${run.id} has no frozen goal requirement coverage`,
+        );
+      result.set(run.id, goalMissionProjection({
+        goalContract,
+        execution: run.status,
+        outcome,
+        health: "critical",
+        approval: missionApproval(rows.find((row) => row.resource_type === "approval" && asRecord(row.payload_json).actionType === "goalExecution") ?? null),
+        evaluatorResults: evaluatorRows.map((row) => row.payload_json),
+        blockers: [unavailableDiagnostic.message, ...evaluatorResultBlockers, ...runtimeIncompatibilityBlockers],
+        failedRequirementIds: stringArray(outcomePayload.failedRequirementIds),
+        manifestHash: stringValue(runtimeContext.manifestHash),
+        librarySnapshotHash: stringValue(runtimeContext.librarySnapshotHash),
+      }));
+      continue;
+    }
     result.set(run.id, goalMissionProjection({
       goalContract: context.goalContract,
       coverage: context.coverage,
@@ -559,9 +601,8 @@ async function buildRuntimeGoalMissionReadModels(
       outcome,
       health,
       approval: missionApproval(rows.find((row) => row.resource_type === "approval" && asRecord(row.payload_json).actionType === "goalExecution") ?? null),
-      evaluatorResults: rows
-        .filter((row) => row.resource_type === "requirement_evaluator_result" || row.resource_type === "evaluator_result")
-        .map((row) => row.payload_json),
+      evaluatorResults: evaluatorRows.map((row) => row.payload_json),
+      blockers: [...evaluatorResultBlockers, ...runtimeIncompatibilityBlockers],
       failedRequirementIds: stringArray(outcomePayload.failedRequirementIds),
       manifestHash: stringValue(runtimeContext.manifestHash),
       librarySnapshotHash: stringValue(runtimeContext.librarySnapshotHash),
@@ -641,17 +682,19 @@ function isDegradedProviderStatus(status: string): boolean {
 
 function goalMissionProjection(input: {
   goalContract: GoalContractV1;
-  coverage: GoalRequirementCoverageV1;
+  coverage?: GoalRequirementCoverageV1;
   execution: string;
   outcome: GoalMissionReadModel["status"]["outcome"];
   health: GoalMissionReadModel["status"]["health"];
   approval: GoalMissionReadModel["approval"];
   evaluatorResults: unknown[];
+  blockers?: string[];
   failedRequirementIds?: string[];
   manifestHash?: string;
   librarySnapshotHash?: string;
 }): GoalMissionReadModel {
-  const coveredRequirementIds = new Set(input.coverage.entries.map((entry) => entry.requirementId));
+  const coverageEntries = input.coverage?.entries ?? [];
+  const coveredRequirementIds = new Set(coverageEntries.map((entry) => entry.requirementId));
   return {
     goalContract: input.goalContract,
     goalContractHash: goalContractHash(input.goalContract),
@@ -659,12 +702,12 @@ function goalMissionProjection(input: {
       covered: input.goalContract.requirements.filter((requirement) => coveredRequirementIds.has(requirement.id)).length,
       total: input.goalContract.requirements.length,
       failedRequirementIds: [...new Set(input.failedRequirementIds ?? [])].sort(),
-      entries: input.coverage.entries,
+      entries: coverageEntries,
     },
     status: { execution: input.execution, outcome: input.outcome, health: input.health },
     approval: input.approval,
     evaluatorResults: input.evaluatorResults,
-    blockers: [...input.goalContract.blockingInputs],
+    blockers: [...new Set([...input.goalContract.blockingInputs, ...(input.blockers ?? [])])].sort(),
     provenance: {
       originalPrompt: input.goalContract.originalPrompt,
       revision: input.goalContract.revision,

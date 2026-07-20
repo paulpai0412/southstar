@@ -25,7 +25,7 @@ import {
   requireLibraryReadinessPg,
 } from "../design-library/files/library-reconcile-service.ts";
 import {
-  isReviewableGoalDesignDraftPg,
+  hasCanonicalGoalDesignPackagePg,
   loadCurrentGoalDesignPackagePg,
   reviseGoalDesignFromChatPg,
   reviseGoalSlicePg,
@@ -41,9 +41,7 @@ import {
 import {
   assertRawRequirementRouteTarget,
   assertRequirementRouteTarget,
-  optionalComposerMode,
   optionalGoalDesignMode,
-  optionalOrchestrationMode,
   optionalWorkflowTemplatePolicy,
   parseGoalRequirementPatch,
   parseGoalSlicePatch,
@@ -55,9 +53,9 @@ import {
   createPostgresRunFromDraft,
   getPostgresPlannerDraftOrchestration,
   patchPostgresPlannerDraftTaskProfileOverride,
-  revisePostgresPlannerDraft,
   validatePostgresPlannerDraft,
 } from "../ui-api/postgres-run-api.ts";
+import { rejectIncompatibleGoalDesignDraftPg } from "../orchestration/canonical-goal-design-draft.ts";
 import { resolvePiDefaultRuntimeProfileBinding } from "../planner/pi-planner.ts";
 import type { RuntimeServerContext } from "./runtime-context.ts";
 import type { ApiEnvelope } from "./types.ts";
@@ -343,7 +341,7 @@ export async function handlePlannerRoute(
       expectedPackageHash?: unknown;
       selectedSliceId?: unknown;
     }>(request);
-    if (await isReviewableGoalDesignDraftPg(context.db, draftId)) {
+    if (await hasCanonicalGoalDesignPackagePg(context.db, draftId)) {
       try {
         return json("goal-design-revision", await reviseGoalDesignFromChatPg({
           db: context.db,
@@ -359,17 +357,7 @@ export async function handlePlannerRoute(
         return goalDesignRevisionErrorResponse(error);
       }
     }
-    return json(
-      "planner-draft",
-      await revisePostgresPlannerDraft(context.db, {
-        draftId,
-        prompt: requiredString(body.prompt, "prompt"),
-        orchestrationMode: optionalOrchestrationMode(body.orchestrationMode),
-        composerMode: optionalComposerMode(body.composerMode),
-        goalInterpreter: resolveGoalInterpreter(context),
-        composer: resolvePlannerWorkflowComposer(context),
-      }),
-    );
+    return await rejectIncompatibleGoalDesignDraftPg(context.db, { draftId });
   }
 
   const draftOrchestrationMatch = url.pathname.match(/^\/api\/v2\/planner\/drafts\/([^/]+)\/orchestration$/);
@@ -893,7 +881,7 @@ function createPlannerDraftRevisionStreamResponse(
           send("done", result);
           return;
         }
-        if (await isReviewableGoalDesignDraftPg(context.db, draftId)) {
+        if (await hasCanonicalGoalDesignPackagePg(context.db, draftId)) {
           send("planner.stage", { stage: "goal_design.revision.requested", message: "Accepted Goal Design revision request." });
           const result = await reviseGoalDesignFromChatPg({
             db: context.db,
@@ -933,34 +921,7 @@ function createPlannerDraftRevisionStreamResponse(
           });
           return;
         }
-        send("planner.stage", { stage: "revision.requested", message: "Accepted workflow revision request." });
-        const composer = resolvePlannerWorkflowComposer(context, {
-          onStreamDegraded(message) {
-            send("planner.stage", { stage: "planner.stream.degraded", message });
-          },
-        });
-        const draft = await revisePostgresPlannerDraft(context.db, {
-          draftId,
-          prompt: requiredString(body.prompt, "prompt"),
-          orchestrationMode: optionalOrchestrationMode(body.orchestrationMode),
-          composerMode: optionalComposerMode(body.composerMode),
-          goalInterpreter: resolveGoalInterpreter(context),
-          composer,
-          onProgress(event) {
-            send("planner.stage", event);
-          },
-          onGoalContractDelta(text) {
-            send("goal_contract.delta", { text });
-          },
-          onLlmDelta(text) {
-            send("message.delta", { text });
-          },
-        });
-        send("draft", { draft });
-        send("planner.stage", { stage: "orchestration.loading", message: "Loading revised planner draft orchestration." });
-        const orchestration = await getPostgresPlannerDraftOrchestration(context.db, { draftId: draft.draftId });
-        send("orchestration", { orchestration });
-        send("done", {});
+        await rejectIncompatibleGoalDesignDraftPg(context.db, { draftId });
       } catch (error) {
         send("error", { error: error instanceof Error ? error.message : String(error) });
       } finally {

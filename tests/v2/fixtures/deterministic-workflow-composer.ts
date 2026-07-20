@@ -3,17 +3,23 @@ import { upsertLibraryEdge, upsertLibraryObject } from "../../../src/v2/design-l
 import type { GeneratedAgentProfile, WorkflowCompositionPlan, WorkflowCompositionTask } from "../../../src/v2/design-library/types.ts";
 import type { ComposeWorkflowInput, WorkflowComposer } from "../../../src/v2/orchestration/composer.ts";
 import type { GoalContractV1 } from "../../../src/v2/orchestration/goal-contract.ts";
+import type { GoalDesignPackage } from "../../../src/v2/orchestration/goal-design.ts";
 import { softwareGoalContract } from "./goal-contract.ts";
 
 export class DeterministicFixtureComposer implements WorkflowComposer {
   async compose(input: ComposeWorkflowInput): Promise<WorkflowCompositionPlan> {
-    return deterministicFixtureComposition(input.goalContract);
+    return deterministicFixtureComposition(input.goalContract, input.goalDesignPackage);
   }
 }
 
-export function deterministicFixtureComposition(goalContract: GoalContractV1 = softwareGoalContract()): WorkflowCompositionPlan {
-  const requirementIds = goalContract.requirements.map((requirement) => requirement.id);
-  return {
+export function deterministicFixtureComposition(
+  goalContract: GoalContractV1 = softwareGoalContract(),
+  goalDesignPackage?: GoalDesignPackage,
+): WorkflowCompositionPlan {
+  const requirementIds = goalContract.requirements
+    .filter((requirement) => requirement.blocking)
+    .map((requirement) => requirement.id);
+  const composition: WorkflowCompositionPlan = {
     schemaVersion: "southstar.workflow_composition_plan.v1",
     title: "Software Dynamic Feature Workflow",
     selectedWorkflowTemplateRef: "template.software-feature",
@@ -84,6 +90,9 @@ export function deterministicFixtureComposition(goalContract: GoalContractV1 = s
       generatedProfile("profile.generated.software-summarize-completion", "Summarize the completed workflow and remaining risks."),
     ],
   };
+  return goalDesignPackage
+    ? alignFixtureCompositionWithGoalDesignPackage(composition, goalDesignPackage)
+    : composition;
 }
 
 export async function seedDeterministicWorkflowGraph(db: SouthstarDb, scope = "software"): Promise<void> {
@@ -121,7 +130,18 @@ export async function seedDeterministicWorkflowGraph(db: SouthstarDb, scope = "s
       objectKind: "artifact_contract",
       status: "approved",
       headVersionId: `${artifactRef}@test`,
-      state: { scope, title: titleFromRef(artifactRef) },
+      state: {
+        scope,
+        title: titleFromRef(artifactRef),
+        artifactType: artifactRef.slice("artifact.".length),
+        requiredFields: ["summary"],
+        evidenceFields: ["summary"],
+        mediaTypes: ["application/json"],
+        validationRules: ["Must describe the completed task output."],
+        evidenceKinds: ["test-result"],
+        schemaRef: `southstar.${artifactRef}.v1`,
+        provenanceRequirements: ["workspace-artifact"],
+      },
     });
   }
   for (const evaluatorRef of [
@@ -135,13 +155,79 @@ export async function seedDeterministicWorkflowGraph(db: SouthstarDb, scope = "s
       objectKind: "evaluator_profile",
       status: "approved",
       headVersionId: `${evaluatorRef}@test`,
-      state: { scope, title: titleFromRef(evaluatorRef) },
+      state: {
+        scope,
+        title: titleFromRef(evaluatorRef),
+        requiredInputs: ["accepted-artifact"],
+        evidenceKinds: ["test-result"],
+        verificationModes: ["deterministic"],
+        verificationProcedures: [{
+          id: "procedure.test",
+          checkKind: "deterministic",
+          instruction: "Verify the accepted task output against the frozen criterion.",
+          allowedEvidenceKinds: ["test-result"],
+        }],
+        independencePolicy: "independent",
+        resultSchemaRef: "southstar.requirement_evaluator_result.v2",
+        failureClassifications: ["implementation_gap"],
+      },
     });
   }
   await upsertLibraryEdge(db, { fromObjectKey: "evaluator.software-plan-quality", edgeType: "validates_artifact", toObjectKey: "artifact.implementation_plan", scope });
   await upsertLibraryEdge(db, { fromObjectKey: "evaluator.software-feature-quality", edgeType: "validates_artifact", toObjectKey: "artifact.implementation_report", scope });
   await upsertLibraryEdge(db, { fromObjectKey: "evaluator.software-verification-quality", edgeType: "validates_artifact", toObjectKey: "artifact.verification_report", scope });
   await upsertLibraryEdge(db, { fromObjectKey: "evaluator.software-completion-quality", edgeType: "validates_artifact", toObjectKey: "artifact.completion_report", scope });
+  for (const artifactRef of [
+    "artifact.implementation_plan",
+    "artifact.implementation_report",
+    "artifact.verification_report",
+    "artifact.completion_report",
+  ]) {
+    await upsertLibraryEdge(db, {
+      fromObjectKey: "evaluator.software-feature-quality",
+      edgeType: "validates_artifact",
+      toObjectKey: artifactRef,
+      scope,
+    });
+  }
+}
+
+export function alignFixtureCompositionWithGoalDesignPackage(
+  composition: WorkflowCompositionPlan,
+  goalDesignPackage: GoalDesignPackage,
+): WorkflowCompositionPlan {
+  const firstSliceId = goalDesignPackage.slicePlan.slices[0]?.id;
+  const producerIds = new Set(composition.tasks
+    .filter((task) => task.nodePromptSpec?.nodeType === "implement")
+    .map((task) => task.id));
+  return {
+    ...composition,
+    tasks: composition.tasks.map((task) => {
+      const requirementIds = [...task.requirementIds];
+      const binding = goalDesignPackage.validationBindings.find((candidate) =>
+        requirementIds.includes(candidate.requirementId)
+      );
+      const sliceId = goalDesignPackage.slicePlan.slices.find((slice) =>
+        requirementIds.some((requirementId) => slice.requirementIds.includes(requirementId))
+      )?.id ?? firstSliceId;
+      const nodePromptSpec = task.nodePromptSpec
+        && (task.nodePromptSpec.nodeType === "verify" || task.nodePromptSpec.nodeType === "review")
+        && [...producerIds].some((producerId) => !task.dependsOn.includes(producerId))
+        ? {
+            ...task.nodePromptSpec,
+            nodeType: "plan" as const,
+            planningQuestions: ["What work and evidence are required?"],
+          }
+        : task.nodePromptSpec;
+      return {
+        ...task,
+        requirementIds,
+        ...(sliceId ? { sliceId } : {}),
+        ...(nodePromptSpec ? { nodePromptSpec } : {}),
+        ...(binding ? { evaluatorProfileRef: binding.evaluatorProfileRef } : {}),
+      };
+    }),
+  };
 }
 
 function task(

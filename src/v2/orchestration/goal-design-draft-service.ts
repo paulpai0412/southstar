@@ -6,6 +6,7 @@ import {
 } from "../stores/postgres-runtime-store.ts";
 import {
   finalizeGoalDesignPackageV2,
+  goalDesignPackageV2FromUnknown,
   loadGoalDesignSkillPg,
   validateGoalDesignPackageV2,
   type GoalDesignPackage,
@@ -15,6 +16,12 @@ import {
   type GoalSliceV1,
   type WorkflowTemplatePolicyV1,
 } from "./goal-design.ts";
+import {
+  loadCanonicalGoalDesignPackagePg,
+  persistIncompatibleGoalDesignDraftPg,
+  throwCanonicalGoalDesignDraftRejection,
+  type CanonicalGoalDesignDraftRejection,
+} from "./canonical-goal-design-draft.ts";
 import {
   GoalContractVocabularyGapError,
   goalContractHash,
@@ -71,6 +78,10 @@ type PlannerDraftResourceRow = {
   metrics_json: Record<string, unknown>;
   expires_at: string | null;
 };
+
+type CanonicalDraftTransactionResult<T> =
+  | { kind: "accepted"; value: T }
+  | { kind: "incompatible"; rejection: CanonicalGoalDesignDraftRejection };
 
 export type GoalSlicePatchV1 = Partial<Pick<GoalSliceV1,
   | "outcome"
@@ -168,7 +179,7 @@ export async function createStagedGoalSliceRevisionPg(
   db: SouthstarDb,
   input: { draftId: string; expectedPackageHash: string },
 ): Promise<StagedGoalSliceRevisionResult> {
-  return await db.tx(async (tx) => {
+  const transactionResult: CanonicalDraftTransactionResult<StagedGoalSliceRevisionResult> = await db.tx(async (tx) => {
     const source = await tx.one<PlannerDraftResourceRow>(
       `select id, resource_key, run_id, task_id, session_id, scope, status, title,
               payload_json, summary_json, metrics_json, expires_at
@@ -183,7 +194,12 @@ export async function createStagedGoalSliceRevisionPg(
       throw new Error(`goal_design_revision_source_not_frozen: ${input.draftId}`);
     }
     const packageValue = goalDesignPackageFromStored(sourcePayload.goalDesignPackage);
-    if (!packageValue) throw new Error(`Goal Design package not found: ${input.draftId}`);
+    if (!packageValue || sourcePayload.goalDesignPackageHash !== packageValue.packageHash) {
+      return {
+        kind: "incompatible",
+        rejection: await persistIncompatibleGoalDesignDraftPg(tx, { draftId: input.draftId }),
+      };
+    }
     if (packageValue.packageHash !== input.expectedPackageHash) {
       throw new Error(`goal_design_package_stale: ${input.draftId}`);
     }
@@ -225,21 +241,30 @@ export async function createStagedGoalSliceRevisionPg(
       const existingPayload = asRecord(existing.payload_json);
       const existingPackage = goalDesignPackageFromStored(existingPayload.goalDesignPackage);
       const existingLineage = asRecord(existingPayload.goalDesignPhaseRevision);
+      if (!existingPackage || existingPayload.goalDesignPackageHash !== existingPackage.packageHash) {
+        return {
+          kind: "incompatible",
+          rejection: await persistIncompatibleGoalDesignDraftPg(tx, { draftId: revisionDraftId }),
+        };
+      }
       if (existing.status !== "ready_for_review"
         || goalDesignPhaseFromPayload(existingPayload) !== "slice_review"
         || existingLineage.parentDraftId !== input.draftId
         || existingLineage.parentPackageHash !== packageValue.packageHash
-        || !existingPackage) {
+      ) {
         throw new Error(`goal_design_revision_conflict: ${revisionDraftId}`);
       }
-      return stagedGoalSliceRevisionResult({
-        draftId: revisionDraftId,
-        parentDraftId: input.draftId,
-        packageValue: existingPackage,
-        requirementDraft,
-        goalContract,
-        goalContractHash: contractHash,
-      });
+      return {
+        kind: "accepted",
+        value: stagedGoalSliceRevisionResult({
+          draftId: revisionDraftId,
+          parentDraftId: input.draftId,
+          packageValue: existingPackage,
+          requirementDraft,
+          goalContract,
+          goalContractHash: contractHash,
+        }),
+      };
     }
 
     const clonedPayload: Record<string, unknown> = {
@@ -295,15 +320,22 @@ export async function createStagedGoalSliceRevisionPg(
         parentPackageHash: packageValue.packageHash,
       },
     });
-    return stagedGoalSliceRevisionResult({
-      draftId: revisionDraftId,
-      parentDraftId: input.draftId,
-      packageValue,
-      requirementDraft,
-      goalContract,
-      goalContractHash: contractHash,
-    });
+    return {
+      kind: "accepted",
+      value: stagedGoalSliceRevisionResult({
+        draftId: revisionDraftId,
+        parentDraftId: input.draftId,
+        packageValue,
+        requirementDraft,
+        goalContract,
+        goalContractHash: contractHash,
+      }),
+    };
   });
+  if (transactionResult.kind === "incompatible") {
+    throwCanonicalGoalDesignDraftRejection(transactionResult.rejection);
+  }
+  return transactionResult.value;
 }
 
 function stagedGoalSliceRevisionResult(input: {
@@ -1163,7 +1195,7 @@ export async function persistGoalDesignPackageRevisionPg(
     }
     return;
   }
-  const issues = validateStoredGoalDesignPackage(input.package);
+  const issues = validateGoalDesignPackageV2(input.package);
   if (issues.length > 0) {
     throw new Error(`invalid Goal Design package: ${issues.map((issue) => `${issue.code} at ${issue.path}`).join("; ")}`);
   }
@@ -1195,16 +1227,37 @@ export async function loadCurrentGoalDesignPackagePg(
   db: SouthstarDb,
   draftId: string,
 ): Promise<GoalDesignPackageV2> {
-  const row = await db.maybeOne<{ payload_json: Record<string, unknown> }>(
-    "select payload_json from southstar.runtime_resources where resource_type = 'planner_draft' and resource_key = $1",
-    [draftId],
-  );
-  const pkg = goalDesignPackageFromStored(row?.payload_json.goalDesignPackage);
-  if (!pkg) throw new Error(`Goal Design package not found: ${draftId}`);
-  return pkg;
+  return await loadCanonicalGoalDesignPackagePg(db, draftId);
 }
 
-export async function isReviewableGoalDesignDraftPg(
+async function loadGoalDesignPackageForChatRevisionPg(
+  db: SouthstarDb,
+  draftId: string,
+): Promise<GoalDesignPackageV2> {
+  const transactionResult: CanonicalDraftTransactionResult<GoalDesignPackageV2> = await db.tx(async (tx) => {
+    const draft = await tx.one<{ payload_json: Record<string, unknown> }>(
+      `select payload_json
+         from southstar.runtime_resources
+        where resource_type = 'planner_draft' and resource_key = $1
+        for update`,
+      [draftId],
+    );
+    const current = goalDesignPackageFromStored(draft.payload_json.goalDesignPackage);
+    if (!current || draft.payload_json.goalDesignPackageHash !== current.packageHash) {
+      return {
+        kind: "incompatible",
+        rejection: await persistIncompatibleGoalDesignDraftPg(tx, { draftId }),
+      };
+    }
+    return { kind: "accepted", value: current };
+  });
+  if (transactionResult.kind === "incompatible") {
+    throwCanonicalGoalDesignDraftRejection(transactionResult.rejection);
+  }
+  return transactionResult.value;
+}
+
+export async function hasCanonicalGoalDesignPackagePg(
   db: SouthstarDb,
   draftId: string,
 ): Promise<boolean> {
@@ -1212,20 +1265,7 @@ export async function isReviewableGoalDesignDraftPg(
     "select status, payload_json from southstar.runtime_resources where resource_type = 'planner_draft' and resource_key = $1",
     [draftId],
   );
-  return row?.status === "ready_for_review" && Boolean(goalDesignPackageFromStored(row.payload_json.goalDesignPackage));
-}
-
-/**
- * Explicitly reject the removed pre-staged Goal Design entry point. Keeping a
- * named failure here makes stale callers fail diagnostically instead of
- * silently creating a second V1 workflow.
- */
-export async function preparePostgresGoalDesignDraft(_db: SouthstarDb, _input: unknown): Promise<never> {
-  throw new Error("legacy Goal Design draft flow was removed; create a staged Requirement draft instead");
-}
-
-export async function retryPostgresGoalDesignAfterVocabularyApprovalPg(_db: SouthstarDb, _input: unknown): Promise<never> {
-  throw new Error("legacy Goal Design vocabulary retry flow was removed; resume staged Goal Validation instead");
+  return Boolean(row && goalDesignPackageFromStored(row.payload_json.goalDesignPackage));
 }
 
 export async function reviseGoalSlicePg(
@@ -1299,7 +1339,7 @@ export async function reviseGoalDesignFromChatPg(
     onDelta?: (text: string) => void;
   },
 ): Promise<GoalDesignChatRevisionResult> {
-  const current = await loadCurrentGoalDesignPackagePg(context.db, input.draftId);
+  const current = await loadGoalDesignPackageForChatRevisionPg(context.db, input.draftId);
   if (current.packageHash !== input.expectedPackageHash) {
     throw new Error(`goal_design_package_stale: ${input.draftId}`);
   }
@@ -1396,7 +1436,7 @@ async function persistValidatedGoalDesignRevisionPg(
     buildNext: (current: GoalDesignPackage) => GoalDesignPackage;
   },
 ): Promise<GoalDesignPackage> {
-  return await db.tx(async (tx) => {
+  const transactionResult: CanonicalDraftTransactionResult<GoalDesignPackage> = await db.tx(async (tx) => {
     const draft = await tx.one<PlannerDraftResourceRow>(
       `select id, resource_key, run_id, task_id, session_id, scope, status, title,
               payload_json, summary_json, metrics_json, expires_at
@@ -1414,13 +1454,18 @@ async function persistValidatedGoalDesignRevisionPg(
       throw new Error(`goal_design_frozen: ${input.draftId}:${phase}`);
     }
     const current = goalDesignPackageFromStored(draft.payload_json.goalDesignPackage);
-    if (!current) throw new Error(`Goal Design package not found: ${input.draftId}`);
+    if (!current || draft.payload_json.goalDesignPackageHash !== current.packageHash) {
+      return {
+        kind: "incompatible",
+        rejection: await persistIncompatibleGoalDesignDraftPg(tx, { draftId: input.draftId }),
+      };
+    }
     if (current.packageHash !== input.expectedPackageHash) {
       throw new Error(`goal_design_package_stale: ${input.draftId}`);
     }
     await assertNoMaterializedGoalDesignRunTx(tx, input.draftId, current.packageHash);
     const next = input.buildNext(current);
-    const issues = validateStoredGoalDesignPackage(next);
+    const issues = validateGoalDesignPackageV2(next);
     if (issues.length > 0) {
       throw new Error(`invalid Goal Design package: ${issues.map((issue) => `${issue.code} at ${issue.path}`).join("; ")}`);
     }
@@ -1462,8 +1507,12 @@ async function persistValidatedGoalDesignRevisionPg(
       metrics: draft.metrics_json,
       ...(draft.expires_at ? { expiresAt: draft.expires_at } : {}),
     });
-    return next;
+    return { kind: "accepted", value: next };
   });
+  if (transactionResult.kind === "incompatible") {
+    throwCanonicalGoalDesignDraftRejection(transactionResult.rejection);
+  }
+  return transactionResult.value;
 }
 
 async function assertNoMaterializedGoalDesignRunTx(
@@ -1953,14 +2002,7 @@ function asRecord(value: unknown): Record<string, unknown> {
 }
 
 function goalDesignPackageFromStored(value: unknown): GoalDesignPackageV2 | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const pkg = value as GoalDesignPackageV2;
-  if (pkg.schemaVersion !== "southstar.goal_design_package.v2") return undefined;
-  return validateStoredGoalDesignPackage(pkg).length === 0 ? pkg : undefined;
-}
-
-function validateStoredGoalDesignPackage(pkg: GoalDesignPackageV2) {
-  return validateGoalDesignPackageV2(pkg);
+  return goalDesignPackageV2FromUnknown(value);
 }
 
 type SliceDesignSource = {

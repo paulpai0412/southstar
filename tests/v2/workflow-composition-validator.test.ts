@@ -10,9 +10,7 @@ import {
 } from "../../src/v2/orchestration/goal-requirement-coverage.ts";
 import { requirementSpecFromGoalContract, type GoalContractV1 } from "../../src/v2/orchestration/goal-contract.ts";
 import {
-  finalizeGoalDesignPackage,
   finalizeGoalDesignPackageV2,
-  type GoalDesignPackageV1,
 } from "../../src/v2/orchestration/goal-design.ts";
 import { classifyWorkflowCompositionTask } from "../../src/v2/orchestration/workflow-node-classifier.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
@@ -78,7 +76,7 @@ test("composer tasks must belong to the authoritative Slice Plan", async () => {
 
     const validation = await validateWorkflowCompositionPlan(db, packet, plan, {
       goalContract,
-      goalDesignPackage: validGoalDesignPackage(goalContract),
+      goalDesignPackage: validGoalDesignPackageV2(goalContract),
     });
 
     assert.equal(validation.ok, false);
@@ -300,6 +298,7 @@ test("coverage maps every blocking requirement to producer and independent evalu
     requirementId: goalContract.requirements[0]!.id,
     producerTaskIds: ["task-build-article"],
     artifactRefs: ["artifact.article_html"],
+    artifactContractRefs: [],
     evaluatorTaskIds: ["task-verify-article"],
     evaluatorProfileRefs: ["evaluator.article-browser-quality"],
     evaluatorProfileVersionRefs: [],
@@ -677,51 +676,6 @@ function validComposition(goalContract = softwareGoalContract()): WorkflowCompos
     rejectedCandidates: [],
     generatedComponentProposals: [],
   };
-}
-
-function validGoalDesignPackage(goalContract: GoalContractV1): GoalDesignPackageV1 {
-  const requirementIds = goalContract.requirements.map((requirement) => requirement.id);
-  const artifactRefs = goalContract.expectedArtifactRefs;
-  return finalizeGoalDesignPackage({
-    schemaVersion: "southstar.goal_design_package.v1",
-    revision: 1,
-    goalContract,
-    evaluatorContracts: goalContract.requirements.map((requirement, index) => ({
-      schemaVersion: "southstar.requirement_evaluator_contract.v1",
-      id: `eval-${index + 1}`,
-      requirementId: requirement.id,
-      acceptanceCriteria: requirement.acceptanceCriteria,
-      requiredEvidenceKinds: ["test_result"],
-      independence: "independent",
-      failureClassifications: ["implementation_gap"],
-    })),
-    slicePlan: {
-      schemaVersion: "southstar.goal_slice_plan.v1",
-      goalContractHash: "host-filled",
-      revision: 1,
-      slices: [{
-        id: "slice-main",
-        requirementIds,
-        outcome: goalContract.summary,
-        stateOrArtifactOwner: artifactRefs[0] ?? "artifact.outcome",
-        mutationBoundary: "single cohesive test fixture boundary",
-        expectedArtifactRefs: artifactRefs,
-        evaluatorContractRefs: goalContract.requirements.map((_, index) => `eval-${index + 1}`),
-        dependsOnSliceIds: [],
-        dependencyArtifactRefs: [],
-      }],
-    },
-    compositionStrategy: {
-      mode: "single-run",
-      sliceIds: ["slice-main"],
-      rationale: "single test fixture slice",
-    },
-    templatePolicy: { mode: "auto" },
-    goalDesignSkillRef: "skill.southstar-goal-design",
-    goalDesignSkillVersionRef: "skill.southstar-goal-design@test",
-    workspaceDiscoveryHash: "workspace-discovery-test",
-    mode: "review_before_compose",
-  });
 }
 
 function validGoalDesignPackageV2(goalContract: GoalContractV1) {

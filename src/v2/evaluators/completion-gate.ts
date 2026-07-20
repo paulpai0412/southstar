@@ -1,11 +1,22 @@
 import { createHash } from "node:crypto";
+import {
+  CANONICAL_DIAGNOSTIC_CODES,
+  canonicalDiagnostic,
+  canonicalDiagnosticCode,
+  type CanonicalDiagnostic,
+} from "../canonical-diagnostics.ts";
 import type { SouthstarDb } from "../db/postgres.ts";
 import { ARTIFACT_REF_RESOURCE_TYPE } from "../artifacts/types.ts";
-import { listUnresolvedRuntimeExceptionsPg } from "../exceptions/postgres-runtime-exceptions.ts";
+import {
+  listUnresolvedRuntimeExceptionsPg,
+  recordRuntimeExceptionInTxPg,
+} from "../exceptions/postgres-runtime-exceptions.ts";
 import {
   acceptedProducerArtifactRefsPg,
   loadFrozenCoverageContextPg,
+  frozenCoverageUnavailableDiagnosticPg,
   normalizeRequirementEvidenceRef,
+  requirementEvaluatorResultIncompatibility,
   type FrozenCoverageContext,
 } from "./requirement-evaluator-results.ts";
 import {
@@ -62,12 +73,39 @@ export async function evaluateRunCompletionGatePg(
     )).rows;
     const acceptedArtifactTaskIds = new Set(artifacts.map((row) => row.task_id));
     const supersededTaskIds = await supersededDynamicRepairTaskIdsPg(tx, input.runId, acceptedArtifactTaskIds);
+    const evaluatorRows = (await tx.query<EvaluatorRow>(
+      `select task_id, resource_key, status, payload_json
+         from southstar.runtime_resources
+        where run_id = $1 and resource_type = 'requirement_evaluator_result'
+        order by created_at, resource_key`,
+      [input.runId],
+    )).rows;
     const coverageContext = await loadFrozenCoverageContextPg(tx, input.runId);
+    const unavailableDiagnostic = coverageContext
+      ? undefined
+      : await frozenCoverageUnavailableDiagnosticPg(tx, input.runId);
     const evaluation = coverageContext
-      ? await evaluateCoveragePg(tx, input.runId, coverageContext)
-      : evaluateLegacyTasks(tasks, acceptedArtifactTaskIds, supersededTaskIds);
+      ? await evaluateCoveragePg(tx, input.runId, coverageContext, evaluatorRows)
+      : { coveredRequirementIds: [], failedRequirementIds: [], findings: [], diagnostics: [], totalBlockingRequirements: 0 };
 
-    const criticalFindings: string[] = [];
+    const diagnostics: CanonicalDiagnostic[] = [
+      ...(!coverageContext
+        ? [unavailableDiagnostic ?? canonicalDiagnostic(
+          CANONICAL_DIAGNOSTIC_CODES.goalRequirementCoverageMissing,
+          `run ${input.runId} has no frozen goal requirement coverage`,
+        )]
+        : evaluation.diagnostics),
+      ...evaluatorRows.flatMap((row) => {
+        const diagnostic = requirementEvaluatorResultIncompatibility({
+          resourceKey: row.resource_key,
+          payload: row.payload_json,
+        });
+        return diagnostic ? [diagnostic] : [];
+      }),
+    ];
+    await persistCanonicalCompletionDiagnosticsPg(tx, input.runId, diagnostics);
+
+    const criticalFindings: string[] = diagnostics.map((diagnostic) => diagnostic.message);
     const blockingViolations = (await tx.query<{ id: string }>(
       `select id from southstar.runtime_resources
         where run_id = $1 and resource_type = 'tool_proxy_violation' and status = 'blocking'
@@ -80,6 +118,12 @@ export async function evaluateRunCompletionGatePg(
     for (const exception of unresolvedExceptions) {
       if (exception.taskId && supersededTaskIds.has(exception.taskId)) continue;
       if (!CRITICAL_EXCEPTION_SEVERITIES.has(exception.payload.severity)) continue;
+      const providerEvidence = asRecord(exception.payload.providerEvidence);
+      if (canonicalDiagnosticCode(providerEvidence.code)) {
+        const message = stringValue(providerEvidence.message);
+        if (message && !criticalFindings.includes(message)) criticalFindings.push(message);
+        continue;
+      }
       criticalFindings.push(`unresolved critical runtime exception ${exception.resourceKey}: ${exception.payload.kind}`);
     }
 
@@ -144,14 +188,14 @@ async function evaluateCoveragePg(
   db: SouthstarDb,
   runId: string,
   context: FrozenCoverageContext,
-): Promise<{ coveredRequirementIds: string[]; failedRequirementIds: string[]; findings: string[]; totalBlockingRequirements: number }> {
-  const results = (await db.query<EvaluatorRow>(
-    `select task_id, resource_key, status, payload_json
-       from southstar.runtime_resources
-      where run_id = $1 and resource_type = 'requirement_evaluator_result'
-      order by created_at, resource_key`,
-    [runId],
-  )).rows;
+  results: EvaluatorRow[],
+): Promise<{
+  coveredRequirementIds: string[];
+  failedRequirementIds: string[];
+  findings: string[];
+  diagnostics: CanonicalDiagnostic[];
+  totalBlockingRequirements: number;
+}> {
   const completeEvidenceRefs = new Set((await db.query<{ resource_key: string }>(
     `select resource_key
        from southstar.runtime_resources
@@ -162,6 +206,7 @@ async function evaluateCoveragePg(
   const coveredRequirementIds: string[] = [];
   const failedRequirementIds: string[] = [];
   const findings: string[] = [];
+  const diagnostics: CanonicalDiagnostic[] = [];
   const entries = new Map(context.coverage.entries.map((entry) => [entry.requirementId, entry]));
   const blockingRequirements = context.goalContract.requirements.filter((requirement) => requirement.blocking);
 
@@ -170,6 +215,14 @@ async function evaluateCoveragePg(
     if (!entry) {
       failedRequirementIds.push(requirement.id);
       findings.push(`blocking requirement ${requirement.id} is missing frozen coverage`);
+      continue;
+    }
+    if (entry.criterionIds.length === 0) {
+      failedRequirementIds.push(requirement.id);
+      diagnostics.push(canonicalDiagnostic(
+        CANONICAL_DIAGNOSTIC_CODES.criterionCoverageRequired,
+        `requirement ${requirement.id} has no frozen criterion coverage`,
+      ));
       continue;
     }
     const producerTaskIds = new Set(entry.producerTaskIds);
@@ -189,10 +242,6 @@ async function evaluateCoveragePg(
           && evaluatorProfiles.has(normalizeRequirementEvidenceRef(stringValue(payload.evaluatorProfileRef) ?? "", "evaluator"))
           && stringArray(payload.artifactRefs).some((ref) => acceptedRefSet.has(ref));
         if (!identityMatches) return false;
-        if (entry.criterionIds.length === 0) {
-          return payload.schemaVersion === "southstar.requirement_evaluator_result.v1"
-            && stringArray(payload.requirementIds).includes(requirement.id);
-        }
         if (
           payload.schemaVersion !== "southstar.requirement_evaluator_result.v2"
           || payload.requirementId !== requirement.id
@@ -214,32 +263,58 @@ async function evaluateCoveragePg(
     if (passed) coveredRequirementIds.push(requirement.id);
     else {
       failedRequirementIds.push(requirement.id);
-      findings.push(entry.criterionIds.length > 0
-        ? `blocking requirement ${requirement.id} lacks complete passed criterion evidence from the frozen evaluator version`
-        : `blocking requirement ${requirement.id} lacks accepted producer artifact and independent passed evaluator evidence`);
+      findings.push(`blocking requirement ${requirement.id} lacks complete passed criterion evidence from the frozen evaluator version`);
     }
   }
   return {
     coveredRequirementIds: coveredRequirementIds.sort(),
     failedRequirementIds: failedRequirementIds.sort(),
     findings,
+    diagnostics,
     totalBlockingRequirements: blockingRequirements.length,
   };
 }
 
-function evaluateLegacyTasks(
-  tasks: Array<{ id: string; status: string }>,
-  acceptedArtifactTaskIds: Set<string>,
-  supersededTaskIds: Set<string>,
-): { coveredRequirementIds: string[]; failedRequirementIds: string[]; findings: string[]; totalBlockingRequirements: number } {
-  const findings: string[] = [];
-  for (const task of tasks) {
-    if (supersededTaskIds.has(task.id)) continue;
-    if (task.status === "completed") {
-      if (!acceptedArtifactTaskIds.has(task.id)) findings.push(`missing accepted artifact_ref for task ${task.id}`);
-    } else findings.push(`task ${task.id} terminal status is ${task.status}`);
+async function persistCanonicalCompletionDiagnosticsPg(
+  db: SouthstarDb,
+  runId: string,
+  diagnostics: CanonicalDiagnostic[],
+): Promise<void> {
+  const grouped = new Map<string, CanonicalDiagnostic[]>();
+  for (const diagnostic of diagnostics) {
+    const rows = grouped.get(diagnostic.code) ?? [];
+    rows.push(diagnostic);
+    grouped.set(diagnostic.code, rows);
   }
-  return { coveredRequirementIds: [], failedRequirementIds: [], findings, totalBlockingRequirements: 0 };
+  for (const [code, rows] of grouped) {
+    const existing = await db.maybeOne<{ id: string }>(
+      `select id
+         from southstar.runtime_resources
+        where run_id = $1
+          and resource_type = 'runtime_exception'
+          and status in ('observed', 'blocked')
+          and payload_json->'providerEvidence'->>'code' = $2
+        limit 1`,
+      [runId, code],
+    );
+    if (existing) continue;
+    await recordRuntimeExceptionInTxPg(db, {
+      runId,
+      source: "completion-gate",
+      kind: code === CANONICAL_DIAGNOSTIC_CODES.requirementEvaluatorResultIncompatible
+        ? "callback_contract_violation"
+        : "validation_failed",
+      severity: "blocking",
+      status: "blocked",
+      observedAt: new Date().toISOString(),
+      evidenceRefs: rows.map((row) => row.message),
+      providerEvidence: {
+        code,
+        message: rows[0]!.message,
+        diagnostics: rows,
+      },
+    });
+  }
 }
 
 function notReady(runId: string, finding: string): CompletionGateResult {

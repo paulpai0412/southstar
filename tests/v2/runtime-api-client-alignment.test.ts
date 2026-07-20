@@ -5,6 +5,7 @@ import { handleRuntimeRoute } from "../../src/v2/server/routes.ts";
 import { goalContractHash, type GoalContractV1 } from "../../src/v2/orchestration/goal-contract.ts";
 import { createWorkflowRunPg, createWorkflowTaskPg, upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
+import { canonicalGoalDesignPackageFixture } from "./fixtures/goal-design.ts";
 
 test("runtime server client exposes P0 runtime API methods", () => {
   const client = createRuntimeServerClient({ baseUrl: "http://127.0.0.1/" });
@@ -106,6 +107,7 @@ test("runtime route patches planner draft task profile override", async () => {
       requestedSideEffects: [],
     };
     goalContract.promptHash = goalContractHash(goalContract);
+    const goalDesignPackage = canonicalGoalDesignPackageFixture(goalContract);
     await upsertRuntimeResourcePg(db, {
       resourceType: "planner_draft",
       resourceKey: draftId,
@@ -114,6 +116,8 @@ test("runtime route patches planner draft task profile override", async () => {
       payload: {
         goalContract,
         goalContractHash: goalContract.promptHash,
+        goalDesignPackage,
+        goalDesignPackageHash: goalDesignPackage.packageHash,
         workflow: {
           workflowId: "wf-profile-override-route",
           tasks: [{ id: "task-build", name: "Build", dependsOn: [], skillRefs: [] }],
@@ -123,6 +127,7 @@ test("runtime route patches planner draft task profile override", async () => {
         goalPrompt: "profile override route",
         workflowId: "wf-profile-override-route",
         goalContractHash: goalContract.promptHash,
+        goalDesignPackageHash: goalDesignPackage.packageHash,
       },
     });
 

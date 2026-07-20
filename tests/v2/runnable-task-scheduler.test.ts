@@ -35,6 +35,10 @@ import {
   upsertRuntimeResourcePg,
 } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createTestPostgresDb, initSouthstarSchema } from "./postgres-test-utils.ts";
+import {
+  canonicalNonBlockingGoalDesignLineageFixture,
+  persistCanonicalGoalDesignLineageFixture,
+} from "./fixtures/goal-design.ts";
 
 test("runnable scheduler dispatches a dependent pending task when dependencies have accepted artifacts", async () => {
   const db = await createTestPostgresDb();
@@ -706,7 +710,9 @@ test("runnable scheduler ignores a provider rejection after a fast callback comp
     const bindings = await listManagedBindingsForRunPg(db, runId);
     assert.equal(bindings.brainBindings[0]?.status, "succeeded");
     assert.equal(bindings.handBindings[0]?.status, "succeeded");
-    assert.equal((await listResourcesPg(db, { resourceType: "runtime_exception" })).filter((resource) => resource.runId === runId).length, 0);
+    const runtimeExceptions = (await listResourcesPg(db, { resourceType: "runtime_exception" }))
+      .filter((resource) => resource.runId === runId);
+    assert.equal(runtimeExceptions.length, 0);
     assert.equal((await listResourcesPg(db, { resourceType: "recovery_decision" })).filter((resource) => resource.runId === runId).length, 0);
   } finally {
     await db.close();
@@ -736,7 +742,9 @@ test("runnable scheduler ignores a provider throw after a fast callback complete
     const bindings = await listManagedBindingsForRunPg(db, runId);
     assert.equal(bindings.brainBindings[0]?.status, "succeeded");
     assert.equal(bindings.handBindings[0]?.status, "succeeded");
-    assert.equal((await listResourcesPg(db, { resourceType: "runtime_exception" })).filter((resource) => resource.runId === runId).length, 0);
+    const runtimeExceptions = (await listResourcesPg(db, { resourceType: "runtime_exception" }))
+      .filter((resource) => resource.runId === runId);
+    assert.equal(runtimeExceptions.length, 0);
     assert.equal((await listResourcesPg(db, { resourceType: "recovery_decision" })).filter((resource) => resource.runId === runId).length, 0);
   } finally {
     await db.close();
@@ -951,16 +959,22 @@ async function seedRun(
   await seedSoftwareLibraryGraph(db);
   const role = makerRole();
   const agentProfile = makerAgentProfile();
+  const goalPrompt = "schedule runnable tasks";
+  const lineage = canonicalNonBlockingGoalDesignLineageFixture(
+    input.runId,
+    goalPrompt,
+    typeof input.runtimeContextJson?.cwd === "string" ? input.runtimeContextJson.cwd : undefined,
+  );
   await createWorkflowRunPg(db, {
     id: input.runId,
     status: "running",
     domain: "software",
-    goalPrompt: "schedule runnable tasks",
+    goalPrompt,
     workflowManifestJson: JSON.stringify({
       schemaVersion: "southstar.v2",
       workflowId: input.runId,
       title: "Scheduler fixture",
-      goalPrompt: "schedule runnable tasks",
+      goalPrompt,
       domain: "software",
       intent: "implement_feature",
       roles: [role],
@@ -1031,9 +1045,10 @@ async function seedRun(
     }),
     executionProjectionJson: "{}",
     snapshotJson: "{}",
-    runtimeContextJson: JSON.stringify(input.runtimeContextJson ?? {}),
+    runtimeContextJson: JSON.stringify({ ...(input.runtimeContextJson ?? {}), ...lineage.runtimeContext }),
     metricsJson: "{}",
   });
+  await persistCanonicalGoalDesignLineageFixture(db, input.runId, lineage);
   await captureRunLibrarySnapshotPg(db, {
     runId: input.runId,
     manifestHash: `manifest-${input.runId}`,

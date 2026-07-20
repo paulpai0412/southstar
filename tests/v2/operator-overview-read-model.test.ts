@@ -9,6 +9,7 @@ import { createWorkflowRunPg, createWorkflowTaskPg, upsertRuntimeResourcePg } fr
 import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../../src/v2/ui-api/postgres-run-api.ts";
 import { DeterministicFixtureComposer, seedDeterministicWorkflowGraph } from "./fixtures/deterministic-workflow-composer.ts";
 import { fixedGoalInterpreter } from "./fixtures/goal-contract.ts";
+import { canonicalGoalDesignPackageFixture } from "./fixtures/goal-design.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 
 test("operator overview exposes mission axes and attention for goal approvals uncovered requirements failed requirements and dynamic repair approval", async () => {
@@ -40,8 +41,10 @@ test("operator overview exposes mission axes and attention for goal approvals un
       goalPrompt: goalContract.originalPrompt,
       cwd: goalContract.workspace.cwd,
       goalInterpreter: fixedGoalInterpreter(goalContract),
+      goalDesignPackage: canonicalGoalDesignPackageFixture(goalContract),
       composer: new DeterministicFixtureComposer(),
     });
+    assert.equal(draft.status, "validated", JSON.stringify(draft, null, 2));
     const run = await createPostgresRunFromDraft(db, { draftId: draft.draftId });
     const [blockingRequirement, optionalRequirement] = goalContract.requirements;
     await db.query(
@@ -128,6 +131,7 @@ test("operator overview mission query count stays bounded as run count grows", a
       goalPrompt: goalContract.originalPrompt,
       cwd: goalContract.workspace.cwd,
       goalInterpreter: fixedGoalInterpreter(goalContract),
+      goalDesignPackage: canonicalGoalDesignPackageFixture(goalContract),
       composer: new DeterministicFixtureComposer(),
     });
     const runIds: string[] = [];

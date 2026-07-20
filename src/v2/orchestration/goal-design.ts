@@ -29,16 +29,6 @@ export type WorkflowTemplatePolicyV1 =
   | { mode: "auto" }
   | { mode: "prefer" | "require"; templateRef: string; versionRef: string };
 
-export type RequirementEvaluatorContractV1 = {
-  schemaVersion: "southstar.requirement_evaluator_contract.v1";
-  id: string;
-  requirementId: string;
-  acceptanceCriteria: string[];
-  requiredEvidenceKinds: string[];
-  independence: "independent";
-  failureClassifications: string[];
-};
-
 export type GoalSliceV1 = {
   id: string;
   requirementIds: string[];
@@ -62,25 +52,6 @@ export type GoalSlicePlanV1 = {
 export type CompositionStrategyV1 =
   | { mode: "single-run"; sliceIds: string[]; rationale: string }
   | { mode: "per-slice-runs"; sliceIds: string[]; rationale: string };
-
-export type GoalDesignPackageV1 = {
-  schemaVersion: "southstar.goal_design_package.v1";
-  revision: number;
-  parentRevision?: number;
-  goalContract: GoalContractV1;
-  evaluatorContracts: RequirementEvaluatorContractV1[];
-  slicePlan: GoalSlicePlanV1;
-  compositionStrategy: CompositionStrategyV1;
-  templatePolicy: WorkflowTemplatePolicyV1;
-  goalContractHash: string;
-  evaluatorContractsHash: string;
-  slicePlanHash: string;
-  packageHash: string;
-  goalDesignSkillRef: string;
-  goalDesignSkillVersionRef: string;
-  workspaceDiscoveryHash: string;
-  mode: GoalDesignMode;
-};
 
 export type GoalDesignPackageV2 = {
   schemaVersion: "southstar.goal_design_package.v2";
@@ -145,46 +116,16 @@ export type GoalSliceDesigner = {
   }): Promise<GoalSliceDesignRevisionProposal>;
 };
 
-export type GoalDesignSteeringProposalV1 =
-  | {
-      kind: "revision";
-      package: GoalDesignPackageV1;
-      summary: string;
-      changedSliceIds: string[];
-    }
-  | {
-      kind: "needs_input";
-      question: string;
-    };
-
-export type GoalDesigner = {
-  design(input: {
-    goalContract: GoalContractV1;
-    workspaceDiscovery: WorkspaceGoalDiscoveryV1;
-    mode: GoalDesignMode;
-    templatePolicy: WorkflowTemplatePolicyV1;
-    skill: ResolvedGoalDesignSkillV1;
-  }): Promise<GoalDesignPackageV1>;
-  revise(input: {
-    currentPackage: GoalDesignPackageV1;
-    message: string;
-    selectedSliceId?: string;
-  }): Promise<GoalDesignSteeringProposalV1>;
-};
-
 export type GoalDesignValidationIssue = {
   code:
     | "invalid_schema_version"
     | "goal_contract_hash_mismatch"
-    | "evaluator_contracts_hash_mismatch"
     | "slice_plan_hash_mismatch"
     | "package_hash_mismatch"
-    | "duplicate_evaluator_id"
-    | "unknown_evaluator_requirement"
-    | "evaluator_criteria_mismatch"
     | "duplicate_slice_id"
     | "unknown_slice_requirement"
     | "requirement_owner_count"
+    | "unknown_evaluator_requirement"
     | "unknown_evaluator_ref"
     | "unknown_dependency_slice"
     | "dependency_without_artifact_flow"
@@ -202,16 +143,6 @@ export type GoalDesignValidationIssue = {
     | "slice_missing_validation_binding";
   path: string;
   message: string;
-};
-
-type DesignGoalWithLlmInput = {
-  goalContract: GoalContractV1;
-  workspaceDiscovery: WorkspaceGoalDiscoveryV1;
-  mode: GoalDesignMode;
-  templatePolicy: WorkflowTemplatePolicyV1;
-  skill?: ResolvedGoalDesignSkillV1;
-  client: LlmTextClient;
-  model: string;
 };
 
 type DesignGoalSlicesWithLlmInput = {
@@ -233,28 +164,6 @@ type ReviseGoalSlicesWithLlmInput = Omit<DesignGoalSlicesWithLlmInput, "onDelta"
   selectedSliceId?: string;
   onDelta?: (text: string) => void;
 };
-
-type LlmGoalDesignPayload = {
-  evaluatorContracts: Array<Omit<RequirementEvaluatorContractV1, "schemaVersion"> & { schemaVersion?: string }>;
-  slicePlan: { revision: number; slices: GoalSliceV1[] };
-  compositionStrategy: CompositionStrategyV1;
-};
-
-type LlmGoalDesignRevisionPayload =
-  | {
-      kind: "revision";
-      package: {
-        evaluatorContracts: Array<Omit<RequirementEvaluatorContractV1, "schemaVersion"> & { schemaVersion?: string }>;
-        slicePlan: { slices: GoalSliceV1[] };
-        compositionStrategy: CompositionStrategyV1;
-      };
-      summary: string;
-      changedSliceIds: string[];
-    }
-  | {
-      kind: "needs_input";
-      question: string;
-    };
 
 type LlmGoalSlicePayload = {
   slicePlan: { slices: GoalSliceV1[] };
@@ -294,58 +203,6 @@ export async function loadGoalDesignSkillPg(db: SouthstarDb): Promise<ResolvedGo
     stateHash: contentHashForPayload(skill.state),
     body,
   };
-}
-
-export async function designGoalWithLlm(
-  db: SouthstarDb,
-  input: DesignGoalWithLlmInput,
-): Promise<{ package: GoalDesignPackageV1; skill: ResolvedGoalDesignSkillV1 }> {
-  const skill = input.skill ?? await loadGoalDesignSkillPg(db);
-  const basePrompt = renderDesignPrompt({ ...input, skill });
-  let prompt = basePrompt;
-  for (let attempt = 1; attempt <= MAX_DESIGN_ATTEMPTS; attempt += 1) {
-    const response = await input.client.generateText({
-      model: input.model,
-      prompt,
-      temperature: 0,
-      cwd: input.goalContract.workspace.cwd,
-    });
-    try {
-      const payload = parseGoalDesignPayload(response);
-      const pkg = finalizeGoalDesignPackage({
-        schemaVersion: "southstar.goal_design_package.v1",
-        revision: payload.slicePlan.revision,
-        goalContract: input.goalContract,
-        evaluatorContracts: payload.evaluatorContracts.map((contract) => ({
-          ...contract,
-          schemaVersion: "southstar.requirement_evaluator_contract.v1",
-        })),
-        slicePlan: {
-          schemaVersion: "southstar.goal_slice_plan.v1",
-          goalContractHash: "host-filled",
-          revision: payload.slicePlan.revision,
-          slices: payload.slicePlan.slices,
-        },
-        compositionStrategy: payload.compositionStrategy,
-        templatePolicy: input.templatePolicy,
-        goalDesignSkillRef: skill.objectKey,
-        goalDesignSkillVersionRef: skill.versionRef,
-        workspaceDiscoveryHash: input.workspaceDiscovery.discoveryHash,
-        mode: input.mode,
-      });
-      return { package: pkg, skill };
-    } catch (error) {
-      if (attempt === MAX_DESIGN_ATTEMPTS) throw error;
-      prompt = [
-        basePrompt,
-        "",
-        `The previous response was invalid: ${error instanceof Error ? error.message : String(error)}`,
-        "Return one corrected JSON object only.",
-        `PreviousResponse: ${response.slice(0, MAX_DESIGN_RESPONSE_CHARS)}`,
-      ].join("\n");
-    }
-  }
-  throw new Error("Goal Design exhausted attempts");
 }
 
 export async function designGoalSlicesWithLlm(
@@ -478,116 +335,6 @@ export function createLlmGoalSliceDesigner(input: {
   };
 }
 
-export function createLlmGoalDesigner(
-  db: SouthstarDb,
-  input: { client: LlmTextClient; model: string },
-): GoalDesigner {
-  return {
-    async design(designInput) {
-      return (await designGoalWithLlm(db, {
-        goalContract: designInput.goalContract,
-        workspaceDiscovery: designInput.workspaceDiscovery,
-        mode: designInput.mode,
-        templatePolicy: designInput.templatePolicy,
-        skill: designInput.skill,
-        client: input.client,
-        model: input.model,
-      })).package;
-    },
-    async revise(revisionInput) {
-      const skill = await loadGoalDesignSkillPg(db);
-      if (
-        skill.objectKey !== revisionInput.currentPackage.goalDesignSkillRef
-        || skill.versionRef !== revisionInput.currentPackage.goalDesignSkillVersionRef
-      ) {
-        throw new Error("Goal Design skill version no longer matches the reviewed package");
-      }
-      const prompt = renderRevisionPrompt({
-        skill,
-        currentPackage: revisionInput.currentPackage,
-        message: revisionInput.message,
-        selectedSliceId: revisionInput.selectedSliceId,
-      });
-      const response = await input.client.generateText({
-        model: input.model,
-        prompt,
-        temperature: 0,
-        cwd: revisionInput.currentPackage.goalContract.workspace.cwd,
-      });
-      const payload = parseGoalDesignRevisionPayload(response);
-      if (payload.kind === "needs_input") return payload;
-      const current = revisionInput.currentPackage;
-      const nextRevision = current.revision + 1;
-      return {
-        kind: "revision",
-        summary: payload.summary,
-        changedSliceIds: payload.changedSliceIds,
-        package: finalizeGoalDesignPackage({
-          schemaVersion: "southstar.goal_design_package.v1",
-          revision: nextRevision,
-          parentRevision: current.revision,
-          goalContract: current.goalContract,
-          evaluatorContracts: payload.package.evaluatorContracts.map((contract) => ({
-            ...contract,
-            schemaVersion: "southstar.requirement_evaluator_contract.v1",
-          })),
-          slicePlan: {
-            schemaVersion: "southstar.goal_slice_plan.v1",
-            goalContractHash: "host-filled",
-            revision: nextRevision,
-            slices: payload.package.slicePlan.slices,
-          },
-          compositionStrategy: payload.package.compositionStrategy,
-          templatePolicy: current.templatePolicy,
-          goalDesignSkillRef: current.goalDesignSkillRef,
-          goalDesignSkillVersionRef: current.goalDesignSkillVersionRef,
-          workspaceDiscoveryHash: current.workspaceDiscoveryHash,
-          mode: current.mode,
-        }),
-      };
-    },
-  };
-}
-
-export function finalizeGoalDesignPackage(
-  input: Omit<GoalDesignPackageV1,
-    | "goalContractHash"
-    | "evaluatorContractsHash"
-    | "slicePlanHash"
-    | "packageHash"
-  >,
-): GoalDesignPackageV1 {
-  const goalHash = goalContractHash(input.goalContract);
-  const evaluatorContractsHash = contentHashForPayload(input.evaluatorContracts);
-  const slicePlan: GoalSlicePlanV1 = {
-    ...input.slicePlan,
-    schemaVersion: "southstar.goal_slice_plan.v1",
-    goalContractHash: goalHash,
-  };
-  const slicePlanHash = contentHashForPayload(slicePlan);
-  const withoutPackageHash = {
-    ...input,
-    goalContractHash: goalHash,
-    evaluatorContractsHash,
-    slicePlan,
-    slicePlanHash,
-  };
-  const pkg: GoalDesignPackageV1 = {
-    ...withoutPackageHash,
-    packageHash: contentHashForPayload(withoutPackageHash),
-  };
-  const issues = validateGoalDesignPackage(pkg);
-  if (issues.length > 0) {
-    throw new Error(`invalid Goal Design package: ${issues.map((issue) => `${issue.code} at ${issue.path}`).join("; ")}`);
-  }
-  return pkg;
-}
-
-export function goalDesignPackageHash(pkg: GoalDesignPackageV1): string {
-  const { packageHash: _packageHash, ...withoutPackageHash } = pkg;
-  return contentHashForPayload(withoutPackageHash);
-}
-
 export function finalizeGoalDesignPackageV2(
   input: Omit<GoalDesignPackageV2,
     | "goalContractHash"
@@ -627,34 +374,6 @@ export function goalDesignPackageV2Hash(pkg: GoalDesignPackageV2): string {
   return contentHashForPayload(withoutPackageHash);
 }
 
-export function validateGoalDesignPackage(pkg: GoalDesignPackageV1): GoalDesignValidationIssue[] {
-  const issues: GoalDesignValidationIssue[] = [];
-  if (pkg.schemaVersion !== "southstar.goal_design_package.v1") {
-    issues.push(issue("invalid_schema_version", "schemaVersion", "schemaVersion must be southstar.goal_design_package.v1"));
-  }
-  const expectedGoalHash = goalContractHash(pkg.goalContract);
-  if (pkg.goalContractHash !== expectedGoalHash || pkg.slicePlan.goalContractHash !== expectedGoalHash) {
-    issues.push(issue("goal_contract_hash_mismatch", "goalContractHash", "goal contract hashes must match package goalContract"));
-  }
-  if (pkg.evaluatorContractsHash !== contentHashForPayload(pkg.evaluatorContracts)) {
-    issues.push(issue("evaluator_contracts_hash_mismatch", "evaluatorContractsHash", "evaluator contract hash is not canonical"));
-  }
-  if (pkg.slicePlanHash !== contentHashForPayload(pkg.slicePlan)) {
-    issues.push(issue("slice_plan_hash_mismatch", "slicePlanHash", "slice plan hash is not canonical"));
-  }
-  if (pkg.packageHash !== goalDesignPackageHash(pkg)) {
-    issues.push(issue("package_hash_mismatch", "packageHash", "package hash is not canonical"));
-  }
-  if (pkg.mode !== "review_before_compose" && pkg.mode !== "auto_until_blocked") {
-    issues.push(issue("invalid_mode", "mode", "mode is not supported"));
-  }
-  validateTemplatePolicy(pkg.templatePolicy, issues);
-  validateEvaluatorContracts(pkg, issues);
-  validateSlices(pkg, issues);
-  validateStrategy(pkg, issues);
-  return issues;
-}
-
 export function validateGoalDesignPackageV2(pkg: GoalDesignPackageV2): GoalDesignValidationIssue[] {
   const issues: GoalDesignValidationIssue[] = [];
   if (pkg.schemaVersion !== "southstar.goal_design_package.v2") {
@@ -686,79 +405,15 @@ export function validateGoalDesignPackageV2(pkg: GoalDesignPackageV2): GoalDesig
   return issues;
 }
 
-function goalDesignOutputSchemaPrompt(goalContract: GoalContractV1): string {
-  return [
-    "GoalDesignOutputSchema:",
-    "{",
-    "  evaluatorContracts: [{",
-    "    id: string,",
-    "    requirementId: string,",
-    "    acceptanceCriteria: string[],",
-    "    requiredEvidenceKinds: string[],",
-    "    independence: \"independent\",",
-    "    failureClassifications: string[]",
-    "  }],",
-    "  slicePlan: {",
-    "    revision: integer,",
-    "    slices: [{",
-    "      id: string,",
-    "      requirementIds: string[],",
-    "      outcome: string,",
-    "      stateOrArtifactOwner: string,",
-    "      mutationBoundary: string,",
-    "      expectedArtifactRefs: string[],",
-    "      evaluatorContractRefs: string[],",
-    "      dependsOnSliceIds: string[],",
-    "      dependencyArtifactRefs: string[],",
-    "      mergeReason?: string",
-    "    }]",
-    "  },",
-    "  compositionStrategy: {",
-    "    mode: \"single-run\" | \"per-slice-runs\",",
-    "    sliceIds: string[],",
-    "    rationale: string",
-    "  }",
-    "}",
-    `AllowedRequirementIds: ${JSON.stringify(goalContract.requirements.map((requirement) => requirement.id))}`,
-    `AllowedGoalArtifactRefs: ${JSON.stringify(goalContract.expectedArtifactRefs)}`,
-    "compositionStrategy.mode: \"single-run\" | \"per-slice-runs\"",
-    "evaluatorContracts[].requirementId must use AllowedRequirementIds.",
-    "evaluatorContracts[].acceptanceCriteria must include every acceptance criterion from its referenced GoalContract requirement; do not invent unrelated criteria.",
-    "evaluatorContracts[].independence must be \"independent\".",
-    "slicePlan.slices[].requirementIds must use AllowedRequirementIds.",
-    "slicePlan.slices[].expectedArtifactRefs and dependencyArtifactRefs must use AllowedGoalArtifactRefs.",
-    "slicePlan.slices[].evaluatorContractRefs may reference only evaluatorContracts[].id declared in this response.",
-    "Every blocking requirement in GoalContract must be owned by exactly one slice.",
-    "Only add dependsOnSliceIds when dependencyArtifactRefs consumes an upstream slice artifact.",
-  ].join("\n");
-}
-
-function goalDesignRevisionOutputSchemaPrompt(goalContract: GoalContractV1): string {
-  return [
-    goalDesignOutputSchemaPrompt(goalContract),
-    "RevisionResponseSchema:",
-    "{\"kind\":\"revision\",\"package\":{\"evaluatorContracts\":[],\"slicePlan\":{\"slices\":[]},\"compositionStrategy\":{}},\"summary\":\"string\",\"changedSliceIds\":[\"slice-id\"]}",
-    "NeedsInputResponseSchema:",
-    "{\"kind\":\"needs_input\",\"question\":\"string\"}",
-    "For revision responses, omit slicePlan.revision; the host owns package revision and hashes.",
-  ].join("\n");
-}
-
-function renderDesignPrompt(input: DesignGoalWithLlmInput & { skill: ResolvedGoalDesignSkillV1 }): string {
-  return [
-    "Use the approved Library Goal Design SOP to design this Goal Contract.",
-    `GoalDesignSkillRef: ${input.skill.objectKey}`,
-    `GoalDesignSkillVersionRef: ${input.skill.versionRef}`,
-    input.skill.body,
-    "",
-    "Decompose the Goal Contract into the smallest cohesive outcome slices.",
-    goalDesignOutputSchemaPrompt(input.goalContract),
-    "Return JSON only with exactly evaluatorContracts, slicePlan, and compositionStrategy.",
-    `Mode: ${input.mode}`,
-    `TemplatePolicy: ${JSON.stringify(input.templatePolicy)}`,
-    `WorkspaceDiscovery: ${JSON.stringify(input.workspaceDiscovery)}`,
-    `GoalContract: ${JSON.stringify(input.goalContract)}`,
-  ].join("\n");
+export function goalDesignPackageV2FromUnknown(value: unknown): GoalDesignPackageV2 | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const pkg = value as GoalDesignPackageV2;
+  if (pkg.schemaVersion !== "southstar.goal_design_package.v2") return undefined;
+  try {
+    return validateGoalDesignPackageV2(pkg).length === 0 ? pkg : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function renderSliceDesignPrompt(input: DesignGoalSlicesWithLlmInput): string {
@@ -844,52 +499,6 @@ function renderSliceRevisionPrompt(input: ReviseGoalSlicesWithLlmInput): string 
     `SelectedSliceId: ${input.selectedSliceId ?? ""}`,
     `UserMessage: ${input.message}`,
   ].join("\n");
-}
-
-function renderRevisionPrompt(input: {
-  skill: ResolvedGoalDesignSkillV1;
-  currentPackage: GoalDesignPackageV1;
-  message: string;
-  selectedSliceId?: string;
-}): string {
-  return [
-    "Use the approved Library Goal Design SOP to revise this reviewed Goal Design package.",
-    `GoalDesignSkillRef: ${input.skill.objectKey}`,
-    `GoalDesignSkillVersionRef: ${input.skill.versionRef}`,
-    input.skill.body,
-    "",
-    "Return JSON only.",
-    goalDesignRevisionOutputSchemaPrompt(input.currentPackage.goalContract),
-    "If the request is ambiguous, return {\"kind\":\"needs_input\",\"question\":\"...\"}.",
-    "If the request is actionable, return {\"kind\":\"revision\",\"package\":{\"evaluatorContracts\":[],\"slicePlan\":{\"slices\":[]},\"compositionStrategy\":{}},\"summary\":\"...\",\"changedSliceIds\":[]}.",
-    "The package must contain complete evaluatorContracts, complete slicePlan.slices, and complete compositionStrategy.",
-    "Do not change templatePolicy, goalContract, workspace cwd, mode, skill refs, hashes, package revision, or parent revision; the host owns those fields.",
-    `SelectedSliceId: ${input.selectedSliceId ?? ""}`,
-    `UserMessage: ${input.message}`,
-    `CurrentGoalDesignPackage: ${JSON.stringify(input.currentPackage)}`,
-  ].join("\n");
-}
-
-function parseGoalDesignPayload(text: string): LlmGoalDesignPayload {
-  if (text.length > MAX_DESIGN_RESPONSE_CHARS) throw new Error("Goal Design response is too large");
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text.trim());
-  } catch {
-    throw new Error("Goal Design returned invalid JSON");
-  }
-  const object = record(parsed, "$");
-  exactKeys(object, ["evaluatorContracts", "slicePlan", "compositionStrategy"], "$");
-  const slicePlan = record(object.slicePlan, "slicePlan");
-  const compositionStrategy = record(object.compositionStrategy, "compositionStrategy");
-  return {
-    evaluatorContracts: array(object.evaluatorContracts, "evaluatorContracts").map(parseEvaluatorContract),
-    slicePlan: {
-      revision: integer(slicePlan.revision, "slicePlan.revision"),
-      slices: array(slicePlan.slices, "slicePlan.slices").map(parseSlice),
-    },
-    compositionStrategy: parseCompositionStrategy(compositionStrategy),
-  };
 }
 
 function parseGoalSlicePayload(text: string): LlmGoalSlicePayload {
@@ -1015,52 +624,6 @@ function hostFinalizeSlicePayload(
   };
 }
 
-function parseGoalDesignRevisionPayload(text: string): LlmGoalDesignRevisionPayload {
-  if (text.length > MAX_DESIGN_RESPONSE_CHARS) throw new Error("Goal Design revision response is too large");
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text.trim());
-  } catch {
-    throw new Error("Goal Design revision returned invalid JSON");
-  }
-  const object = record(parsed, "$");
-  const kind = string(object.kind, "kind");
-  if (kind === "needs_input") {
-    exactKeys(object, ["kind", "question"], "$");
-    return { kind, question: string(object.question, "question") };
-  }
-  if (kind !== "revision") throw new Error("Goal Design revision kind must be revision or needs_input");
-  exactKeys(object, ["kind", "package", "summary", "changedSliceIds"], "$");
-  const pkg = record(object.package, "package");
-  exactKeys(pkg, ["evaluatorContracts", "slicePlan", "compositionStrategy"], "package");
-  const slicePlan = record(pkg.slicePlan, "package.slicePlan");
-  exactKeys(slicePlan, ["slices"], "package.slicePlan");
-  return {
-    kind,
-    summary: string(object.summary, "summary"),
-    changedSliceIds: stringArray(object.changedSliceIds, "changedSliceIds"),
-    package: {
-      evaluatorContracts: array(pkg.evaluatorContracts, "package.evaluatorContracts").map(parseEvaluatorContract),
-      slicePlan: {
-        slices: array(slicePlan.slices, "package.slicePlan.slices").map(parseSlice),
-      },
-      compositionStrategy: parseCompositionStrategy(record(pkg.compositionStrategy, "package.compositionStrategy")),
-    },
-  };
-}
-
-function parseEvaluatorContract(value: unknown, index: number): LlmGoalDesignPayload["evaluatorContracts"][number] {
-  const object = record(value, `evaluatorContracts.${index}`);
-  return {
-    id: string(object.id, `evaluatorContracts.${index}.id`),
-    requirementId: string(object.requirementId, `evaluatorContracts.${index}.requirementId`),
-    acceptanceCriteria: stringArray(object.acceptanceCriteria, `evaluatorContracts.${index}.acceptanceCriteria`),
-    requiredEvidenceKinds: stringArray(object.requiredEvidenceKinds, `evaluatorContracts.${index}.requiredEvidenceKinds`),
-    independence: object.independence === "independent" ? "independent" : fail(`evaluatorContracts.${index}.independence must be independent`),
-    failureClassifications: stringArray(object.failureClassifications, `evaluatorContracts.${index}.failureClassifications`),
-  };
-}
-
 function parseSlice(value: unknown, index: number): GoalSliceV1 {
   const object = record(value, `slicePlan.slices.${index}`);
   exactOptionalKeys(object, [
@@ -1110,29 +673,6 @@ function validateTemplatePolicy(policy: WorkflowTemplatePolicyV1, issues: GoalDe
     || !nonEmpty(policy.versionRef)
   ) {
     issues.push(issue("invalid_template_policy", "templatePolicy", "template policy must be auto or pinned prefer/require"));
-  }
-}
-
-function validateEvaluatorContracts(pkg: GoalDesignPackageV1, issues: GoalDesignValidationIssue[]): void {
-  const requirementsById = new Map(pkg.goalContract.requirements.map((requirement) => [requirement.id, requirement]));
-  const evaluatorIds = new Set<string>();
-  for (const [index, evaluator] of pkg.evaluatorContracts.entries()) {
-    if (evaluatorIds.has(evaluator.id)) issues.push(issue("duplicate_evaluator_id", `evaluatorContracts.${index}.id`, `duplicate evaluator id: ${evaluator.id}`));
-    evaluatorIds.add(evaluator.id);
-    const requirement = requirementsById.get(evaluator.requirementId);
-    if (!requirement) {
-      issues.push(issue("unknown_evaluator_requirement", `evaluatorContracts.${index}.requirementId`, `unknown requirement id: ${evaluator.requirementId}`));
-      continue;
-    }
-    const evaluatorCriteria = new Set(evaluator.acceptanceCriteria.map(normalizedCriteria));
-    const missingCriteria = requirement.acceptanceCriteria.filter((criterion) => !evaluatorCriteria.has(normalizedCriteria(criterion)));
-    if (missingCriteria.length > 0) {
-      issues.push(issue(
-        "evaluator_criteria_mismatch",
-        `evaluatorContracts.${index}.acceptanceCriteria`,
-        `evaluator criteria must cover requirement criteria for ${evaluator.requirementId}`,
-      ));
-    }
   }
 }
 
@@ -1220,39 +760,6 @@ function sameStringSet(left: string[], right: string[]): boolean {
     && JSON.stringify(sortedLeft) === JSON.stringify(sortedRight);
 }
 
-function validateSlices(pkg: GoalDesignPackageV1, issues: GoalDesignValidationIssue[]): void {
-  const requirementIds = new Set(pkg.goalContract.requirements.map((requirement) => requirement.id));
-  const blockingRequirementIds = new Set(pkg.goalContract.requirements.filter((requirement) => requirement.blocking).map((requirement) => requirement.id));
-  const evaluatorIds = new Set(pkg.evaluatorContracts.map((evaluator) => evaluator.id));
-  const contractArtifactRefs = new Set(pkg.goalContract.expectedArtifactRefs);
-  const slicesById = new Map<string, GoalSliceV1>();
-  const ownerCounts = new Map<string, number>();
-  for (const [index, slice] of pkg.slicePlan.slices.entries()) {
-    if (slicesById.has(slice.id)) issues.push(issue("duplicate_slice_id", `slicePlan.slices.${index}.id`, `duplicate slice id: ${slice.id}`));
-    slicesById.set(slice.id, slice);
-    for (const requirementId of slice.requirementIds) {
-      if (!requirementIds.has(requirementId)) {
-        issues.push(issue("unknown_slice_requirement", `slicePlan.slices.${index}.requirementIds`, `unknown requirement id: ${requirementId}`));
-      }
-      ownerCounts.set(requirementId, (ownerCounts.get(requirementId) ?? 0) + 1);
-    }
-    for (const evaluatorRef of slice.evaluatorContractRefs) {
-      if (!evaluatorIds.has(evaluatorRef)) issues.push(issue("unknown_evaluator_ref", `slicePlan.slices.${index}.evaluatorContractRefs`, `unknown evaluator ref: ${evaluatorRef}`));
-    }
-    for (const artifactRef of slice.expectedArtifactRefs) {
-      if (!contractArtifactRefs.has(artifactRef)) {
-        issues.push(issue("unknown_dependency_slice", `slicePlan.slices.${index}.expectedArtifactRefs`, `unknown artifact ref: ${artifactRef}`));
-      }
-    }
-  }
-  for (const requirementId of blockingRequirementIds) {
-    if ((ownerCounts.get(requirementId) ?? 0) !== 1) {
-      issues.push(issue("requirement_owner_count", "slicePlan.slices", `blocking requirement must have exactly one owner slice: ${requirementId}`));
-    }
-  }
-  validateSliceDependencies(pkg.slicePlan.slices, slicesById, issues);
-}
-
 function validateSlicesV2(pkg: GoalDesignPackageV2, issues: GoalDesignValidationIssue[]): void {
   const requirementIds = new Set(pkg.goalContract.requirements.map((requirement) => requirement.id));
   const blockingRequirementIds = new Set(pkg.goalContract.requirements
@@ -1338,10 +845,6 @@ function validateSliceDependencies(
     }
   }
   if (hasCycle(slices)) issues.push(issue("slice_dependency_cycle", "slicePlan.slices", "slice dependencies must be acyclic"));
-}
-
-function validateStrategy(pkg: GoalDesignPackageV1, issues: GoalDesignValidationIssue[]): void {
-  validateStrategyShape(pkg.slicePlan.slices, pkg.compositionStrategy, issues);
 }
 
 function validateStrategyShape(

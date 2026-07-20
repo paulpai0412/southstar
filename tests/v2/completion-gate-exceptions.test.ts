@@ -7,12 +7,14 @@ import {
   recordRuntimeExceptionPg,
   resolveRuntimeExceptionPg,
 } from "../../src/v2/exceptions/postgres-runtime-exceptions.ts";
+import { goalContractHash, type GoalContractV1 } from "../../src/v2/orchestration/goal-contract.ts";
 import {
   createWorkflowRunPg,
   createWorkflowTaskPg,
   upsertRuntimeResourcePg,
 } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
+import { canonicalGoalDesignPackageFixture } from "./fixtures/goal-design.ts";
 
 test("completion gate blocks completed runs with unresolved critical runtime exceptions", async () => {
   const db = await createTestPostgresDb();
@@ -75,6 +77,79 @@ test("completion gate passes completed runs after runtime exceptions are resolve
       outcomeStatus: "satisfied",
       findings: [],
     });
+  } finally {
+    await db.close();
+  }
+});
+
+test("completion gate blocks coverage derived from a planner draft without canonical V2 Goal Design lineage", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const runId = "run-gate-missing-v2-goal-design";
+    await seedCompletedRunWithAcceptedArtifactRef(db, runId);
+    await db.query(
+      "update southstar.runtime_resources set payload_json = payload_json - 'goalDesignPackage' where resource_type = 'planner_draft' and resource_key = $1",
+      [`draft-${runId}`],
+    );
+
+    const result = await evaluateRunCompletionGatePg(db, { runId });
+
+    assert.equal(result.outcomeStatus, "blocked");
+    assert.deepEqual(result.findings, [
+      `canonical_goal_design_package_required: planner draft draft-${runId} does not contain a valid southstar.goal_design_package.v2`,
+    ]);
+    const exception = await db.one<{ payload_json: { providerEvidence: { code: string } } }>(
+      "select payload_json from southstar.runtime_resources where resource_type = 'runtime_exception' and run_id = $1",
+      [runId],
+    );
+    assert.equal(exception.payload_json.providerEvidence.code, "canonical_goal_design_package_required");
+  } finally {
+    await db.close();
+  }
+});
+
+test("completion gate blocks when the run's immutable Goal Design package hash drifts", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const runId = "run-gate-stale-v2-goal-design-hash";
+    await seedCompletedRunWithAcceptedArtifactRef(db, runId);
+    await db.query(
+      "update southstar.workflow_runs set runtime_context_json = jsonb_set(runtime_context_json, '{goalDesignPackageHash}', to_jsonb('stale-package-hash'::text)) where id = $1",
+      [runId],
+    );
+
+    const result = await evaluateRunCompletionGatePg(db, { runId });
+
+    assert.equal(result.outcomeStatus, "blocked");
+    assert.deepEqual(result.findings, [
+      `canonical_goal_design_package_invalid: run ${runId} immutable Goal Design package hash does not match planner draft draft-${runId}`,
+    ]);
+  } finally {
+    await db.close();
+  }
+});
+
+test("completion gate persists canonical corruption when the run Goal Contract hash drifts", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const runId = "run-gate-stale-goal-contract-hash";
+    await seedCompletedRunWithAcceptedArtifactRef(db, runId);
+    await db.query(
+      "update southstar.workflow_runs set runtime_context_json = jsonb_set(runtime_context_json, '{goalContractHash}', to_jsonb('stale-contract-hash'::text)) where id = $1",
+      [runId],
+    );
+
+    const result = await evaluateRunCompletionGatePg(db, { runId });
+
+    assert.equal(result.outcomeStatus, "blocked");
+    assert.deepEqual(result.findings, [
+      `canonical_goal_design_package_invalid: run ${runId} Goal Contract hash does not match planner draft draft-${runId}`,
+    ]);
+    const exception = await db.one<{ payload_json: { providerEvidence: { code: string } } }>(
+      "select payload_json from southstar.runtime_resources where resource_type = 'runtime_exception' and run_id = $1",
+      [runId],
+    );
+    assert.equal(exception.payload_json.providerEvidence.code, "canonical_goal_design_package_invalid");
   } finally {
     await db.close();
   }
@@ -219,15 +294,86 @@ test("started recovery execution does not replace logical outcome evidence", asy
 });
 
 async function seedCompletedRunWithAcceptedArtifactRef(db: SouthstarDb, runId: string): Promise<void> {
+  const goalContract: GoalContractV1 = {
+    schemaVersion: "southstar.goal_contract.v1",
+    originalPrompt: "evaluate runtime exceptions",
+    promptHash: `prompt-${runId}`,
+    revision: 1,
+    workspace: { cwd: "/tmp/southstar" },
+    domain: "software",
+    intent: "evaluate",
+    workType: "general",
+    summary: "Evaluate runtime exceptions without changing logical completion",
+    requirements: [{
+      id: "req-a",
+      statement: "The implementation artifact is independently verified",
+      acceptanceCriteria: ["The accepted implementation report passes independent verification"],
+      blocking: true,
+      source: "explicit",
+      expectedArtifacts: ["artifact.output"],
+    }],
+    expectedArtifactRefs: ["artifact.output"],
+    requiredCapabilities: [],
+    nonGoals: [],
+    assumptions: [],
+    blockingInputs: [],
+    riskTags: [],
+    requestedSideEffects: [],
+  };
+  const contractHash = goalContractHash(goalContract);
+  const goalDesignPackage = canonicalGoalDesignPackageFixture(goalContract);
+  const draftId = `draft-${runId}`;
+  await upsertRuntimeResourcePg(db, {
+    id: draftId,
+    resourceType: "planner_draft",
+    resourceKey: draftId,
+    scope: "planner",
+    status: "validated",
+    title: "Planner draft",
+    payload: {
+      goalContract,
+      goalContractHash: contractHash,
+      goalDesignPackage,
+    },
+  });
   await createWorkflowRunPg(db, {
     id: runId,
     status: "running",
     domain: "software",
     goalPrompt: "evaluate runtime exceptions",
-    workflowManifestJson: JSON.stringify({ schemaVersion: "southstar.v2", workflowId: runId }),
+    workflowManifestJson: JSON.stringify({
+      schemaVersion: "southstar.v2",
+      workflowId: runId,
+      artifactContracts: [{ id: "artifact.output", artifactType: "implementation_report" }],
+      tasks: [
+        { id: "task-a", requiredArtifactRefs: ["artifact.output"] },
+        { id: "task-evaluator", evaluatorPipelineRef: "evaluator.independent" },
+      ],
+      evaluatorPipelines: [{
+        id: "independent",
+        libraryObjectRef: "evaluator.independent",
+        libraryVersionRef: "evaluator.independent@2",
+        validationBindingIds: ["binding-req-a"],
+        evaluators: [{
+          id: "check-criterion-a",
+          kind: "checker-agent",
+          required: true,
+          config: {
+            criterionId: "criterion-a",
+            acceptanceCriterion: "The accepted implementation report passes independent verification",
+            expectedEvidenceKinds: ["artifact-ref"],
+          },
+        }],
+        onFailure: { defaultStrategy: "request-workflow-revision" },
+      }],
+    }),
     executionProjectionJson: JSON.stringify({ executor: "tork" }),
     snapshotJson: JSON.stringify({}),
-    runtimeContextJson: JSON.stringify({}),
+    runtimeContextJson: JSON.stringify({
+      draftId,
+      goalContractHash: contractHash,
+      goalDesignPackageHash: goalDesignPackage.packageHash,
+    }),
     metricsJson: JSON.stringify({}),
   });
   await createWorkflowTaskPg(db, {
@@ -239,7 +385,16 @@ async function seedCompletedRunWithAcceptedArtifactRef(db: SouthstarDb, runId: s
     dependsOn: [],
     rootSessionId: "session-task-a",
   });
-  await acceptOrRejectArtifactRefPg(db, {
+  await createWorkflowTaskPg(db, {
+    id: "task-evaluator",
+    runId,
+    taskKey: "task-evaluator",
+    status: "completed",
+    sortOrder: 1,
+    dependsOn: ["task-a"],
+    rootSessionId: "session-task-evaluator",
+  });
+  const artifact = await acceptOrRejectArtifactRefPg(db, {
     runId,
     taskId: "task-a",
     sessionId: "session-task-a",
@@ -249,8 +404,71 @@ async function seedCompletedRunWithAcceptedArtifactRef(db: SouthstarDb, runId: s
     artifactType: "implementation_report",
     status: "accepted",
     content: { taskId: "task-a", status: "done" },
-    contractRefs: ["contract:task-a"],
+    contractRefs: ["artifact.output"],
     summary: "Artifact for task-a",
     producedAt: "2026-06-21T00:00:00.000Z",
+  });
+  await upsertRuntimeResourcePg(db, {
+    id: `coverage-${runId}`,
+    resourceType: "goal_requirement_coverage",
+    resourceKey: runId,
+    runId,
+    scope: "run",
+    status: "frozen",
+    title: "Frozen criterion coverage",
+    payload: {
+      schemaVersion: "southstar.goal_requirement_coverage.v1",
+      goalContractHash: contractHash,
+      entries: [{
+        requirementId: "req-a",
+        producerTaskIds: ["task-a"],
+        artifactRefs: ["artifact.output"],
+        evaluatorTaskIds: ["task-evaluator"],
+        evaluatorProfileRefs: ["evaluator.independent"],
+        evaluatorProfileVersionRefs: ["evaluator.independent@2"],
+        validationBindingId: "binding-req-a",
+        criterionIds: ["criterion-a"],
+        acceptanceCriteria: ["The accepted implementation report passes independent verification"],
+        requiredEvidenceKinds: ["artifact-ref"],
+      }],
+    },
+  });
+  await upsertRuntimeResourcePg(db, {
+    id: `evidence-${runId}`,
+    resourceType: "evidence_packet",
+    resourceKey: `evidence-${runId}`,
+    runId,
+    taskId: "task-evaluator",
+    scope: "evaluator",
+    status: "complete",
+    payload: { schemaVersion: "southstar.evidence_packet.v1" },
+  });
+  await upsertRuntimeResourcePg(db, {
+    id: `requirement-result-${runId}`,
+    resourceType: "requirement_evaluator_result",
+    resourceKey: `requirement:${runId}:req-a:task-evaluator:${artifact.artifactRefId}`,
+    runId,
+    taskId: "task-evaluator",
+    scope: "evaluator",
+    status: "passed",
+    payload: {
+      schemaVersion: "southstar.requirement_evaluator_result.v2",
+      requirementId: "req-a",
+      validationBindingId: "binding-req-a",
+      artifactRefs: [artifact.artifactRefId],
+      evaluatorId: `evaluator-${runId}`,
+      evaluatorTaskId: "task-evaluator",
+      evaluatorProfileRef: "evaluator.independent",
+      evaluatorProfileVersionRef: "evaluator.independent@2",
+      verdict: "passed",
+      criteriaResults: [{
+        criterionId: "criterion-a",
+        verdict: "passed",
+        evidenceRefs: [artifact.artifactRefId],
+        findings: [],
+      }],
+      evidenceRefs: [`evidence-${runId}`],
+      findings: [],
+    },
   });
 }

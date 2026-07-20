@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
 import {
+  CANONICAL_DIAGNOSTIC_CODES,
+  CanonicalDiagnosticError,
+} from "../canonical-diagnostics.ts";
+import {
   createApprovalPg,
   deriveGoalExecutionRisk,
   type GoalExecutionApprovalPayload,
@@ -18,6 +22,11 @@ import {
   type GoalRequirementReviewResult,
 } from "./goal-design-draft-service.ts";
 import {
+  persistIncompatibleGoalDesignDraftPg,
+  throwCanonicalGoalDesignDraftRejection,
+  type CanonicalGoalDesignDraftRejection,
+} from "./canonical-goal-design-draft.ts";
+import {
   validateGoalDesignPackageV2,
   type GoalDesignPackage,
   type GoalSliceDesigner,
@@ -31,7 +40,7 @@ import {
   type GoalContractVocabularyGapV1,
 } from "./goal-contract.ts";
 import { loadRunLibrarySnapshotPg } from "./run-library-snapshot.ts";
-import { getResourceByKeyPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
+import { getResourceByKeyPg } from "../stores/postgres-runtime-store.ts";
 import type { StartRunSchedulingResult } from "../server/run-execution-controller.ts";
 import { startRunSchedulingPg } from "../server/run-execution-controller.ts";
 import { createPostgresPlannerDraft, createPostgresRunFromDraft, type PostgresPlannerDraftResult } from "../ui-api/postgres-run-api.ts";
@@ -144,89 +153,15 @@ export async function submitClaimedGoalPg(
     for (const stage of claim.stages) context.onStage?.(stage);
     return await completeGoalSchedulingHandoffPg(context, claim.submissionId);
   }
-  if (context.goalRequirementInterpreter) {
-    return await submitGoalRequirementDraftPg(context, request, claim);
-  }
-  throw new Error("Goal Requirement interpreter is not configured");
-
-  const observedStages: string[] = [];
-  let draftResource: Parameters<typeof upsertRuntimeResourcePg>[1] | undefined;
-  let draft: Awaited<ReturnType<typeof createPostgresPlannerDraft>>;
-  try {
-    draft = await createPostgresPlannerDraft(context.db, {
-      goalPrompt: request.goalPrompt,
-      cwd: request.cwd,
-      ...(request.sessionId ? { sessionId: request.sessionId } : {}),
-      goalInterpreter: context.goalInterpreter,
-      composer: context.composer,
-      async persistDraft(resource) {
-        draftResource = resource;
-      },
-      onProgress(event) {
-        if (event.stage === "goal_contract.interpreted" || event.stage === "draft.persisted") {
-          observedStages.push(event.stage);
-        }
-      },
-    });
-    if (!draftResource) throw new Error(`planner draft was not prepared: ${draft.draftId}`);
-  } catch (error) {
-    await failSubmissionPg(context.db, claim.submissionId, error, observedStages);
-    throw error;
-  }
-
-  if (draft.status !== "validated") {
-    const result: RunGoalResult = {
-      goalContractHash: draft.goalContractHash,
-      draftId: draft.draftId,
-      draftStatus: draft.status === "needs_library_input"
-        ? "needs_library_input"
-        : draft.status === "needs_input"
-          ? "needs_input"
-          : "invalid",
-      blockers: draft.blockers,
-      ...(draft.vocabularyGaps ? { vocabularyGaps: draft.vocabularyGaps } : {}),
-      ...(draft.libraryImportDraftId ? { libraryImportDraftId: draft.libraryImportDraftId } : {}),
-    };
-    const finalStages = draft.status === "needs_library_input"
-      ? ["draft.needs_library_input", "done"]
-      : draft.status === "needs_input"
-        ? ["draft.needs_input", "done"]
-        : ["done"];
-    try {
-      await context.db.tx(async (tx) => {
-        await upsertRuntimeResourcePg(tx, draftResource!);
-        await completeSubmissionPg(tx, claim.submissionId, result, [...observedStages, ...finalStages]);
-      });
-    } catch (error) {
-      await failSubmissionPg(context.db, claim.submissionId, error, []);
-      throw error;
-    }
-    [...observedStages, ...finalStages].forEach((stage) => context.onStage?.(stage));
-    return result;
-  }
-
-  let transaction: {
-    result: RunGoalResult;
-    stages: string[];
-    autoSchedule: boolean;
-  };
-  try {
-    transaction = await context.db.tx(async (tx) => {
-      await upsertRuntimeResourcePg(tx, draftResource!);
-      return await createRunRequestFromValidatedDraftTx(tx, {
-        draft,
-        resourceId: claim.submissionId,
-        observedStages,
-      });
-    });
-  } catch (error) {
+  if (!context.goalRequirementInterpreter) {
+    const error = new CanonicalDiagnosticError(
+      CANONICAL_DIAGNOSTIC_CODES.goalRequirementInterpreterNotConfigured,
+      "Goal Requirement interpreter is required before a submission can enter Requirement review",
+    );
     await failSubmissionPg(context.db, claim.submissionId, error, []);
     throw error;
   }
-  transaction.stages.forEach((stage) => context.onStage?.(stage));
-  if (!transaction.autoSchedule || !transaction.result.runId) return transaction.result;
-
-  return await completeGoalSchedulingHandoffPg(context, claim.submissionId);
+  return await submitGoalRequirementDraftPg(context, request, claim);
 }
 
 async function submitGoalRequirementDraftPg(
@@ -523,6 +458,10 @@ type GoalDesignConfirmationPreparation = {
   schedulingRequest?: RunGoalResult;
 };
 
+type GoalDesignConfirmationTransactionResult = GoalDesignConfirmationPreparation | {
+  canonicalRejection: CanonicalGoalDesignDraftRejection;
+};
+
 async function findReusableValidatedGoalDesignDraftPg(
   db: SouthstarDb,
   input: { packageHash: string; goalContractHash: string; goalRequirementDraftHash?: string; sessionId?: string },
@@ -571,7 +510,7 @@ async function prepareGoalDesignConfirmationPg(
   db: SouthstarDb,
   input: { draftId: string; expectedPackageHash: string; confirmationMode: "manual" | "auto" },
 ): Promise<GoalDesignConfirmationPreparation> {
-  return await db.tx(async (tx) => {
+  const transactionResult: GoalDesignConfirmationTransactionResult = await db.tx(async (tx) => {
     const draft = await tx.one<{ payload_json: Record<string, unknown>; status: string }>(
       "select payload_json, status from southstar.runtime_resources where resource_type = 'planner_draft' and resource_key = $1 for update",
       [input.draftId],
@@ -579,8 +518,13 @@ async function prepareGoalDesignConfirmationPg(
     if (draft.status !== "ready_for_review") {
       throw new Error(`goal design draft is not ready for review: ${input.draftId}`);
     }
-    const pkg = storedGoalDesignPackage(asRecord(draft.payload_json).goalDesignPackage);
-    if (!pkg) throw new Error(`Goal Design package not found: ${input.draftId}`);
+    const draftPayload = asRecord(draft.payload_json);
+    const pkg = storedGoalDesignPackage(draftPayload.goalDesignPackage);
+    if (!pkg || optionalString(draftPayload.goalDesignPackageHash) !== pkg.packageHash) {
+      return {
+        canonicalRejection: await persistIncompatibleGoalDesignDraftPg(tx, { draftId: input.draftId }),
+      };
+    }
     if (pkg.packageHash !== input.expectedPackageHash) {
       throw new Error(`goal_design_package_stale: ${input.draftId}`);
     }
@@ -797,6 +741,10 @@ async function prepareGoalDesignConfirmationPg(
     }
     throw new GoalSubmissionPendingError(existing.id);
   });
+  if ("canonicalRejection" in transactionResult) {
+    throwCanonicalGoalDesignDraftRejection(transactionResult.canonicalRejection);
+  }
+  return transactionResult;
 }
 
 async function assertCurrentGoalDesignPackageHashTx(

@@ -17,6 +17,10 @@ import {
   scanForCredentialLeak,
 } from "../../src/v2/tool-proxy/policy-enforcer.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
+import {
+  canonicalNonBlockingGoalDesignLineageFixture,
+  persistCanonicalGoalDesignLineageFixture,
+} from "./fixtures/goal-design.ts";
 
 test("tool proxy policy scanner detects credential-shaped keys and tokens with redacted excerpts", () => {
   const githubToken = "ghp_123456789012345678901234567890123456";
@@ -488,17 +492,24 @@ test("callback artifact without credentials is accepted", async () => {
 });
 
 async function seedRunTask(db: SouthstarDb, runId: string, taskId: string): Promise<void> {
+  const goalPrompt = "tool proxy policy";
+  const lineage = canonicalNonBlockingGoalDesignLineageFixture(runId, goalPrompt);
   await createWorkflowRunPg(db, {
     id: runId,
     status: "running",
     domain: "software",
-    goalPrompt: "tool proxy policy",
-    workflowManifestJson: JSON.stringify({ schemaVersion: "southstar.v2", workflowId: "wf-tool-proxy-policy" }),
+    goalPrompt,
+    workflowManifestJson: JSON.stringify({
+      schemaVersion: "southstar.v2",
+      workflowId: "wf-tool-proxy-policy",
+      tasks: [{ id: taskId }],
+    }),
     executionProjectionJson: JSON.stringify({ executor: "tork" }),
     snapshotJson: JSON.stringify({}),
-    runtimeContextJson: JSON.stringify({}),
+    runtimeContextJson: JSON.stringify(lineage.runtimeContext),
     metricsJson: JSON.stringify({}),
   });
+  await persistCanonicalGoalDesignLineageFixture(db, runId, lineage);
   await createWorkflowTaskPg(db, {
     id: taskId,
     runId,

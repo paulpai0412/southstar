@@ -9,6 +9,7 @@ import { createWorkflowRunPg, createWorkflowTaskPg, upsertRuntimeResourcePg } fr
 import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../../src/v2/ui-api/postgres-run-api.ts";
 import { DeterministicFixtureComposer, seedDeterministicWorkflowGraph } from "./fixtures/deterministic-workflow-composer.ts";
 import { fixedGoalInterpreter, softwareGoalContract } from "./fixtures/goal-contract.ts";
+import { canonicalGoalDesignPackageFixture } from "./fixtures/goal-design.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 
 test("runtime attempt identity extracts the canonical monotonic attempt number", () => {
@@ -76,6 +77,7 @@ test("workflow read model exposes the same answer-first mission for draft and ru
       goalPrompt: goalContract.originalPrompt,
       cwd: goalContract.workspace.cwd,
       goalInterpreter: fixedGoalInterpreter(goalContract),
+      goalDesignPackage: canonicalGoalDesignPackageFixture(goalContract),
       composer: new DeterministicFixtureComposer(),
     });
 
@@ -183,6 +185,9 @@ test("workflow read model exposes the same answer-first mission for draft and ru
       entries: runtimeModel.mission!.coverage.entries,
     });
     assert.equal(runtimeModel.mission!.approval!.goalContractHash, runtimeModel.mission!.goalContractHash);
+    assert.deepEqual(runtimeModel.mission!.blockers, [
+      "canonical_requirement_evaluator_result_incompatible: requirement evaluator result mission-evaluator uses southstar.requirement_evaluator_result.v1; expected southstar.requirement_evaluator_result.v2",
+    ]);
     assert.equal(runtimeModel.mission!.evaluatorResults.length, 1);
     assert.equal(runtimeModel.lineage.workflowDag?.mode, "runtime");
     assert.equal(runtimeModel.lineage.workflowDag?.id, run.runId);
@@ -202,6 +207,65 @@ test("workflow read model exposes the same answer-first mission for draft and ru
   }
 });
 
+test("workflow read model projects missing canonical coverage as a blocking mission instead of throwing", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const goalContract = softwareGoalContract("Create an offline HTML article");
+    await seedDeterministicWorkflowGraph(db, goalContract.domain);
+    const draft = await createPostgresPlannerDraft(db, {
+      goalPrompt: goalContract.originalPrompt,
+      cwd: goalContract.workspace.cwd,
+      goalInterpreter: fixedGoalInterpreter(goalContract),
+      goalDesignPackage: canonicalGoalDesignPackageFixture(goalContract),
+      composer: new DeterministicFixtureComposer(),
+    });
+    const run = await createPostgresRunFromDraft(db, { draftId: draft.draftId });
+    await db.query(
+      "delete from southstar.runtime_resources where run_id = $1 and resource_type = 'goal_requirement_coverage'",
+      [run.runId],
+    );
+
+    const model = await buildWorkflowUiReadModelPg(db, { runId: run.runId });
+
+    assert.equal(model.mission?.status.health, "critical");
+    assert.deepEqual(model.mission?.coverage.entries, []);
+    assert.deepEqual(model.mission?.blockers, [
+      `canonical_goal_requirement_coverage_missing: run ${run.runId} has no frozen goal requirement coverage`,
+    ]);
+  } finally {
+    await db.close();
+  }
+});
+
+test("workflow read model projects canonical Goal Contract hash corruption instead of coverage missing", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const goalContract = softwareGoalContract("Expose canonical lineage corruption");
+    await seedDeterministicWorkflowGraph(db, goalContract.domain);
+    const draft = await createPostgresPlannerDraft(db, {
+      goalPrompt: goalContract.originalPrompt,
+      cwd: goalContract.workspace.cwd,
+      goalInterpreter: fixedGoalInterpreter(goalContract),
+      goalDesignPackage: canonicalGoalDesignPackageFixture(goalContract),
+      composer: new DeterministicFixtureComposer(),
+    });
+    const run = await createPostgresRunFromDraft(db, { draftId: draft.draftId });
+    await db.query(
+      "update southstar.workflow_runs set runtime_context_json = jsonb_set(runtime_context_json, '{goalContractHash}', to_jsonb('stale-contract-hash'::text)) where id = $1",
+      [run.runId],
+    );
+
+    const model = await buildWorkflowUiReadModelPg(db, { runId: run.runId });
+
+    assert.equal(model.mission?.status.health, "critical");
+    assert.deepEqual(model.mission?.blockers, [
+      `canonical_goal_design_package_invalid: run ${run.runId} Goal Contract hash does not match planner draft ${draft.draftId}`,
+    ]);
+  } finally {
+    await db.close();
+  }
+});
+
 test("workflow mission health uses only the latest provider attempt observation", async () => {
   const db = await createTestPostgresDb();
   try {
@@ -211,6 +275,7 @@ test("workflow mission health uses only the latest provider attempt observation"
       goalPrompt: goalContract.originalPrompt,
       cwd: goalContract.workspace.cwd,
       goalInterpreter: fixedGoalInterpreter(goalContract),
+      goalDesignPackage: canonicalGoalDesignPackageFixture(goalContract),
       composer: new DeterministicFixtureComposer(),
     });
     const run = await createPostgresRunFromDraft(db, { draftId: draft.draftId });

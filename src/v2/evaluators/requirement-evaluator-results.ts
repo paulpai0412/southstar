@@ -3,6 +3,7 @@ import { constants } from "node:fs";
 import { open, realpath, type FileHandle } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import sharp from "sharp";
+import { CANONICAL_DIAGNOSTIC_CODES, canonicalDiagnostic, type CanonicalDiagnostic } from "../canonical-diagnostics.ts";
 import type { SouthstarDb } from "../db/postgres.ts";
 import {
   artifactEvidenceClaims,
@@ -13,28 +14,18 @@ import type { EvidenceKind, EvidencePacket, ValidatorResult } from "../artifacts
 import { evidenceValidatorResult } from "../artifacts/validator-results.ts";
 import { contentHashForPayload } from "../design-library/canonical-json.ts";
 import type { SouthstarWorkflowManifest } from "../manifests/types.ts";
+import { recordRuntimeExceptionInTxPg } from "../exceptions/postgres-runtime-exceptions.ts";
 import {
   goalContractHash,
   storedGoalContract,
   type GoalContractV1,
 } from "../orchestration/goal-contract.ts";
+import { goalDesignPackageV2FromUnknown } from "../orchestration/goal-design.ts";
 import {
   storedGoalRequirementCoverage,
   type GoalRequirementCoverageV1,
 } from "../orchestration/goal-requirement-coverage.ts";
 import { getResourceByKeyPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
-
-export type RequirementEvaluatorResultV1 = {
-  schemaVersion: "southstar.requirement_evaluator_result.v1";
-  requirementIds: string[];
-  artifactRefs: string[];
-  evaluatorId: string;
-  evaluatorTaskId: string;
-  evaluatorProfileRef: string;
-  verdict: "passed" | "failed" | "blocked";
-  evidenceRefs: string[];
-  findings: string[];
-};
 
 export type RequirementCriterionEvaluatorResultV2 = {
   criterionId: string;
@@ -58,7 +49,22 @@ export type RequirementEvaluatorResultV2 = {
   findings: string[];
 };
 
-export type RequirementEvaluatorResult = RequirementEvaluatorResultV1 | RequirementEvaluatorResultV2;
+export type RequirementEvaluatorResult = RequirementEvaluatorResultV2;
+
+export const REQUIREMENT_EVALUATOR_RESULT_SCHEMA_VERSION = "southstar.requirement_evaluator_result.v2" as const;
+
+export function requirementEvaluatorResultIncompatibility(input: {
+  resourceKey: string;
+  payload: unknown;
+}): CanonicalDiagnostic | undefined {
+  const schemaVersion = nonEmptyString(asRecord(input.payload).schemaVersion) ?? "<missing>";
+  return schemaVersion === REQUIREMENT_EVALUATOR_RESULT_SCHEMA_VERSION
+    ? undefined
+    : canonicalDiagnostic(
+      CANONICAL_DIAGNOSTIC_CODES.requirementEvaluatorResultIncompatible,
+      `requirement evaluator result ${input.resourceKey} uses ${schemaVersion}; expected ${REQUIREMENT_EVALUATOR_RESULT_SCHEMA_VERSION}`,
+    );
+}
 
 export type RequirementEvaluationWriteResult = {
   ok: boolean;
@@ -105,7 +111,11 @@ export async function assertRequirementEvaluatorExecutionIdentityPg(
   input: EvaluatorCallbackIdentity,
 ): Promise<void> {
   const context = await loadFrozenCoverageContextPg(db, input.runId);
-  if (!context) return;
+  if (!context) {
+    const diagnostic = await frozenCoverageUnavailableDiagnosticPg(db, input.runId);
+    if (diagnostic) await persistFrozenCoverageDiagnosticPg(db, input, diagnostic);
+    return;
+  }
   const entries = context.coverage.entries.filter((entry) => entry.evaluatorTaskIds.includes(input.taskId));
   if (entries.length === 0) return;
   await assertExecutionIdentityPg(db, input, context, entries);
@@ -127,7 +137,18 @@ export async function recordRequirementEvaluatorResultsPg(
   },
 ): Promise<RequirementEvaluationWriteResult> {
   const context = await loadFrozenCoverageContextPg(db, input.runId);
-  if (!context) return { ok: true, failedBlockingRequirementIds: [], evidenceRefs: [], evaluatorResultRefs: [], findings: [] };
+  if (!context) {
+    const diagnostic = await frozenCoverageUnavailableDiagnosticPg(db, input.runId);
+    if (!diagnostic) return { ok: true, failedBlockingRequirementIds: [], evidenceRefs: [], evaluatorResultRefs: [], findings: [] };
+    await persistFrozenCoverageDiagnosticPg(db, input, diagnostic);
+    return {
+      ok: false,
+      failedBlockingRequirementIds: [],
+      evidenceRefs: [],
+      evaluatorResultRefs: [],
+      findings: [diagnostic.message],
+    };
+  }
   const entries = context.coverage.entries.filter((entry) => entry.evaluatorTaskIds.includes(input.taskId));
   if (entries.length === 0) return { ok: true, failedBlockingRequirementIds: [], evidenceRefs: [], evaluatorResultRefs: [], findings: [] };
   await assertExecutionIdentityPg(db, input, context, entries);
@@ -140,6 +161,38 @@ export async function recordRequirementEvaluatorResultsPg(
   const failedBlockingRequirementIds: string[] = [];
 
   for (const entry of entries) {
+    if (entry.criterionIds.length === 0) {
+      const diagnostic = canonicalDiagnostic(
+        CANONICAL_DIAGNOSTIC_CODES.criterionCoverageRequired,
+        `requirement ${entry.requirementId} has no frozen criterion coverage`,
+      );
+      const exception = await recordRuntimeExceptionInTxPg(db, {
+        runId: input.runId,
+        taskId: input.taskId,
+        sessionId: input.rootSessionId,
+        ...(input.attemptId ? { attemptId: input.attemptId } : {}),
+        handExecutionId: input.handExecutionId,
+        source: "artifact-gate",
+        kind: "validation_failed",
+        severity: "blocking",
+        status: "blocked",
+        observedAt: input.now ?? new Date().toISOString(),
+        evidenceRefs: [`goal_requirement_coverage:${input.runId}`],
+        providerEvidence: {
+          code: diagnostic.code,
+          message: diagnostic.message,
+          requirementId: entry.requirementId,
+          expectedSchemaVersion: REQUIREMENT_EVALUATOR_RESULT_SCHEMA_VERSION,
+        },
+      });
+      evaluatorResultRefs.push(exception.resourceKey);
+      findings.push(diagnostic.message);
+      if (context.blockingRequirementIds.has(entry.requirementId)) {
+        ok = false;
+        failedBlockingRequirementIds.push(entry.requirementId);
+      }
+      continue;
+    }
     const evaluation = await evaluateEntry(db, input, entry, context.manifest, context.workspaceRoot, evaluatorCriterionIds);
     await persistEvidencePacket(db, evaluation.evidence);
     await persistValidatorResult(db, evaluation.validator);
@@ -217,7 +270,6 @@ async function evaluateEntry(
     evidence,
     now: input.now,
   });
-  const invalidEvidence = evidence.evidenceItems.some((item) => item.status === "invalid" || item.status === "stale");
   const blockedFindings = [
     ...(!evaluatorIsIndependent ? [`evaluator task ${input.taskId} is also a producer`] : []),
     ...(acceptedProducerRefs.length === 0 ? [`no accepted producer artifact for requirement ${entry.requirementId}`] : []),
@@ -226,43 +278,20 @@ async function evaluateEntry(
       : []),
     ...evidence.completeness.missingKinds.map((kind) => `missing required ${kind} evidence`),
   ];
-  const failedFindings = [
-    ...(!input.callbackOk ? [`evaluator callback failed requirement ${entry.requirementId}`] : []),
-    ...(invalidEvidence ? validator.messages.map((message) => message.text) : []),
-  ];
-  const legacyVerdict: RequirementEvaluatorResultV1["verdict"] = !input.callbackOk
-    ? "failed"
-    : blockedFindings.length > 0
-      ? "blocked"
-      : invalidEvidence || validator.verdict !== "passed"
-      ? "failed"
-      : "passed";
   const resourceKey = `${contractRef}:${input.taskId}:${input.artifactRefId}`;
-  const result = entry.criterionIds.length > 0
-    ? evaluateCriterionResult({
-        entry,
-        manifest,
-        taskId: input.taskId,
-        artifact,
-        artifactRefs,
-        callbackOk: input.callbackOk,
-        evaluatorProfileRef,
-        evaluatorId: resourceKey,
-        evidence,
-        hostFindings: blockedFindings,
-        evaluatorCriterionIds,
-      })
-    : {
-        schemaVersion: "southstar.requirement_evaluator_result.v1" as const,
-        requirementIds: [entry.requirementId],
-        artifactRefs,
-        evaluatorId: resourceKey,
-        evaluatorTaskId: input.taskId,
-        evaluatorProfileRef,
-        verdict: legacyVerdict,
-        evidenceRefs: [evidence.id],
-        findings: uniqueSorted([...blockedFindings, ...failedFindings]),
-      };
+  const result = evaluateCriterionResult({
+    entry,
+    manifest,
+    taskId: input.taskId,
+    artifact,
+    artifactRefs,
+    callbackOk: input.callbackOk,
+    evaluatorProfileRef,
+    evaluatorId: resourceKey,
+    evidence,
+    hostFindings: blockedFindings,
+    evaluatorCriterionIds,
+  });
   return {
     evidence,
     validator,
@@ -843,9 +872,7 @@ async function persistRequirementResult(
   result: RequirementEvaluatorResult,
   resourceKey: string,
 ): Promise<void> {
-  const requirementIds = result.schemaVersion === "southstar.requirement_evaluator_result.v2"
-    ? [result.requirementId]
-    : result.requirementIds;
+  const requirementIds = [result.requirementId];
   await upsertRuntimeResourcePg(db, {
     id: resourceKey,
     resourceType: "requirement_evaluator_result",
@@ -922,9 +949,9 @@ export async function loadFrozenCoverageContextsPg(
   for (const run of runs) {
     const runtimeContext = asRecord(run.runtime_context_json);
     const runContractHash = nonEmptyString(runtimeContext.goalContractHash);
+    const runGoalDesignPackageHash = nonEmptyString(runtimeContext.goalDesignPackageHash);
     const coverageResource = coverageByRun.get(run.id);
     if (!coverageResource) {
-      if (runContractHash) throw new Error(`Goal Contract run ${run.id} is missing frozen requirement coverage`);
       continue;
     }
     if (
@@ -932,27 +959,31 @@ export async function loadFrozenCoverageContextsPg(
       || coverageResource.resource_key !== run.id
       || coverageResource.scope !== "run"
       || coverageResource.status !== "frozen"
-    ) throw new Error(`invalid Goal Requirement Coverage for run ${run.id}: resource must be run-scoped and frozen`);
-    if (!runContractHash) throw new Error(`invalid Goal Requirement Coverage for run ${run.id}: runtimeContext.goalContractHash`);
+    ) continue;
+    if (!runContractHash) continue;
     const draftId = nonEmptyString(runtimeContext.draftId);
-    if (!draftId) throw new Error(`invalid Goal Requirement Coverage for run ${run.id}: runtimeContext.draftId`);
+    if (!draftId) continue;
     const plannerDraft = draftById.get(draftId);
-    if (!plannerDraft || plannerDraft.status !== "validated") {
-      throw new Error(`invalid Goal Requirement Coverage for run ${run.id}: canonical planner draft`);
-    }
+    if (!plannerDraft || plannerDraft.status !== "validated") continue;
     const draftPayload = asRecord(plannerDraft.payload_json);
+    const goalDesignPackage = goalDesignPackageV2FromUnknown(draftPayload.goalDesignPackage);
+    if (!goalDesignPackage) continue;
+    if (!runGoalDesignPackageHash || runGoalDesignPackageHash !== goalDesignPackage.packageHash) continue;
     const goalContract = storedGoalContract(draftPayload.goalContract);
-    if (!goalContract) throw new Error(`invalid Goal Requirement Coverage for run ${run.id}: plannerDraft.goalContract`);
+    if (!goalContract) continue;
     const canonicalHash = goalContractHash(goalContract);
-    if (runContractHash !== canonicalHash || nonEmptyString(draftPayload.goalContractHash) !== canonicalHash) {
-      throw new Error(`invalid Goal Requirement Coverage for run ${run.id}: canonical Goal Contract hash mismatch`);
+    if (goalDesignPackage.goalContractHash !== canonicalHash) continue;
+    if (runContractHash !== canonicalHash || nonEmptyString(draftPayload.goalContractHash) !== canonicalHash) continue;
+    let manifest: SouthstarWorkflowManifest;
+    let coverage: GoalRequirementCoverageV1;
+    try {
+      manifest = parseManifest(run.workflow_manifest_json, run.id);
+      const baseCoverage = parseCoverage(coverageResource.payload_json, run.id, goalContract, manifest);
+      coverage = loadEffectiveCoverage(revisionsByRun.get(run.id) ?? [], run.id, goalContract, manifest, baseCoverage);
+    } catch {
+      continue;
     }
-    const manifest = parseManifest(run.workflow_manifest_json, run.id);
-    const baseCoverage = parseCoverage(coverageResource.payload_json, run.id, goalContract, manifest);
-    const coverage = loadEffectiveCoverage(revisionsByRun.get(run.id) ?? [], run.id, goalContract, manifest, baseCoverage);
-    if (coverage.goalContractHash !== canonicalHash) {
-      throw new Error(`Goal Requirement Coverage for run ${run.id} goalContractHash does not match canonical Goal Contract`);
-    }
+    if (coverage.goalContractHash !== canonicalHash) continue;
     result.set(run.id, {
       coverage,
       manifest,
@@ -964,6 +995,147 @@ export async function loadFrozenCoverageContextsPg(
     });
   }
   return result;
+}
+
+export async function frozenCoverageUnavailableDiagnosticPg(
+  db: SouthstarDb,
+  runId: string,
+): Promise<CanonicalDiagnostic | undefined> {
+  const row = await db.maybeOne<{
+    runtime_context_json: unknown;
+    draft_resource_key: string | null;
+    draft_status: string | null;
+    draft_payload_json: unknown;
+    coverage_resource_key: string | null;
+    coverage_run_id: string | null;
+    coverage_scope: string | null;
+    coverage_status: string | null;
+  }>(
+    `select r.runtime_context_json,
+            d.resource_key as draft_resource_key,
+            d.status as draft_status,
+            d.payload_json as draft_payload_json,
+            c.resource_key as coverage_resource_key,
+            c.run_id as coverage_run_id,
+            c.scope as coverage_scope,
+            c.status as coverage_status
+       from southstar.workflow_runs r
+       left join southstar.runtime_resources d
+         on d.resource_type = 'planner_draft'
+        and d.resource_key = nullif(r.runtime_context_json->>'draftId', '')
+       left join southstar.runtime_resources c
+         on c.resource_type = 'goal_requirement_coverage'
+        and c.resource_key = r.id
+      where r.id = $1`,
+    [runId],
+  );
+  if (!row) return undefined;
+  const runtimeContext = asRecord(row.runtime_context_json);
+  const goalContractHashRef = nonEmptyString(runtimeContext.goalContractHash);
+  const draftId = nonEmptyString(runtimeContext.draftId);
+  const runGoalDesignPackageHash = nonEmptyString(runtimeContext.goalDesignPackageHash);
+  if (!goalContractHashRef && !draftId && !runGoalDesignPackageHash) {
+    return canonicalDiagnostic(
+      CANONICAL_DIAGNOSTIC_CODES.goalDesignPackageRequired,
+      `run ${runId} has no canonical Goal Design lineage`,
+    );
+  }
+  if (!draftId) {
+    return canonicalDiagnostic(
+      CANONICAL_DIAGNOSTIC_CODES.goalDesignPackageRequired,
+      `run ${runId} has no canonical planner draft lineage`,
+    );
+  }
+  if (!row.draft_resource_key) {
+    return canonicalDiagnostic(
+      CANONICAL_DIAGNOSTIC_CODES.goalDesignPackageRequired,
+      `run ${runId} planner draft lineage ${draftId} does not exist`,
+    );
+  }
+  if (row.draft_status !== "validated") {
+    return canonicalDiagnostic(
+      CANONICAL_DIAGNOSTIC_CODES.goalDesignPackageInvalid,
+      `run ${runId} planner draft ${draftId} is not validated`,
+    );
+  }
+  const draftPayload = asRecord(row.draft_payload_json);
+  const goalDesignPackage = goalDesignPackageV2FromUnknown(draftPayload.goalDesignPackage);
+  if (!goalDesignPackage) {
+    return canonicalDiagnostic(
+      draftPayload.goalDesignPackage === undefined
+        ? CANONICAL_DIAGNOSTIC_CODES.goalDesignPackageRequired
+        : CANONICAL_DIAGNOSTIC_CODES.goalDesignPackageInvalid,
+      `planner draft ${draftId} does not contain a valid southstar.goal_design_package.v2`,
+    );
+  }
+  if (!runGoalDesignPackageHash || runGoalDesignPackageHash !== goalDesignPackage.packageHash) {
+    return canonicalDiagnostic(
+      CANONICAL_DIAGNOSTIC_CODES.goalDesignPackageInvalid,
+      `run ${runId} immutable Goal Design package hash does not match planner draft ${draftId}`,
+    );
+  }
+  const goalContract = storedGoalContract(draftPayload.goalContract);
+  if (!goalContract) {
+    return canonicalDiagnostic(
+      CANONICAL_DIAGNOSTIC_CODES.goalDesignPackageInvalid,
+      `planner draft ${draftId} does not contain a valid canonical Goal Contract`,
+    );
+  }
+  const canonicalHash = goalContractHash(goalContract);
+  if (
+    goalContractHashRef !== canonicalHash
+    || nonEmptyString(draftPayload.goalContractHash) !== canonicalHash
+    || goalDesignPackage.goalContractHash !== canonicalHash
+  ) {
+    return canonicalDiagnostic(
+      CANONICAL_DIAGNOSTIC_CODES.goalDesignPackageInvalid,
+      `run ${runId} Goal Contract hash does not match planner draft ${draftId}`,
+    );
+  }
+  if (!row.coverage_resource_key) {
+    return canonicalDiagnostic(
+      CANONICAL_DIAGNOSTIC_CODES.goalRequirementCoverageMissing,
+      `run ${runId} has no frozen goal requirement coverage`,
+    );
+  }
+  if (
+    row.coverage_resource_key !== runId
+    || row.coverage_run_id !== runId
+    || row.coverage_scope !== "run"
+    || row.coverage_status !== "frozen"
+  ) {
+    return canonicalDiagnostic(
+      CANONICAL_DIAGNOSTIC_CODES.goalRequirementCoverageInvalid,
+      `run ${runId} Goal Requirement Coverage is not a frozen run-scoped resource`,
+    );
+  }
+  return canonicalDiagnostic(
+    CANONICAL_DIAGNOSTIC_CODES.goalRequirementCoverageInvalid,
+    `run ${runId} frozen Goal Requirement Coverage is incompatible with canonical Goal Design lineage`,
+  );
+}
+
+async function persistFrozenCoverageDiagnosticPg(
+  db: SouthstarDb,
+  input: { runId: string; taskId?: string; rootSessionId?: string; attemptId?: string; handExecutionId?: string; now?: string },
+  diagnostic: CanonicalDiagnostic,
+): Promise<void> {
+  await recordRuntimeExceptionInTxPg(db, {
+    runId: input.runId,
+    ...(input.taskId ? { taskId: input.taskId } : {}),
+    ...(input.rootSessionId ? { sessionId: input.rootSessionId } : {}),
+    ...(input.attemptId ? { attemptId: input.attemptId } : {}),
+    ...(input.handExecutionId ? { handExecutionId: input.handExecutionId } : {}),
+    source: "callback",
+    kind: diagnostic.code === CANONICAL_DIAGNOSTIC_CODES.requirementEvaluatorResultIncompatible
+      ? "callback_contract_violation"
+      : "validation_failed",
+    severity: "blocking",
+    status: "blocked",
+    observedAt: input.now ?? new Date().toISOString(),
+    evidenceRefs: [diagnostic.message],
+    providerEvidence: diagnostic,
+  });
 }
 
 type CoverageResourceRow = {

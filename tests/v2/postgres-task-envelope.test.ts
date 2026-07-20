@@ -9,9 +9,10 @@ import { createWorkflowRunPg, createWorkflowTaskPg, upsertRuntimeResourcePg } fr
 import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../../src/v2/ui-api/postgres-run-api.ts";
 import { getPostgresTaskEnvelope } from "../../src/v2/ui-api/postgres-task-envelope.ts";
 import { createSouthstarRuntimeServer } from "../../src/v2/server/http-server.ts";
-import { DeterministicFixtureComposer } from "./fixtures/deterministic-workflow-composer.ts";
+import { DeterministicFixtureComposer, seedDeterministicWorkflowGraph } from "./fixtures/deterministic-workflow-composer.ts";
 import { seedSoftwareLibraryGraph } from "./fixtures/software-library-graph.ts";
 import { fixedGoalInterpreter, softwareGoalContract } from "./fixtures/goal-contract.ts";
+import { canonicalGoalDesignPackageFixture } from "./fixtures/goal-design.ts";
 import { captureRunLibrarySnapshotPg } from "../../src/v2/orchestration/run-library-snapshot.ts";
 import {
   contextPolicy,
@@ -36,7 +37,7 @@ test("Postgres task envelope API builds TaskEnvelopeV2 from Postgres run, task, 
     assert.equal(envelope.schemaVersion, "southstar.task-envelope.v2");
     assert.equal(envelope.runId, run.runId);
     assert.equal(envelope.taskId, "implement-feature");
-    assert.equal(envelope.role.id, "maker");
+    assert.equal(envelope.role.id, "software-maker");
     assert.equal(envelope.agentProfile.id, "profile.generated.software-implement-feature");
     assert.equal(envelope.contextPacket.selectedKnowledgeCards[0]?.sourceRef, "card-envelope-self-check");
     assert.match(envelope.agentPrompt, /Knowledge Cards/);
@@ -303,12 +304,14 @@ async function withDb(run: (db: SouthstarDb) => Promise<void>): Promise<void> {
 }
 
 async function createFixturePlannerDraft(db: SouthstarDb, goalPrompt: string, options: { cwd?: string } = {}) {
-  await seedSoftwareLibraryGraph(db);
+  await seedDeterministicWorkflowGraph(db);
+  const goalContract = softwareGoalContract(goalPrompt);
   return await createPostgresPlannerDraft(db, {
     goalPrompt,
     orchestrationMode: "llm-constrained",
     composerMode: "llm",
-    goalInterpreter: fixedGoalInterpreter(softwareGoalContract(goalPrompt)),
+    goalInterpreter: fixedGoalInterpreter(goalContract),
+    goalDesignPackage: canonicalGoalDesignPackageFixture(goalContract),
     composer: new DeterministicFixtureComposer(),
     ...(options.cwd ? { cwd: options.cwd } : {}),
   });

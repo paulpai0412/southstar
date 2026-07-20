@@ -10,6 +10,7 @@ import { appendHistoryEventPg, createWorkflowRunPg, createWorkflowTaskPg, getRes
 import { createExecutorBindingPg, getExecutorBindingPg } from "../../src/v2/executor/postgres-bindings.ts";
 import { ARTIFACT_REF_RESOURCE_TYPE } from "../../src/v2/artifacts/types.ts";
 import { acceptOrRejectArtifactRefPg, artifactRefIdentity } from "../../src/v2/artifacts/artifact-ref-store.ts";
+import { artifactEvidenceClaims } from "../../src/v2/artifacts/evidence.ts";
 import { ingestTaskRunResultPg, type PostgresTaskRunCallbackResult } from "../../src/v2/executor/postgres-tork-callback.ts";
 import { persistBrainBindingPg, persistHandBindingPg } from "../../src/v2/meta-harness/postgres-bindings.ts";
 import { createRuntimeServerClient } from "../../src/v2/server/client.ts";
@@ -21,6 +22,7 @@ import {
   prepareWorkspaceScreenshotProof,
   recordRequirementEvaluatorResultsPg,
 } from "../../src/v2/evaluators/requirement-evaluator-results.ts";
+import { canonicalGoalDesignPackageFixture } from "./fixtures/goal-design.ts";
 
 const ONE_PIXEL_PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=", "base64");
 const ONE_PIXEL_JPEG = Buffer.from("/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAX/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAH/AP/EABQQAQAAAAAAAAAAAAAAAAAAABD/2gAIAQEAAQUCf//EABQRAQAAAAAAAAAAAAAAAAAAABD/2gAIAQMBAT8Bf//EABQRAQAAAAAAAAAAAAAAAAAAABD/2gAIAQIBAT8Bf//EABQQAQAAAAAAAAAAAAAAAAAAABD/2gAIAQEABj8Cf//Z", "base64");
@@ -124,7 +126,11 @@ test("Postgres Tork callback route ingests task result, artifacts, binding statu
         ["completion-gate:run-callback-pg"],
       );
       assert.equal(evaluator.status, "satisfied");
-      assert.deepEqual(evaluator.payload_json, { executionStatus: "completed", outcomeStatus: "satisfied", findings: [] });
+      assert.deepEqual(evaluator.payload_json, {
+        executionStatus: "completed",
+        outcomeStatus: "satisfied",
+        findings: [],
+      });
 
       const history = await listHistoryForRunPg(db, "run-callback-pg");
       const historyTypes = history.map((event) => event.eventType);
@@ -196,11 +202,11 @@ test("Postgres Tork callback ok false writes rejected artifact_ref and evaluator
         "select status, payload_json from southstar.runtime_resources where resource_type = 'evaluator_result' and resource_key = $1",
         ["completion-gate:run-callback-rejected"],
       );
-      assert.equal(evaluator.status, "unsatisfied");
+      assert.equal(evaluator.status, "satisfied");
       assert.deepEqual(evaluator.payload_json, {
         executionStatus: "completed",
-        outcomeStatus: "unsatisfied",
-        findings: ["task task-1 terminal status is failed"],
+        outcomeStatus: "satisfied",
+        findings: [],
       });
       const history = await listHistoryForRunPg(db, "run-callback-rejected");
       assert.equal(history.some((event) => event.eventType === "artifact.rejected"), true);
@@ -209,10 +215,10 @@ test("Postgres Tork callback ok false writes rejected artifact_ref and evaluator
       assert.equal(completed[0]?.actorType, "evaluator");
       assert.deepEqual(completed[0]?.payload, {
         schemaVersion: "southstar.goal_outcome.v1",
-        outcomeStatus: "unsatisfied",
+        outcomeStatus: "satisfied",
         coveredRequirementIds: [],
         failedRequirementIds: [],
-        findings: ["task task-1 terminal status is failed"],
+        findings: [],
       });
     } finally {
       await server.close();
@@ -286,7 +292,11 @@ test("Postgres Tork callback ignores stale attempt after a newer attempt complet
         ["completion-gate:run-callback-stale"],
       );
       assert.equal(evaluator.status, "satisfied");
-      assert.deepEqual(evaluator.payload_json, { executionStatus: "completed", outcomeStatus: "satisfied", findings: [] });
+      assert.deepEqual(evaluator.payload_json, {
+        executionStatus: "completed",
+        outcomeStatus: "satisfied",
+        findings: [],
+      });
       const artifactRefs = await listResourcesPg(db, { resourceType: ARTIFACT_REF_RESOURCE_TYPE });
       assert.equal(artifactRefs.length, 1);
       assert.equal(artifactRefs[0]?.resourceKey, newer.result.artifactRefId);
@@ -363,7 +373,11 @@ test("Postgres Tork callback ignores non-identical callback for an already termi
         ["completion-gate:run-callback-terminal"],
       );
       assert.equal(evaluator.status, "satisfied");
-      assert.deepEqual(evaluator.payload_json, { executionStatus: "completed", outcomeStatus: "satisfied", findings: [] });
+      assert.deepEqual(evaluator.payload_json, {
+        executionStatus: "completed",
+        outcomeStatus: "satisfied",
+        findings: [],
+      });
       const artifactRefs = await listResourcesPg(db, { resourceType: ARTIFACT_REF_RESOURCE_TYPE });
       assert.equal(artifactRefs.length, 1);
       assert.equal(artifactRefs[0]?.resourceKey, first.result.artifactRefId);
@@ -433,7 +447,8 @@ test("verifier callback persists requirement evidence and evaluator result idemp
     assert.equal(replay.accepted, true);
     const evaluator = await latestRequirementResultPg(db, fixture.runId, "req-offline");
     assert.equal(evaluator?.status, "passed");
-    assert.deepEqual((evaluator?.payload as { requirementIds?: string[] }).requirementIds, ["req-offline"]);
+    assert.equal((evaluator?.payload as { schemaVersion?: string }).schemaVersion, "southstar.requirement_evaluator_result.v2");
+    assert.equal((evaluator?.payload as { requirementId?: string }).requirementId, "req-offline");
     assert.deepEqual((evaluator?.payload as { artifactRefs?: string[] }).artifactRefs, [fixture.producerArtifactRefId]);
     assert.equal((evaluator?.payload as { evidenceRefs?: string[] }).evidenceRefs?.length, 1);
 
@@ -599,6 +614,7 @@ test("one evaluator task persists distinct evidence packets for multiple require
 
     const result = await ingestTaskRunResultPg(db, verifierCallback({
       runId: fixture.runId,
+      criterionIds: ["criterion-req-offline", "criterion-req-installable"],
       artifact: {
         kind: "verification_report",
         pass: true,
@@ -642,6 +658,12 @@ test("requirement evaluation returns only failed blocking requirement ids for ta
         kind: "verification_report",
         pass: true,
         verifiedArtifactRefs: [fixture.producerArtifactRefId],
+        criteriaResults: ["req-passed", "req-failed"].map((requirementId) => ({
+          criterionId: `criterion-${requirementId}`,
+          verdict: "passed",
+          evidenceRefs: [fixture.producerArtifactRefId],
+          findings: [],
+        })),
       },
       callbackOk: true,
       rootSessionId: "session-1",
@@ -653,6 +675,47 @@ test("requirement evaluation returns only failed blocking requirement ids for ta
     assert.deepEqual(result.failedBlockingRequirementIds, ["req-failed"]);
     assert.equal((await latestRequirementResultPg(db, fixture.runId, "req-passed"))?.status, "passed");
     assert.equal((await latestRequirementResultPg(db, fixture.runId, "req-failed"))?.status, "blocked");
+  });
+});
+
+test("requirement evaluation persists a blocking incompatibility for legacy coverage without frozen criteria", async () => {
+  await withDb(async (db) => {
+    const fixture = await seedRequirementEvidenceRun(db, "run-requirement-legacy-coverage");
+    await replaceRequirementCoverage(
+      db,
+      fixture.runId,
+      legacyRequirementCoverage(["req-offline"], fixture.goalContractHash),
+    );
+
+    const result = await recordRequirementEvaluatorResultsPg(db, {
+      runId: fixture.runId,
+      taskId: "task-verify",
+      artifactRefId: "artifact-ref:legacy-verification",
+      artifact: {
+        kind: "verification_report",
+        pass: true,
+        verifiedArtifactRefs: [fixture.producerArtifactRefId],
+      },
+      callbackOk: true,
+      rootSessionId: "session-1",
+      attemptId: "attempt-1",
+      handExecutionId: `hand-execution:${fixture.runId}:task-verify:attempt-1`,
+    });
+
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.failedBlockingRequirementIds, ["req-offline"]);
+    assert.deepEqual(result.findings, [
+      "canonical_criterion_coverage_required: requirement req-offline has no frozen criterion coverage",
+    ]);
+    const exception = await db.one<{ status: string; payload_json: { providerEvidence: { code: string; message: string } } }>(
+      `select status, payload_json
+         from southstar.runtime_resources
+        where run_id = $1 and task_id = 'task-verify' and resource_type = 'runtime_exception'`,
+      [fixture.runId],
+    );
+    assert.equal(exception.status, "blocked");
+    assert.equal(exception.payload_json.providerEvidence.code, "canonical_criterion_coverage_required");
+    assert.equal(exception.payload_json.providerEvidence.message, result.findings[0]);
   });
 });
 
@@ -837,7 +900,7 @@ test("an LLM overall passed verdict cannot hide a missing frozen criterion", asy
   });
 });
 
-test("malformed frozen requirement coverage fails closed with a descriptive error", async () => {
+test("malformed frozen requirement coverage persists a blocking canonical diagnostic", async () => {
   await withDb(async (db) => {
     const fixture = await seedRequirementEvidenceRun(db, "run-requirement-malformed-coverage");
     await upsertRuntimeResourcePg(db, {
@@ -854,13 +917,17 @@ test("malformed frozen requirement coverage fails closed with a descriptive erro
       },
     });
 
-    await assert.rejects(
-      ingestTaskRunResultPg(db, verifierCallback({
-        runId: fixture.runId,
-        artifact: { kind: "verification_report", pass: true },
-      })),
-      /invalid Goal Requirement Coverage for run run-requirement-malformed-coverage: entries\[0\]\.producerTaskIds/,
+    const result = await ingestTaskRunResultPg(db, verifierCallback({
+      runId: fixture.runId,
+      artifact: { kind: "verification_report", pass: true },
+    }));
+
+    assert.equal(result.accepted, false);
+    const exception = await db.one<{ payload_json: { providerEvidence: { code: string } } }>(
+      "select payload_json from southstar.runtime_resources where resource_type = 'runtime_exception' and run_id = $1",
+      [fixture.runId],
     );
+    assert.equal(exception.payload_json.providerEvidence.code, "canonical_goal_requirement_coverage_invalid");
   });
 });
 
@@ -955,19 +1022,82 @@ test("a verifier callback that reports failure produces a failed requirement eva
 test("a Goal Contract run missing its frozen coverage fails closed", async () => {
   await withDb(async (db) => {
     const runId = "run-requirement-missing-coverage";
-    await seedRunTask(db, runId, "task-verify");
+    await seedRequirementEvidenceRun(db, runId);
     await db.query(
-      "update southstar.workflow_runs set runtime_context_json = $2::jsonb where id = $1",
-      [runId, JSON.stringify({ goalContractHash: "goal-contract-hash" })],
+      "delete from southstar.runtime_resources where resource_type = 'goal_requirement_coverage' and resource_key = $1",
+      [runId],
     );
 
-    await assert.rejects(
-      ingestTaskRunResultPg(db, verifierCallback({
-        runId,
-        artifact: { kind: "verification_report", pass: true },
-      })),
-      /Goal Contract run run-requirement-missing-coverage is missing frozen requirement coverage/,
+    const result = await ingestTaskRunResultPg(db, verifierCallback({
+      runId,
+      artifact: { kind: "verification_report", pass: true },
+    }));
+    assert.equal(result.accepted, false);
+    const evaluator = await db.one<{ status: string; payload_json: { findings: string[] } }>(
+      "select status, payload_json from southstar.runtime_resources where resource_type = 'evaluator_result' and resource_key = $1",
+      [`completion-gate:${runId}`],
     );
+    assert.equal(evaluator.status, "blocked");
+    assert.deepEqual(evaluator.payload_json.findings, [
+      `canonical_goal_requirement_coverage_missing: run ${runId} has no frozen goal requirement coverage`,
+    ]);
+    const exception = await db.one<{ payload_json: { providerEvidence: { code: string } } }>(
+      "select payload_json from southstar.runtime_resources where resource_type = 'runtime_exception' and run_id = $1",
+      [runId],
+    );
+    assert.equal(exception.payload_json.providerEvidence.code, "canonical_goal_requirement_coverage_missing");
+  });
+});
+
+test("a callback with no canonical Goal Design lineage fails closed", async () => {
+  await withDb(async (db) => {
+    const runId = "run-requirement-missing-goal-design-lineage";
+    await seedRequirementEvidenceRun(db, runId);
+    await db.query(
+      `delete from southstar.runtime_resources
+        where resource_key = $1
+           or (run_id = $2 and resource_type = 'goal_requirement_coverage')`,
+      [`draft-${runId}`, runId],
+    );
+    await db.query(
+      "update southstar.workflow_runs set runtime_context_json = '{}'::jsonb where id = $1",
+      [runId],
+    );
+
+    const result = await ingestTaskRunResultPg(db, verifierCallback({
+      runId,
+      artifact: { kind: "verification_report", pass: true },
+    }));
+
+    assert.equal(result.accepted, false);
+    const exception = await db.one<{ payload_json: { providerEvidence: { code: string } } }>(
+      "select payload_json from southstar.runtime_resources where resource_type = 'runtime_exception' and run_id = $1",
+      [runId],
+    );
+    assert.equal(exception.payload_json.providerEvidence.code, "canonical_goal_design_package_required");
+  });
+});
+
+test("a callback with frozen coverage but missing canonical lineage persists a blocking diagnostic", async () => {
+  await withDb(async (db) => {
+    const runId = "run-requirement-partial-goal-design-lineage";
+    await seedRequirementEvidenceRun(db, runId);
+    await db.query(
+      "update southstar.workflow_runs set runtime_context_json = '{}'::jsonb where id = $1",
+      [runId],
+    );
+
+    const result = await ingestTaskRunResultPg(db, verifierCallback({
+      runId,
+      artifact: { kind: "verification_report", pass: true },
+    }));
+
+    assert.equal(result.accepted, false);
+    const exception = await db.one<{ payload_json: { providerEvidence: { code: string } } }>(
+      "select payload_json from southstar.runtime_resources where resource_type = 'runtime_exception' and run_id = $1",
+      [runId],
+    );
+    assert.equal(exception.payload_json.providerEvidence.code, "canonical_goal_design_package_required");
   });
 });
 
@@ -1288,7 +1418,7 @@ test("malformed browser evaluator evidence is rejected", async () => {
     }));
 
     assert.equal(result.accepted, false);
-    assert.equal((await latestRequirementResultPg(db, fixture.runId, "req-offline"))?.status, "failed");
+    assert.equal((await latestRequirementResultPg(db, fixture.runId, "req-offline"))?.status, "blocked");
   });
 });
 
@@ -1529,7 +1659,7 @@ test("second callback transaction checks a concurrently committed receipt before
   });
 });
 
-test("frozen coverage must match canonical Goal Contract hash and manifest task membership", async () => {
+test("frozen coverage with mismatched Goal Contract hash or task membership persists blocking diagnostics", async () => {
   await withDb(async (db) => {
     const fixture = await seedRequirementEvidenceRun(db, "run-requirement-hash-mismatch");
     await db.query(
@@ -1538,10 +1668,13 @@ test("frozen coverage must match canonical Goal Contract hash and manifest task 
         where resource_type = 'goal_requirement_coverage' and resource_key = $1`,
       [fixture.runId],
     );
-    await assert.rejects(
-      ingestTaskRunResultPg(db, validVerifierCallback(fixture)),
-      /Goal Requirement Coverage .*goalContractHash does not match canonical Goal Contract/,
+    const result = await ingestTaskRunResultPg(db, validVerifierCallback(fixture));
+    assert.equal(result.accepted, false);
+    const exception = await db.one<{ payload_json: { providerEvidence: { code: string } } }>(
+      "select payload_json from southstar.runtime_resources where resource_type = 'runtime_exception' and run_id = $1",
+      [fixture.runId],
     );
+    assert.equal(exception.payload_json.providerEvidence.code, "canonical_goal_requirement_coverage_invalid");
   });
 
   await withDb(async (db) => {
@@ -1556,36 +1689,45 @@ test("frozen coverage must match canonical Goal Contract hash and manifest task 
         where id = $1`,
       [fixture.runId],
     );
-    await assert.rejects(
-      ingestTaskRunResultPg(db, validVerifierCallback(fixture)),
-      /manifest is missing evaluator task task-verify/,
+    const result = await ingestTaskRunResultPg(db, validVerifierCallback(fixture));
+    assert.equal(result.accepted, false);
+    const exception = await db.one<{ payload_json: { providerEvidence: { code: string } } }>(
+      "select payload_json from southstar.runtime_resources where resource_type = 'runtime_exception' and run_id = $1",
+      [fixture.runId],
     );
+    assert.equal(exception.payload_json.providerEvidence.code, "canonical_goal_requirement_coverage_invalid");
   });
 });
 
-test("frozen coverage rejects phantom producer tasks", async () => {
+test("frozen coverage with phantom producer tasks persists a blocking diagnostic", async () => {
   await withDb(async (db) => {
     const fixture = await seedRequirementEvidenceRun(db, "run-requirement-phantom-producer");
     const coverage = requirementCoverage(["req-offline"], fixture.goalContractHash);
     coverage.entries[0]!.producerTaskIds = ["task-phantom"];
     await replaceRequirementCoverage(db, fixture.runId, coverage);
-    await assert.rejects(
-      ingestTaskRunResultPg(db, validVerifierCallback(fixture)),
-      /manifest is missing producer task task-phantom/,
+    const result = await ingestTaskRunResultPg(db, validVerifierCallback(fixture));
+    assert.equal(result.accepted, false);
+    const exception = await db.one<{ payload_json: { providerEvidence: { code: string } } }>(
+      "select payload_json from southstar.runtime_resources where resource_type = 'runtime_exception' and run_id = $1",
+      [fixture.runId],
     );
+    assert.equal(exception.payload_json.providerEvidence.code, "canonical_goal_requirement_coverage_invalid");
   });
 });
 
-test("frozen coverage rejects undeclared producer artifact contracts", async () => {
+test("frozen coverage with undeclared producer artifact contracts persists a blocking diagnostic", async () => {
   await withDb(async (db) => {
     const fixture = await seedRequirementEvidenceRun(db, "run-requirement-undeclared-artifact");
     const coverage = requirementCoverage(["req-offline"], fixture.goalContractHash);
     coverage.entries[0]!.artifactRefs = ["artifact.not-declared-by-producer"];
     await replaceRequirementCoverage(db, fixture.runId, coverage);
-    await assert.rejects(
-      ingestTaskRunResultPg(db, validVerifierCallback(fixture)),
-      /artifact ref artifact\.not-declared-by-producer is not declared by producer task/,
+    const result = await ingestTaskRunResultPg(db, validVerifierCallback(fixture));
+    assert.equal(result.accepted, false);
+    const exception = await db.one<{ payload_json: { providerEvidence: { code: string } } }>(
+      "select payload_json from southstar.runtime_resources where resource_type = 'runtime_exception' and run_id = $1",
+      [fixture.runId],
     );
+    assert.equal(exception.payload_json.providerEvidence.code, "canonical_goal_requirement_coverage_invalid");
   });
 });
 
@@ -1602,6 +1744,9 @@ test("non-blocking uncovered Goal Contract entries do not block a valid evaluato
       artifactRefs: [],
       evaluatorTaskIds: [],
       evaluatorProfileRefs: [],
+      evaluatorProfileVersionRefs: [],
+      criterionIds: [],
+      acceptanceCriteria: [],
       requiredEvidenceKinds: [],
     });
     await replaceRequirementCoverage(db, fixture.runId, coverage);
@@ -1624,6 +1769,7 @@ test("optional evaluator evidence is persisted without failing a passing blockin
 
     const result = await ingestTaskRunResultPg(db, verifierCallback({
       runId: fixture.runId,
+      criterionIds: ["criterion-req-blocking", "criterion-req-optional"],
       artifact: {
         kind: "verification_report",
         pass: true,
@@ -1687,6 +1833,17 @@ test("producer artifacts match frozen coverage through host-owned contract refs 
 });
 
 async function seedRunTask(db: SouthstarDb, runId: string, taskId: string): Promise<void> {
+  const goalContract = requirementGoalContract(["req-callback"], ["req-callback"]);
+  const contractHash = goalContractHash(goalContract);
+  const goalDesignPackage = canonicalGoalDesignPackageFixture(goalContract);
+  const draftId = `draft-${runId}`;
+  await upsertRuntimeResourcePg(db, {
+    resourceType: "planner_draft",
+    resourceKey: draftId,
+    scope: "planner",
+    status: "validated",
+    payload: { goalContract, goalContractHash: contractHash, goalDesignPackage },
+  });
   await createWorkflowRunPg(db, {
     id: runId,
     status: "running",
@@ -1703,7 +1860,11 @@ async function seedRunTask(db: SouthstarDb, runId: string, taskId: string): Prom
     }),
     executionProjectionJson: JSON.stringify({ executor: "tork" }),
     snapshotJson: JSON.stringify({}),
-    runtimeContextJson: JSON.stringify({}),
+    runtimeContextJson: JSON.stringify({
+      draftId,
+      goalContractHash: contractHash,
+      goalDesignPackageHash: goalDesignPackage.packageHash,
+    }),
     metricsJson: JSON.stringify({}),
   });
   await createWorkflowTaskPg(db, {
@@ -1714,6 +1875,18 @@ async function seedRunTask(db: SouthstarDb, runId: string, taskId: string): Prom
     sortOrder: 0,
     dependsOn: [],
     rootSessionId: "session-1",
+  });
+  await upsertRuntimeResourcePg(db, {
+    resourceType: "goal_requirement_coverage",
+    resourceKey: runId,
+    runId,
+    scope: "run",
+    status: "frozen",
+    payload: {
+      schemaVersion: "southstar.goal_requirement_coverage.v1",
+      goalContractHash: contractHash,
+      entries: [],
+    },
   });
   await persistBrainBindingPg(db, {
     id: `brain-${runId}-${taskId}`,
@@ -1780,6 +1953,7 @@ async function seedRequirementEvidenceRun(
   const requirementIds = options.requirementIds ?? ["req-offline"];
   const goalContract = requirementGoalContract(requirementIds, options.nonBlockingRequirementIds);
   const contractHash = goalContractHash(goalContract);
+  const goalDesignPackage = canonicalGoalDesignPackageFixture(goalContract);
   const draftId = `draft-${runId}`;
   await upsertRuntimeResourcePg(db, {
     id: draftId,
@@ -1788,7 +1962,11 @@ async function seedRequirementEvidenceRun(
     scope: "planner",
     status: "validated",
     title: `Planner draft ${runId}`,
-    payload: { goalContract, goalContractHash: contractHash },
+    payload: {
+      goalContract,
+      goalContractHash: contractHash,
+      goalDesignPackage,
+    },
     summary: { goalContractHash: contractHash },
   });
   await db.query(
@@ -1802,7 +1980,11 @@ async function seedRequirementEvidenceRun(
       where id = $1`,
     [
       runId,
-      JSON.stringify({ draftId, goalContractHash: contractHash }),
+      JSON.stringify({
+        draftId,
+        goalContractHash: contractHash,
+        goalDesignPackageHash: goalDesignPackage.packageHash,
+      }),
       JSON.stringify(options.manifestArtifactContracts ? { artifactContracts: options.manifestArtifactContracts } : {}),
       JSON.stringify([
         {
@@ -1841,17 +2023,11 @@ async function seedRequirementEvidenceRun(
     summary: "Build artifact",
     producedAt: "2026-07-10T00:00:00.000Z",
   });
-  await upsertRuntimeResourcePg(db, {
-    id: `goal-requirement-coverage:${runId}`,
-    resourceType: "goal_requirement_coverage",
-    resourceKey: runId,
+  await replaceRequirementCoverage(
+    db,
     runId,
-    scope: "run",
-    status: "frozen",
-    title: "Goal Requirement Coverage",
-    payload: requirementCoverage(requirementIds, contractHash, options.coverageArtifactRefs),
-    summary: { goalContractHash: contractHash },
-  });
+    requirementCoverage(requirementIds, contractHash, options.coverageArtifactRefs),
+  );
   await seedEvaluatorAttempt(db, {
     runId,
     taskId: "task-verify",
@@ -1863,6 +2039,29 @@ async function seedRequirementEvidenceRun(
 }
 
 function requirementCoverage(requirementIds: string[], contractHash: string, artifactRefs = ["artifact.implementation_report"]) {
+  return {
+    schemaVersion: "southstar.goal_requirement_coverage.v1",
+    goalContractHash: contractHash,
+    entries: requirementIds.map((requirementId) => ({
+      requirementId,
+      producerTaskIds: ["task-build"],
+      artifactRefs,
+      evaluatorTaskIds: ["task-verify"],
+      evaluatorProfileRefs: ["evaluator.software-verification-quality"],
+      evaluatorProfileVersionRefs: ["evaluator.software-verification-quality@2"],
+      validationBindingId: `binding-${requirementId}`,
+      criterionIds: [`criterion-${requirementId}`],
+      acceptanceCriteria: [`${requirementId} is independently verified`],
+      requiredEvidenceKinds: ["artifact-ref", "command-output", "test-result"],
+    })),
+  };
+}
+
+function legacyRequirementCoverage(
+  requirementIds: string[],
+  contractHash: string,
+  artifactRefs = ["artifact.implementation_report"],
+) {
   return {
     schemaVersion: "southstar.goal_requirement_coverage.v1",
     goalContractHash: contractHash,
@@ -1884,38 +2083,8 @@ async function upgradeRequirementCoverageToV2(
   requirementId: string,
 ): Promise<void> {
   const coverage = requirementCoverage([requirementId], contractHash);
-  Object.assign(coverage.entries[0]!, {
-    evaluatorProfileVersionRefs: ["evaluator.software-verification-quality@2"],
-    validationBindingId: `binding-${requirementId}`,
-    criterionIds: [`criterion-${requirementId}`],
-    acceptanceCriteria: [`${requirementId} is independently verified`],
-    requiredEvidenceKinds: ["artifact-ref"],
-  });
+  coverage.entries[0]!.requiredEvidenceKinds = ["artifact-ref"];
   await replaceRequirementCoverage(db, runId, coverage);
-  await db.query(
-    `update southstar.workflow_runs
-        set workflow_manifest_json = workflow_manifest_json || $2::jsonb
-      where id = $1`,
-    [runId, JSON.stringify({
-      evaluatorPipelines: [{
-        id: "software-verification-quality",
-        libraryObjectRef: "evaluator.software-verification-quality",
-        libraryVersionRef: "evaluator.software-verification-quality@2",
-        validationBindingIds: [`binding-${requirementId}`],
-        evaluators: [{
-          id: `check-${requirementId}`,
-          kind: "checker-agent",
-          required: true,
-          config: {
-            criterionId: `criterion-${requirementId}`,
-            acceptanceCriterion: `${requirementId} is independently verified`,
-            expectedEvidenceKinds: ["artifact-ref"],
-          },
-        }],
-        onFailure: { defaultStrategy: "request-workflow-revision" },
-      }],
-    })],
-  );
 }
 
 function requirementGoalContract(
@@ -2068,6 +2237,52 @@ async function replaceRequirementCoverage(db: SouthstarDb, runId: string, payloa
     title: "Goal Requirement Coverage",
     payload,
   });
+  const entries = (payload as { entries?: Array<ReturnType<typeof requirementCoverage>["entries"][number]> }).entries;
+  if (!Array.isArray(entries)) return;
+  const grouped = new Map<string, typeof entries>();
+  for (const entry of entries) {
+    if (
+      !Array.isArray(entry.criterionIds)
+      || entry.criterionIds.length === 0
+      || entry.evaluatorProfileRefs.length !== 1
+      || entry.evaluatorProfileVersionRefs.length !== 1
+      || !entry.validationBindingId
+    ) continue;
+    const key = `${entry.evaluatorProfileRefs[0]}\u0000${entry.evaluatorProfileVersionRefs[0]}`;
+    const group = grouped.get(key) ?? [];
+    group.push(entry);
+    grouped.set(key, group);
+  }
+  if (grouped.size === 0) return;
+  const evaluatorPipelines = [...grouped.values()].map((group) => {
+    const profileRef = group[0]!.evaluatorProfileRefs[0]!;
+    const profileVersionRef = group[0]!.evaluatorProfileVersionRefs[0]!;
+    return {
+      id: profileRef.replace(/^evaluator[.:]/, ""),
+      libraryObjectRef: profileRef,
+      libraryVersionRef: profileVersionRef,
+      validationBindingIds: group.map((entry) => entry.validationBindingId!),
+      evaluators: group.flatMap((entry) => entry.criterionIds.map((criterionId, index) => ({
+        id: `check-${criterionId}`,
+        kind: "checker-agent",
+        required: true,
+        config: {
+          validationBindingId: entry.validationBindingId,
+          requirementId: entry.requirementId,
+          criterionId,
+          acceptanceCriterion: entry.acceptanceCriteria[index],
+          expectedEvidenceKinds: entry.requiredEvidenceKinds,
+        },
+      }))),
+      onFailure: { defaultStrategy: "request-workflow-revision" },
+    };
+  });
+  await db.query(
+    `update southstar.workflow_runs
+        set workflow_manifest_json = workflow_manifest_json || $2::jsonb
+      where id = $1`,
+    [runId, JSON.stringify({ evaluatorPipelines })],
+  );
 }
 
 async function evaluatorResourceCount(db: SouthstarDb, runId: string): Promise<number> {
@@ -2124,11 +2339,23 @@ function validVerifierCallback(fixture: { runId: string; producerArtifactRefId: 
 function verifierCallback(input: {
   runId: string;
   artifact: Record<string, unknown>;
+  criterionIds?: string[];
   ok?: boolean;
   sessionId?: string;
   attemptId?: string;
   attempts?: number;
 }): PostgresTaskRunCallbackResult {
+  const artifact = withExplicitEvidenceRefs(input.artifact, input.runId);
+  if (!Array.isArray(artifact.criteriaResults)) {
+    const evidenceRefs = artifactEvidenceClaims(artifact, input.runId).map((claim) => claim.ref);
+    const verdict = input.ok === false || artifact.pass === false ? "failed" : "passed";
+    artifact.criteriaResults = (input.criterionIds ?? ["criterion-req-offline"]).map((criterionId) => ({
+      criterionId,
+      verdict,
+      evidenceRefs,
+      findings: [],
+    }));
+  }
   return {
     runId: input.runId,
     taskId: "task-verify",
@@ -2136,11 +2363,35 @@ function verifierCallback(input: {
     ok: input.ok ?? true,
     attempts: input.attempts ?? 1,
     attemptId: input.attemptId ?? "attempt-1",
-    artifact: input.artifact,
+    artifact,
     metrics: {},
     events: [],
     receivedAt: "2026-07-10T00:05:00.000Z",
   };
+}
+
+function withExplicitEvidenceRefs(artifact: Record<string, unknown>, runId: string): Record<string, unknown> {
+  const result = structuredClone(artifact);
+  for (const [field, prefix] of [
+    ["commandsRun", "command-output"],
+    ["testResults", "test-result"],
+    ["tests", "test-result"],
+    ["filesChanged", "file-diff"],
+    ["filesToInspect", "workspace-snapshot"],
+    ["approvals", "human-approval"],
+    ["policyDecisions", "policy-decision"],
+  ] as const) {
+    const values = result[field];
+    if (!Array.isArray(values)) continue;
+    result[field] = values.map((value, index) => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+      const record = value as Record<string, unknown>;
+      if (["evidenceRef", "artifactRef", "ref", "id", "resourceKey", "path", "url"]
+        .some((key) => typeof record[key] === "string" && record[key] !== "")) return value;
+      return { ...record, ref: `${prefix}:${runId}:${index}` };
+    });
+  }
+  return result;
 }
 
 async function post(baseUrl: string, path: string, body: unknown): Promise<{ ok: true; kind: string; result: { accepted?: boolean; duplicate?: boolean; artifactRefId?: string; artifactResourceId?: string } }> {

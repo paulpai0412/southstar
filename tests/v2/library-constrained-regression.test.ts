@@ -5,15 +5,18 @@ import { DeterministicFixtureComposer, seedDeterministicWorkflowGraph } from "./
 import { createPostgresPlannerDraft } from "../../src/v2/ui-api/postgres-run-api.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 import { fixedGoalInterpreter, softwareGoalContract } from "./fixtures/goal-contract.ts";
+import { canonicalGoalDesignPackageFixture } from "./fixtures/goal-design.ts";
 
 test("llm-constrained path stores selected refs and validator proof in planner draft", async () => {
   const db = await createTestPostgresDb();
   try {
     await seedDeterministicWorkflowGraph(db);
+    const goalContract = softwareGoalContract("implement calc sum with tests and docs");
     const draft = await createPostgresPlannerDraft(db, {
       goalPrompt: "implement calc sum with tests and docs",
       orchestrationMode: "llm-constrained",
-      goalInterpreter: fixedGoalInterpreter(softwareGoalContract("implement calc sum with tests and docs")),
+      goalInterpreter: fixedGoalInterpreter(goalContract),
+      goalDesignPackage: canonicalGoalDesignPackageFixture(goalContract),
       composer: new DeterministicFixtureComposer(),
     });
     const resource = await db.one<{
