@@ -134,6 +134,20 @@ Use runtime command routes for pause/resume/cancel/retry/fork/reset/rollback/rev
 - `ponytail@ponytail` is installed/enabled. For coding, refactoring, or review tasks, use the bundled `ponytail` skill by default (`lite`, `full`, or `ultra`); use `ponytail-review`/`ponytail-audit` for explicit review/audit requests. Read the installed `SKILL.md` first, reuse existing code, apply YAGNI/stdlib/native-first, and never simplify away validation, security, accessibility, error handling, or explicitly requested real E2E.
 - `karpathy-guidelines` is installed at `~/.codex/skills/karpathy-guidelines`. For prompt/agent-quality, simplicity, or surgical refactor work, read its `SKILL.md` and apply its think-before-coding, minimum-change, and verifiable-success guidance; also recognize the possible user spelling `kathpathy`.
 
+## Agent skills
+
+### Issue tracker
+
+Issues are tracked in GitHub Issues for `paulpai0412/southstar`. External PRs are not a triage surface. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, and `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This is a single-context repository using root `CONTEXT.md` and `docs/adr/`. See `docs/agents/domain.md`.
+
 ## Testing guidance
 
 - Use focused tests for a subsystem and `npm run test:v2` for the v2 gate.
