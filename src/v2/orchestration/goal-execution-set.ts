@@ -7,7 +7,6 @@ import { startRunSchedulingPg } from "../server/run-execution-controller.ts";
 import { getResourceByKeyPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../ui-api/postgres-run-api.ts";
 import {
-  finalizeGoalDesignPackage,
   finalizeGoalDesignPackageV2,
   type GoalDesignPackage,
   type GoalSliceV1,
@@ -400,34 +399,13 @@ function updateEntry(
 
 function goalDesignPackageForSlice(pkg: GoalDesignPackage, slice: GoalSliceV1): GoalDesignPackage {
   const sliceGoalContract = goalContractForSlice(pkg.goalContract, slice);
-  if (pkg.schemaVersion === "southstar.goal_design_package.v2") {
-    return finalizeGoalDesignPackageV2({
-      schemaVersion: "southstar.goal_design_package.v2",
-      revision: pkg.revision,
-      ...(pkg.parentRevision !== undefined ? { parentRevision: pkg.parentRevision } : {}),
-      goalContract: sliceGoalContract,
-      requirementDraftHash: pkg.requirementDraftHash,
-      validationBindings: pkg.validationBindings.filter((binding) => slice.evaluatorContractRefs.includes(binding.id)),
-      slicePlan: {
-        schemaVersion: "southstar.goal_slice_plan.v1",
-        goalContractHash: "host-filled",
-        revision: pkg.slicePlan.revision,
-        slices: [{ ...slice, dependsOnSliceIds: [], dependencyArtifactRefs: [] }],
-      },
-      compositionStrategy: { mode: "single-run", sliceIds: [slice.id], rationale: `Compose slice ${slice.id} as one ordinary run.` },
-      templatePolicy: pkg.templatePolicy,
-      goalDesignSkillRef: pkg.goalDesignSkillRef,
-      goalDesignSkillVersionRef: pkg.goalDesignSkillVersionRef,
-      workspaceDiscoveryHash: pkg.workspaceDiscoveryHash,
-      mode: pkg.mode,
-    });
-  }
-  return finalizeGoalDesignPackage({
-    schemaVersion: "southstar.goal_design_package.v1",
+  return finalizeGoalDesignPackageV2({
+    schemaVersion: "southstar.goal_design_package.v2",
     revision: pkg.revision,
     ...(pkg.parentRevision !== undefined ? { parentRevision: pkg.parentRevision } : {}),
     goalContract: sliceGoalContract,
-    evaluatorContracts: pkg.evaluatorContracts.filter((contract) => slice.evaluatorContractRefs.includes(contract.id)),
+    requirementDraftHash: pkg.requirementDraftHash,
+    validationBindings: pkg.validationBindings.filter((binding) => slice.evaluatorContractRefs.includes(binding.id)),
     slicePlan: {
       schemaVersion: "southstar.goal_slice_plan.v1",
       goalContractHash: "host-filled",

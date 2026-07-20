@@ -6,7 +6,7 @@ import {
 import { LlmWorkflowComposer, loadWorkflowComposerSopPg } from "../orchestration/llm-composer.ts";
 import type { WorkflowComposer } from "../orchestration/composer.ts";
 import type { RuntimeServerContext } from "./runtime-context.ts";
-import { resolveGoalDesigner, resolveGoalInterpreter } from "./planner-routes.ts";
+import { resolveGoalInterpreter, resolveGoalRequirementInterpreter } from "./planner-routes.ts";
 import { submitGoalPg } from "../orchestration/run-goal-service.ts";
 import type { ApiEnvelope } from "./types.ts";
 
@@ -42,7 +42,7 @@ export async function handleWorkflowTemplateRoute(
       submitGoal: (goalRequest) => submitGoalPg({
         db: context.db,
         goalInterpreter: resolveGoalInterpreter(context),
-        goalDesigner: resolveGoalDesigner(context),
+        goalRequirementInterpreter: resolveGoalRequirementInterpreter(context),
         composer: resolveWorkflowTemplateComposer(context),
       }, goalRequest),
     }));

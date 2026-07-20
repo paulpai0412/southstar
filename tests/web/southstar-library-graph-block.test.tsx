@@ -7,6 +7,7 @@ import test from "node:test";
 import { build } from "esbuild";
 import { chromium, type Page } from "playwright";
 import React from "react";
+import { prepareGraphNodeSelection, selectDirectGraphNeighborhood, selectGraphNeighborhood } from "../../web/components/library/LibraryGraphChart";
 
 const root = join(import.meta.dirname, "../..");
 const require = createRequire(import.meta.url);
@@ -194,6 +195,53 @@ test("LibraryGraphChart emits selected node events for file viewer integration",
     await graphNode.press(" ");
     assert.equal(await page.evaluate(() => (window as any).__selectedGraphNode), "agent.frontend-developer");
   });
+});
+
+test("selectDirectGraphNeighborhood keeps only the selected node's direct edges", async () => {
+  const graph = {
+    activeScope: "all",
+    nodes: [
+      { objectKey: "node-a", objectKind: "task", title: "A" },
+      { objectKey: "node-b", objectKind: "task", title: "B" },
+      { objectKey: "node-c", objectKind: "task", title: "C" },
+      { objectKey: "node-d", objectKind: "task", title: "D" },
+    ],
+    edges: [
+      { fromObjectKey: "node-a", edgeType: "depends on", toObjectKey: "node-b" },
+      { fromObjectKey: "node-b", edgeType: "depends on", toObjectKey: "node-c" },
+      { fromObjectKey: "node-a", edgeType: "depends on", toObjectKey: "node-d" },
+        { fromObjectKey: "node-c", edgeType: "depends on", toObjectKey: "node-d" },
+      ],
+  };
+  const selection = selectDirectGraphNeighborhood(graph, "node-a");
+  assert.deepEqual(selection.nodes.map((node) => node.objectKey), ["node-a", "node-b", "node-d"]);
+  assert.deepEqual(
+    selection.edges.map((edge) => `${edge.fromObjectKey}->${edge.toObjectKey}`),
+    ["node-a->node-b", "node-a->node-d"],
+  );
+  const prepared = prepareGraphNodeSelection(graph, graph.nodes[0]!);
+  assert.deepEqual(prepared.selectionGraph?.nodes.map((node) => node.objectKey), ["node-a", "node-b", "node-d"]);
+  assert.deepEqual(prepared.selectionGraph?.edges, selection.edges);
+});
+
+test("selectGraphNeighborhood preserves the recursive candidate coverage graph", async () => {
+  const selection = selectGraphNeighborhood({
+    activeScope: "all",
+    nodes: [
+      { objectKey: "node-a", objectKind: "task", title: "A" },
+      { objectKey: "node-b", objectKind: "task", title: "B" },
+      { objectKey: "node-c", objectKind: "task", title: "C" },
+      { objectKey: "node-d", objectKind: "task", title: "D" },
+    ],
+    edges: [
+      { fromObjectKey: "node-a", edgeType: "depends on", toObjectKey: "node-b" },
+      { fromObjectKey: "node-b", edgeType: "depends on", toObjectKey: "node-c" },
+      { fromObjectKey: "node-a", edgeType: "depends on", toObjectKey: "node-d" },
+      { fromObjectKey: "node-c", edgeType: "depends on", toObjectKey: "node-d" },
+    ],
+  }, "node-a");
+  assert.deepEqual(selection.nodes.map((node) => node.objectKey), ["node-a", "node-b", "node-c", "node-d"]);
+  assert.equal(selection.edges.length, 4);
 });
 
 async function routeEmptyLibraryGraph(page: Page): Promise<void> {

@@ -65,6 +65,7 @@ const POSTGRES_STARTUP_TIMEOUT_MS = 30_000;
 const TORK_STARTUP_TIMEOUT_MS = 30_000;
 const TORK_SHUTDOWN_TIMEOUT_MS = 10_000;
 const TORK_WEB_STARTUP_TIMEOUT_MS = 30_000;
+const DEFAULT_TORK_WORKER_QUEUE_CONCURRENCY = 5;
 const DEFAULT_TORK_CONFIG = `[datastore]
 type = "postgres"
 
@@ -77,6 +78,9 @@ privileged = false
 
 [runtime.docker.image]
 ttl = "24h"
+
+[worker.queues]
+default = 5
 
 [mounts.bind]
 allowed = true
@@ -402,7 +406,8 @@ export function createSouthstarInfraLifecycle(input: InfraLifecycleInput = {}) {
       ...workspaceMountSources,
     ]);
     const mergedConfig = mergeTorkBindSources(baseConfig, sourcePaths);
-    await writeTextFile(managedConfigPath, ensureTorkCoordinatorAddress(mergedConfig, env.torkBaseUrl));
+    const configuredWorker = ensureTorkWorkerQueueConcurrency(mergedConfig);
+    await writeTextFile(managedConfigPath, ensureTorkCoordinatorAddress(configuredWorker, env.torkBaseUrl));
     return managedConfigPath;
   }
 }
@@ -429,6 +434,18 @@ ${uniqueSourcePaths.map((sourcePath) => `  ${quoteTomlString(sourcePath)}`).join
   return `${configText.slice(0, match.index)}${match[1]}
 ${mergedSources.map((sourcePath) => `  ${quoteTomlString(sourcePath)}`).join(",\n")}
 ]${configText.slice(match.index + match[0].length)}`;
+}
+
+export function ensureTorkWorkerQueueConcurrency(
+  configText: string,
+  concurrency = DEFAULT_TORK_WORKER_QUEUE_CONCURRENCY,
+): string {
+  if (/^\[worker\.queues\]$/m.test(configText)) return configText;
+  return `${configText.trimEnd()}
+
+[worker.queues]
+default = ${concurrency}
+`;
 }
 
 function ensureTorkCoordinatorAddress(configText: string, torkBaseUrl: string): string {

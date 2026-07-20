@@ -102,7 +102,23 @@ export type GoalDesignPackageV2 = {
   mode: GoalDesignMode;
 };
 
-export type GoalDesignPackage = GoalDesignPackageV1 | GoalDesignPackageV2;
+// Package V2 is the only persisted Goal Design contract. Old V1 drafts are
+// intentionally not readable by the runtime and must be regenerated through
+// the staged Requirement/Validation/Slice flow.
+export type GoalDesignPackage = GoalDesignPackageV2;
+
+export type GoalSliceDesignRevisionProposal =
+  | {
+      kind: "revision";
+      slicePlan: Pick<GoalSlicePlanV1, "slices">;
+      compositionStrategy: CompositionStrategyV1;
+      summary: string;
+      changedSliceIds: string[];
+    }
+  | {
+      kind: "needs_input";
+      question: string;
+    };
 
 export type GoalSliceDesigner = {
   design(input: {
@@ -115,6 +131,18 @@ export type GoalSliceDesigner = {
     skill: ResolvedGoalDesignSkillV1;
     onDelta?: (text: string) => void;
   }): Promise<GoalDesignPackageV2>;
+  revise(input: {
+    currentPackage: GoalDesignPackageV2;
+    requirementDraft: GoalRequirementDraftV1;
+    validationBindings: RequirementValidationBindingV1[];
+    workspaceDiscovery: WorkspaceGoalDiscoveryV1;
+    mode: GoalDesignMode;
+    templatePolicy: WorkflowTemplatePolicyV1;
+    skill: ResolvedGoalDesignSkillV1;
+    message: string;
+    selectedSliceId?: string;
+    onDelta?: (text: string) => void;
+  }): Promise<GoalSliceDesignRevisionProposal>;
 };
 
 export type GoalDesignSteeringProposalV1 =
@@ -199,6 +227,13 @@ type DesignGoalSlicesWithLlmInput = {
   onDelta?: (text: string) => void;
 };
 
+type ReviseGoalSlicesWithLlmInput = Omit<DesignGoalSlicesWithLlmInput, "onDelta"> & {
+  currentPackage: GoalDesignPackageV2;
+  message: string;
+  selectedSliceId?: string;
+  onDelta?: (text: string) => void;
+};
+
 type LlmGoalDesignPayload = {
   evaluatorContracts: Array<Omit<RequirementEvaluatorContractV1, "schemaVersion"> & { schemaVersion?: string }>;
   slicePlan: { revision: number; slices: GoalSliceV1[] };
@@ -225,6 +260,16 @@ type LlmGoalSlicePayload = {
   slicePlan: { slices: GoalSliceV1[] };
   compositionStrategy: CompositionStrategyV1;
 };
+
+type LlmGoalSliceRevisionPayload =
+  | { kind: "needs_input"; question: string }
+  | {
+      kind: "revision";
+      slicePlan: { slices: GoalSliceV1[] };
+      compositionStrategy: CompositionStrategyV1;
+      summary: string;
+      changedSliceIds: string[];
+    };
 
 const MAX_DESIGN_RESPONSE_CHARS = 60_000;
 const MAX_DESIGN_ATTEMPTS = 2;
@@ -358,6 +403,58 @@ export async function designGoalSlicesWithLlm(
   throw new Error("Goal Slice Design exhausted attempts");
 }
 
+export async function reviseGoalSlicesWithLlm(
+  input: ReviseGoalSlicesWithLlmInput,
+): Promise<GoalSliceDesignRevisionProposal> {
+  assertConfirmedSliceDesignInputs(input);
+  if (input.currentPackage.schemaVersion !== "southstar.goal_design_package.v2") {
+    throw new Error("staged Slice revision requires Goal Design Package V2");
+  }
+  if (input.currentPackage.requirementDraftHash !== input.requirementDraft.draftHash
+    || input.currentPackage.goalContractHash !== goalContractHash(input.goalContract)
+    || input.currentPackage.validationBindingsHash !== contentHashForPayload(input.validationBindings)) {
+    throw new Error("staged Slice revision inputs do not match the reviewed package");
+  }
+  const basePrompt = renderSliceRevisionPrompt(input);
+  let prompt = basePrompt;
+  for (let attempt = 1; attempt <= MAX_DESIGN_ATTEMPTS; attempt += 1) {
+    const deltas: string[] = [];
+    const textInput = {
+      model: input.model,
+      prompt,
+      temperature: 0,
+      cwd: input.goalContract.workspace.cwd,
+    };
+    const response = input.client.generateTextStream
+      ? await input.client.generateTextStream(textInput, { onDelta: (delta) => deltas.push(delta) })
+      : await input.client.generateText(textInput);
+    try {
+      const payload = parseGoalSliceRevisionPayload(response);
+      if (payload.kind === "needs_input") return payload;
+      const hostFinalized = hostFinalizeSlicePayload(payload, input.goalContract);
+      const changedSliceIds = payload.changedSliceIds.map((id) => hostFinalized.canonicalSliceIds.get(id) ?? id);
+      for (const delta of deltas) input.onDelta?.(delta);
+      return {
+        kind: "revision",
+        slicePlan: { slices: hostFinalized.slices },
+        compositionStrategy: hostFinalized.compositionStrategy,
+        summary: payload.summary,
+        changedSliceIds,
+      };
+    } catch (error) {
+      if (attempt === MAX_DESIGN_ATTEMPTS) throw error;
+      prompt = [
+        basePrompt,
+        "",
+        `The previous Slice revision response was invalid: ${error instanceof Error ? error.message : String(error)}`,
+        "Return one corrected JSON object only.",
+        `PreviousResponse: ${response.slice(0, MAX_DESIGN_RESPONSE_CHARS)}`,
+      ].join("\n");
+    }
+  }
+  throw new Error("Goal Slice revision exhausted attempts");
+}
+
 export function createLlmGoalSliceDesigner(input: {
   client: LlmTextClient;
   model: string;
@@ -366,6 +463,14 @@ export function createLlmGoalSliceDesigner(input: {
     async design(designInput) {
       return await designGoalSlicesWithLlm({
         ...designInput,
+        client: input.client,
+        model: input.model,
+      });
+    },
+    async revise(revisionInput) {
+      return await reviseGoalSlicesWithLlm({
+        ...revisionInput,
+        goalContract: revisionInput.currentPackage.goalContract,
         client: input.client,
         model: input.model,
       });
@@ -706,6 +811,41 @@ function renderSliceDesignPrompt(input: DesignGoalSlicesWithLlmInput): string {
   ].join("\n");
 }
 
+function renderSliceRevisionPrompt(input: ReviseGoalSlicesWithLlmInput): string {
+  const allowedRequirementIds = input.goalContract.requirements.map((requirement) => requirement.id);
+  const allowedBindingIds = input.validationBindings.map((binding) => binding.id);
+  const allowedArtifactRefs = [...new Set([
+    ...input.goalContract.expectedArtifactRefs,
+    ...input.validationBindings.flatMap((binding) => binding.artifactContractRefs),
+  ])];
+  return [
+    "Use the approved Library Goal Design SOP to revise the reviewed Slice Plan.",
+    `GoalDesignSkillRef: ${input.skill.objectKey}`,
+    `GoalDesignSkillVersionRef: ${input.skill.versionRef}`,
+    input.skill.body,
+    "",
+    "Return one JSON object only.",
+    "RevisionSliceDesignResponseSchema:",
+    "{kind: \"revision\", slicePlan: {slices: []}, compositionStrategy: {}, summary: string, changedSliceIds: string[]}",
+    "If the request is ambiguous, return {kind: \"needs_input\", question: string}.",
+    "The host owns package revision, canonical ids, hashes, Goal Contract, and frozen validation bindings.",
+    "Do not add or change requirements, acceptance criteria, validation bindings, evaluator profiles, artifact contracts, or version refs.",
+    `AllowedRequirementIds: ${JSON.stringify(allowedRequirementIds)}`,
+    `AllowedValidationBindingIds: ${JSON.stringify(allowedBindingIds)}`,
+    `AllowedArtifactRefs: ${JSON.stringify(allowedArtifactRefs)}`,
+    "evaluatorContractRefs is a legacy field name: fill it only with AllowedValidationBindingIds.",
+    "Return the complete revised Slice Plan and composition strategy, not a patch.",
+    `Mode: ${input.mode}`,
+    `TemplatePolicy: ${JSON.stringify(input.templatePolicy)}`,
+    `WorkspaceDiscovery: ${JSON.stringify(input.workspaceDiscovery)}`,
+    `GoalContract: ${JSON.stringify(input.goalContract)}`,
+    `ValidationBindings: ${JSON.stringify(input.validationBindings)}`,
+    `CurrentGoalDesignPackage: ${JSON.stringify(input.currentPackage)}`,
+    `SelectedSliceId: ${input.selectedSliceId ?? ""}`,
+    `UserMessage: ${input.message}`,
+  ].join("\n");
+}
+
 function renderRevisionPrompt(input: {
   skill: ResolvedGoalDesignSkillV1;
   currentPackage: GoalDesignPackageV1;
@@ -772,6 +912,33 @@ function parseGoalSlicePayload(text: string): LlmGoalSlicePayload {
   };
 }
 
+function parseGoalSliceRevisionPayload(text: string): LlmGoalSliceRevisionPayload {
+  if (text.length > MAX_DESIGN_RESPONSE_CHARS) throw new Error("Goal Slice revision response is too large");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text.trim());
+  } catch {
+    throw new Error("Goal Slice revision returned invalid JSON");
+  }
+  const object = record(parsed, "$");
+  const kind = string(object.kind, "kind");
+  if (kind === "needs_input") {
+    exactKeys(object, ["kind", "question"], "$");
+    return { kind, question: string(object.question, "question") };
+  }
+  if (kind !== "revision") throw new Error("Goal Slice revision kind must be revision or needs_input");
+  exactKeys(object, ["kind", "slicePlan", "compositionStrategy", "summary", "changedSliceIds"], "$");
+  const slicePlan = record(object.slicePlan, "slicePlan");
+  exactKeys(slicePlan, ["slices"], "slicePlan");
+  return {
+    kind,
+    slicePlan: { slices: array(slicePlan.slices, "slicePlan.slices").map(parseSlice) },
+    compositionStrategy: parseCompositionStrategy(record(object.compositionStrategy, "compositionStrategy")),
+    summary: string(object.summary, "summary"),
+    changedSliceIds: stringArray(object.changedSliceIds, "changedSliceIds"),
+  };
+}
+
 function assertConfirmedSliceDesignInputs(input: DesignGoalSlicesWithLlmInput): void {
   const { draftHash: _draftHash, ...withoutDraftHash } = input.requirementDraft;
   if (input.requirementDraft.draftHash !== goalRequirementDraftHash(withoutDraftHash)) {
@@ -805,7 +972,11 @@ function assertConfirmedSliceDesignInputs(input: DesignGoalSlicesWithLlmInput): 
 function hostFinalizeSlicePayload(
   payload: LlmGoalSlicePayload,
   goalContract: GoalContractV1,
-): { slices: GoalSliceV1[]; compositionStrategy: CompositionStrategyV1 } {
+): {
+  slices: GoalSliceV1[];
+  compositionStrategy: CompositionStrategyV1;
+  canonicalSliceIds: Map<string, string>;
+} {
   const aliasToCanonical = new Map<string, string>();
   for (const slice of payload.slicePlan.slices) {
     if (aliasToCanonical.has(slice.id)) throw new Error(`duplicate slice alias: ${slice.id}`);
@@ -840,6 +1011,7 @@ function hostFinalizeSlicePayload(
       ...payload.compositionStrategy,
       sliceIds: payload.compositionStrategy.sliceIds.map((alias) => canonicalSliceId(alias, "compositionStrategy.sliceIds")),
     },
+    canonicalSliceIds: aliasToCanonical,
   };
 }
 

@@ -1,0 +1,68 @@
+schemaVersion: southstar.library.evaluator_profile_file.v1
+id: evaluator.finance-expense-ledger-outcome-evaluator
+title: "Finance Expense Ledger Outcome Evaluator"
+scope: "finance"
+status: approved
+semanticTags:
+  - "daily-bookkeeping"
+  - "expense-entry"
+  - "ledger"
+  - "balance-tracking"
+  - "ledger-math"
+  - "expense-statistics"
+  - "spending-summary"
+  - "data-persistence"
+  - "daily-continuity"
+validatesArtifactRefs:
+  - "artifact.finance-expense-ledger-outcome-bundle"
+requiredInputs:
+  - "artifact.finance-expense-ledger-outcome-bundle"
+  - "ui-evidence-set"
+  - "automated-test-results"
+  - "runtime-command-observations"
+evidenceKinds:
+  - "artifact-ref"
+  - "screenshot"
+  - "test-result"
+  - "url"
+  - "command-output"
+  - "workspace-snapshot"
+verificationModes:
+  - "browser_interaction"
+  - "deterministic"
+verificationProcedures:
+  - id: "expense-entry-ui-and-input-guard"
+    checkKind: "browser_interaction"
+    instruction: "Verify a valid expense submission appears in the visible ledger with consistent values and verify invalid amount input is blocked with corrective feedback using browser-path evidence and automated checks."
+    allowedEvidenceKinds:
+      - "screenshot"
+      - "test-result"
+      - "url"
+  - id: "balance-and-summary-reconciliation"
+    checkKind: "deterministic"
+    instruction: "Recompute balance, daily totals, and monthly totals from the artifact ledger entries and compare against reported snapshots and UI-visible summaries for consistency."
+    allowedEvidenceKinds:
+      - "artifact-ref"
+      - "screenshot"
+      - "test-result"
+  - id: "persistence-roundtrip-continuity"
+    checkKind: "deterministic"
+    instruction: "Validate at least one complete write-read-reload cycle by comparing before/after ledger and balance states, corroborated by execution logs and workspace persistence evidence."
+    allowedEvidenceKinds:
+      - "artifact-ref"
+      - "command-output"
+      - "test-result"
+      - "workspace-snapshot"
+independencePolicy: "independent"
+resultSchemaRef: "southstar.requirement_evaluator_result.v2"
+failureClassifications:
+  - "missing-evidence"
+  - "artifact-schema-invalid"
+  - "entry-list-inconsistency"
+  - "invalid-input-guard-missing"
+  - "balance-reconciliation-failed"
+  - "summary-reconciliation-failed"
+  - "persistence-roundtrip-failed"
+importDraftId: "library-import-goal-0da614c86964f7a26332161a094bedc6"
+importCandidateKey: "evaluator.finance-expense-ledger-outcome-evaluator"
+importSourcePath: "Confirmed-Goal-validation-gaps.md"

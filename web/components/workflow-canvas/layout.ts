@@ -10,7 +10,7 @@ import type {
 const elk = new ELK();
 const NODE_WIDTH = 272;
 const NODE_HEIGHT = 142;
-const NODE_HEIGHT_COLLAPSED = 68;
+const NODE_HEIGHT_COLLAPSED = 88;
 
 export async function buildWorkflowFlowLayout(input: {
   canvas: WorkflowCanvasModel;

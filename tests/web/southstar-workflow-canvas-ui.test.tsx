@@ -152,6 +152,56 @@ test("generateWorkflowDagStream parses POST SSE message deltas and DAG payloads"
   }
 });
 
+test("current Goal Design mutation snapshot comes from the host draft", async () => {
+  const originalFetch = global.fetch;
+  global.fetch = (async () => new Response(JSON.stringify({ result: {
+    draftId: "draft-goal-1:slice-revision:child",
+    status: "ready_for_review",
+    goalDesignPhase: "slice_review",
+    goalDesignPackageHash: "current-hash",
+    goalDesignPackage: { revision: 3, packageHash: "current-hash" },
+  } }), { status: 200, headers: { "content-type": "application/json" } })) as typeof fetch;
+  try {
+    const { readCurrentGoalDesignDraft } = await import("../../web/lib/workflow/goal-design-draft.ts");
+    const current = await readCurrentGoalDesignDraft("draft-goal-1:slice-revision:child");
+    assert.equal(current.goalDesignPackageHash, "current-hash");
+    assert.equal((current.goalDesignPackage as { revision: number }).revision, 3);
+    assert.equal(current.goalDesignPhase, "slice_review");
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("saved Goal Design projection persists the complete current snapshot", async () => {
+  const { goalDesignContentFromSelection } = await import("../../web/lib/workflow/goal-design-draft.ts");
+  const packageValue = { revision: 4, packageHash: "current-hash", slicePlan: { slices: [] } };
+  const requirementDraft = {
+    schemaVersion: "southstar.goal_requirement_draft.v1" as const,
+    revision: 2,
+    originalPrompt: "Review the current slice",
+    workspace: { cwd: "/tmp/project" },
+    summary: "A reviewable slice",
+    requirements: [],
+    nonGoals: [],
+    blockingInputs: [],
+    draftHash: "requirement-hash",
+  };
+  const content = goalDesignContentFromSelection({
+    draftId: "draft-goal-1:slice-revision:child",
+    status: "ready_for_review",
+    goalDesignPhase: "slice_review",
+    goalDesignPackageHash: "current-hash",
+    selectedSliceId: "slice-review",
+    package: packageValue,
+    requirementDraft,
+  });
+  assert.equal(content.type, "goalDesign");
+  assert.equal(content.goalDesignPackageHash, "current-hash");
+  assert.deepEqual(content.package, packageValue);
+  assert.equal(content.goalRequirementDraftHash, "requirement-hash");
+  assert.equal(content.selectedSliceId, "slice-review");
+});
+
 test("generateWorkflowDagStream reuses an explicit idempotency key for recoverable retries", async () => {
   const originalFetch = global.fetch;
   const keys: string[] = [];
@@ -1129,6 +1179,18 @@ test("workflow canvas lays out collapsed nodes shorter and wires their toggle", 
   assert.equal(toggled, "plan");
 });
 
+test("workflow canvas defaults every node collapsed and keeps important summary fields visible", () => {
+  const canvas = source("web/components/workflow-canvas/SouthstarWorkflowCanvas.tsx");
+  const node = source("web/components/workflow-canvas/WorkflowTaskNode.tsx");
+  assert.match(canvas, /useState<Set<string>>\(\s*\(\) => new Set\(props\.canvas\.nodes\.map\(\(node\) => node\.id\)\),?\s*\)/);
+  assert.match(canvas, /collapsedGraphIdRef/);
+  assert.match(canvas, /props\.canvas\.nodes\.length === 0/);
+  assert.match(node, /ss-flow-node-collapsed-summary/);
+  assert.match(node, /data-node-field=\"nodeType\"/);
+  assert.match(node, /data-node-field=\"requirementIds\"/);
+  assert.match(node, /data-node-field=\"expectedOutputs\"/);
+});
+
 test("Workflow DAG block exposes Save Template action for draft DAGs", () => {
   const sourceText = source("web/components/WorkflowDagBlock.tsx");
   assert.match(sourceText, /Save Template/);
@@ -1843,8 +1905,8 @@ test("selecting a slice resolves id-only references in the right-side viewer", a
       const [selection, setSelection] = useState(null);
       return <main>
         <GoalSlicePlanBlock
-          block={{ type: "goalDesign", draftId: "draft-goal-1", status: "ready_for_review", goalDesignPackageHash: "package-hash", package: goalDesign }}
-          requirementContent={{ type: "goalRequirements", draftId: "draft-goal-1", status: "requirements_review", goalRequirementDraftHash: "draft-hash", draft: requirementDraft, confirmable: false }}
+          block={{ type: "goalDesign", draftId: "draft-goal-1:slice-revision:child", status: "ready_for_review", goalDesignPackageHash: "package-hash", package: goalDesign }}
+          requirementContent={{ type: "goalRequirements", draftId: "draft-goal-1:slice-revision:child", status: "requirements_review", goalRequirementDraftHash: "draft-hash", draft: requirementDraft, confirmable: false }}
           onSliceSelect={setSelection}
         />
         {selection ? <GoalSliceEditor selection={selection} /> : null}
@@ -1852,6 +1914,8 @@ test("selecting a slice resolves id-only references in the right-side viewer", a
     }
     createRoot(document.getElementById("root")).render(<Harness />);
   `, async (page) => {
+    assert.equal(await page.getByTestId("goal-slice-plan-block").getAttribute("data-draft-id"), "draft-goal-1:slice-revision:child");
+    assert.match(await page.getByTestId("goal-slice-staged-revision").innerText(), /editable/);
     await page.getByTestId("goal-slice-plan-item-slice-review").click();
     assert.match(await page.getByTestId("goal-slice-editor").innerText(), /Submit a review and persist feedback/);
     assert.match(await page.getByTestId("goal-slice-reference-list-requirements").innerText(), /req-review.*Review submission.*learner can submit/i);
@@ -1887,6 +1951,75 @@ test("latest goal design snapshot is the only actionable slice plan", async () =
     assert.match(await plan.innerText(), /Latest plan|Latest slice/);
     assert.doesNotMatch(await plan.innerText(), /Old plan|Old slice/);
     assert.equal(await page.getByTestId("goal-design-confirm-compose").count(), 1);
+  });
+});
+
+test("Slice save uses the host's current package hash at the mutation boundary", async () => {
+  const goalDesign = {
+    revision: 2,
+    packageHash: "old-hash",
+    goalContract: { summary: "Review the current slice" },
+    validationBindings: [],
+    evaluatorContracts: [],
+    slicePlan: {
+      slices: [{
+        id: "slice-review",
+        requirementIds: [],
+        outcome: "old outcome",
+        stateOrArtifactOwner: "review store",
+        mutationBoundary: "review only",
+        expectedArtifactRefs: [],
+        evaluatorContractRefs: [],
+        dependsOnSliceIds: [],
+        dependencyArtifactRefs: [],
+      }],
+    },
+    compositionStrategy: { mode: "sequential", rationale: "Keep the review deterministic." },
+  };
+  const currentPackage = {
+    ...goalDesign,
+    revision: 3,
+    packageHash: "new-hash",
+    slicePlan: { slices: [{ ...goalDesign.slicePlan.slices[0], outcome: "current outcome" }] },
+  };
+  await withBrowserHarness(`
+    import React, { useState } from "react";
+    import { createRoot } from "react-dom/client";
+    import { GoalSliceEditor } from "./web/components/GoalSliceEditor";
+    const selection = {
+      draftId: "draft-goal-1:slice-revision:child",
+      status: "ready_for_review",
+      goalDesignPhase: "slice_review",
+      goalDesignPackageHash: "old-hash",
+      selectedSliceId: "slice-review",
+      package: ${JSON.stringify(goalDesign)},
+    };
+    function Harness() {
+      const [savedHash, setSavedHash] = useState("");
+      return <main>
+        <GoalSliceEditor selection={selection} onPackageChange={(next) => setSavedHash(next.goalDesignPackageHash || "")} />
+        <output data-testid="saved-hash">{savedHash}</output>
+      </main>;
+    }
+    createRoot(document.getElementById("root")).render(<Harness />);
+  `, async (page) => {
+    let patchBody: Record<string, unknown> | undefined;
+    await page.route("**/api/workflow/planner-drafts/**/orchestration", async (route) => {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ result: {
+        draftId: "draft-goal-1:slice-revision:child",
+        status: "ready_for_review",
+        goalDesignPhase: "slice_review",
+        goalDesignPackageHash: "new-hash",
+        goalDesignPackage: currentPackage,
+      } }) });
+    });
+    await page.route("**/api/workflow/planner-drafts/**/goal-design/slices/**", async (route) => {
+      patchBody = JSON.parse(route.request().postData() ?? "{}");
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ result: currentPackage }) });
+    });
+    await page.getByRole("button", { name: "Save slice" }).click();
+    await page.getByTestId("saved-hash").filter({ hasText: "new-hash" }).waitFor();
+    assert.equal(patchBody?.expectedPackageHash, "new-hash");
   });
 });
 

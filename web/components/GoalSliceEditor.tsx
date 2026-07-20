@@ -4,7 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { readLibraryObjectDetail } from "@/lib/library/api";
 import type { LibraryObjectDetail } from "@/lib/library/types";
-import type { GoalSliceSelection } from "@/lib/types";
+import type { GoalDesignPhase, GoalSliceSelection } from "@/lib/types";
+import { readCurrentGoalDesignDraft } from "@/lib/workflow/goal-design-draft";
 
 type GoalSliceView = {
   id: string;
@@ -91,6 +92,7 @@ export function GoalSliceEditor({
   );
   const [form, setForm] = useState<SliceForm>(() => slice ? formFromSlice(slice) : emptyForm());
   const [state, setState] = useState<{ status: "idle" | "saving" | "saved" | "error"; message?: string }>({ status: "idle" });
+  const [livePhase, setLivePhase] = useState<GoalDesignPhase | undefined>(selection.goalDesignPhase);
   const [libraryDetails, setLibraryDetails] = useState<Record<string, LibraryObjectDetail>>({});
   const libraryRefs = useMemo(() => libraryRefsForSlice(slice, pkg), [pkg, slice]);
 
@@ -116,6 +118,21 @@ export function GoalSliceEditor({
     setState({ status: "idle" });
   }, [slice, selection.selectedSliceId, selection.goalDesignPackageHash]);
 
+  useEffect(() => {
+    if (selection.goalDesignPhase) return;
+    let active = true;
+    void fetch(`/api/workflow/planner-drafts/${encodeURIComponent(selection.draftId)}/orchestration`)
+      .then((response) => response.ok ? response.json() as Promise<unknown> : undefined)
+      .then((payload) => {
+        if (!active || !payload || typeof payload !== "object") return;
+        const result = (payload as { result?: unknown }).result;
+        const value = result && typeof result === "object" ? (result as { goalDesignPhase?: unknown }).goalDesignPhase : undefined;
+        if (typeof value === "string") setLivePhase(value as GoalDesignPhase);
+      })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, [selection.draftId, selection.goalDesignPhase]);
+
   if (!pkg || !slice) {
     return (
       <div data-testid="goal-slice-editor" style={shellStyle}>
@@ -128,7 +145,9 @@ export function GoalSliceEditor({
   }
 
   const packageHash = selection.goalDesignPackageHash ?? pkg.packageHash;
-  const canSave = Boolean(packageHash) && state.status !== "saving";
+  const phase = livePhase ?? selection.goalDesignPhase;
+  const frozen = phase === "composing" || phase === "dag_validated";
+  const canSave = Boolean(phase) && !frozen && Boolean(packageHash) && state.status !== "saving";
 
   const save = async () => {
     if (!packageHash) {
@@ -137,11 +156,16 @@ export function GoalSliceEditor({
     }
     setState({ status: "saving" });
     try {
+      const current = await readCurrentGoalDesignDraft(selection.draftId);
+      if (!current.goalDesignPhase) throw new Error("Current Goal Design phase is unavailable.");
+      if (current.goalDesignPhase === "composing" || current.goalDesignPhase === "dag_validated") {
+        throw new Error("goal_design_frozen: the current Goal Design is no longer editable");
+      }
       const response = await fetch(`/api/workflow/planner-drafts/${encodeURIComponent(selection.draftId)}/goal-design/slices/${encodeURIComponent(selection.selectedSliceId)}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          expectedPackageHash: packageHash,
+          expectedPackageHash: current.goalDesignPackageHash,
           patch: patchFromForm(form),
         }),
       });
@@ -154,6 +178,7 @@ export function GoalSliceEditor({
         ...selection,
         package: nextPackage,
         goalDesignPackageHash: nextHash,
+        goalDesignPhase: current.goalDesignPhase,
       };
       onPackageChange?.(nextSelection);
       setState({ status: "saved", message: `Saved revision ${goalDesignPackageView(nextPackage)?.revision ?? "?"}` });
@@ -184,16 +209,16 @@ export function GoalSliceEditor({
       </details>
       <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 12, display: "flex", flexDirection: "column", gap: 12 }}>
         <Field label="Outcome" help="What becomes true for the user after this slice completes.">
-          <textarea value={form.outcome} onChange={(event) => setForm((current) => ({ ...current, outcome: event.target.value }))} rows={4} style={textareaStyle} />
+          <textarea disabled={frozen} value={form.outcome} onChange={(event) => setForm((current) => ({ ...current, outcome: event.target.value }))} rows={4} style={textareaStyle} />
         </Field>
         <Field label="State / artifact owner" help="The state or product artifact this slice is responsible for changing.">
-          <input value={form.stateOrArtifactOwner} onChange={(event) => setForm((current) => ({ ...current, stateOrArtifactOwner: event.target.value }))} style={inputStyle} />
+          <input disabled={frozen} value={form.stateOrArtifactOwner} onChange={(event) => setForm((current) => ({ ...current, stateOrArtifactOwner: event.target.value }))} style={inputStyle} />
         </Field>
         <Field label="Mutation boundary" help="The allowed change boundary; keep unrelated work out of this slice.">
-          <textarea value={form.mutationBoundary} onChange={(event) => setForm((current) => ({ ...current, mutationBoundary: event.target.value }))} rows={3} style={textareaStyle} />
+          <textarea disabled={frozen} value={form.mutationBoundary} onChange={(event) => setForm((current) => ({ ...current, mutationBoundary: event.target.value }))} rows={3} style={textareaStyle} />
         </Field>
         <Field label="Requirement IDs" help="The requirement IDs this slice covers, one per line.">
-          <TextareaList value={form.requirementIds} onChange={(value) => setForm((current) => ({ ...current, requirementIds: value }))} />
+          <TextareaList disabled={frozen} value={form.requirementIds} onChange={(value) => setForm((current) => ({ ...current, requirementIds: value }))} />
           <ReferenceList
             testId="goal-slice-reference-list-requirements"
             items={slice.requirementIds}
@@ -201,7 +226,7 @@ export function GoalSliceEditor({
           />
         </Field>
         <Field label="Expected artifact refs" help="Product evidence this slice must produce, not a generic status report.">
-          <TextareaList value={form.expectedArtifactRefs} onChange={(value) => setForm((current) => ({ ...current, expectedArtifactRefs: value }))} />
+          <TextareaList disabled={frozen} value={form.expectedArtifactRefs} onChange={(value) => setForm((current) => ({ ...current, expectedArtifactRefs: value }))} />
           <ReferenceList
             testId="goal-slice-reference-list-artifacts"
             items={slice.expectedArtifactRefs}
@@ -209,7 +234,7 @@ export function GoalSliceEditor({
           />
         </Field>
         <Field label="Evaluator contract refs" help="Evaluator definitions that decide whether the slice evidence passes.">
-          <TextareaList value={form.evaluatorContractRefs} onChange={(value) => setForm((current) => ({ ...current, evaluatorContractRefs: value }))} />
+          <TextareaList disabled={frozen} value={form.evaluatorContractRefs} onChange={(value) => setForm((current) => ({ ...current, evaluatorContractRefs: value }))} />
           <ReferenceList
             testId="goal-slice-reference-list-evaluators"
             items={slice.evaluatorContractRefs}
@@ -217,7 +242,7 @@ export function GoalSliceEditor({
           />
         </Field>
         <Field label="Depends on slice IDs" help="Slices that must complete first.">
-          <TextareaList value={form.dependsOnSliceIds} onChange={(value) => setForm((current) => ({ ...current, dependsOnSliceIds: value }))} />
+          <TextareaList disabled={frozen} value={form.dependsOnSliceIds} onChange={(value) => setForm((current) => ({ ...current, dependsOnSliceIds: value }))} />
           <ReferenceList
             testId="goal-slice-reference-list-depends"
             items={slice.dependsOnSliceIds}
@@ -228,7 +253,7 @@ export function GoalSliceEditor({
           />
         </Field>
         <Field label="Dependency artifact refs" help="Upstream artifacts this slice consumes.">
-          <TextareaList value={form.dependencyArtifactRefs} onChange={(value) => setForm((current) => ({ ...current, dependencyArtifactRefs: value }))} />
+          <TextareaList disabled={frozen} value={form.dependencyArtifactRefs} onChange={(value) => setForm((current) => ({ ...current, dependencyArtifactRefs: value }))} />
           <ReferenceList
             testId="goal-slice-reference-list-dependencies"
             items={slice.dependencyArtifactRefs}
@@ -236,12 +261,16 @@ export function GoalSliceEditor({
           />
         </Field>
         <Field label="Merge reason" help="Why this slice is merged with or kept separate from adjacent work.">
-          <textarea value={form.mergeReason} onChange={(event) => setForm((current) => ({ ...current, mergeReason: event.target.value }))} rows={2} style={textareaStyle} />
+          <textarea disabled={frozen} value={form.mergeReason} onChange={(event) => setForm((current) => ({ ...current, mergeReason: event.target.value }))} rows={2} style={textareaStyle} />
         </Field>
       </div>
       <footer style={footerStyle}>
         <div style={{ minWidth: 0, color: state.status === "error" ? "#f87171" : "var(--text-dim)", fontSize: 11, overflowWrap: "anywhere" }}>
-          {state.message ?? (packageHash ? `expected package ${packageHash.slice(0, 12)}` : "missing package hash")}
+          {state.message ?? (!phase
+            ? "Checking current Goal Design phase…"
+            : frozen
+              ? "DAG validated; this Slice is read-only. Create a new Slice revision from the Goal Slice Plan."
+              : packageHash ? `expected package ${packageHash.slice(0, 12)}` : "missing package hash")}
         </div>
         <button type="button" disabled={!canSave} onClick={save} style={{ ...buttonStyle, opacity: canSave ? 1 : 0.55 }}>
           {state.status === "saving" ? "Saving…" : "Save slice"}
@@ -272,8 +301,8 @@ function Field({ label, help, children }: { label: string; help?: string; childr
   );
 }
 
-function TextareaList({ value, onChange }: { value: string; onChange: (value: string) => void }) {
-  return <textarea value={value} onChange={(event) => onChange(event.target.value)} rows={3} style={textareaStyle} placeholder="One item per line, or comma-separated" />;
+function TextareaList({ value, onChange, disabled = false }: { value: string; onChange: (value: string) => void; disabled?: boolean }) {
+  return <textarea disabled={disabled} value={value} onChange={(event) => onChange(event.target.value)} rows={3} style={textareaStyle} placeholder="One item per line, or comma-separated" />;
 }
 
 function ReferenceList({ testId, items, describe }: { testId: string; items: string[]; describe: (id: string) => string }) {

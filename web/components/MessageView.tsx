@@ -51,6 +51,7 @@ interface Props {
   onWorkflowDagNodeSelect?: (node: WorkflowDagNode) => void;
   onGoalRequirements?: (content: GoalRequirementsContent) => void;
   onGoalSliceSelect?: (selection: GoalSliceSelection) => void;
+  onCreateGoalSliceRevision?: (selection: GoalSliceSelection) => void | Promise<void>;
   onConfirmGoalDesign?: (selection: GoalSliceSelection) => void;
   onGoalRequirementSelect?: (selection: GoalRequirementSelection) => void;
   onConfirmRequirements?: (confirmation: GoalRequirementsConfirmation) => void | Promise<GoalRequirementsConfirmationResult | void>;
@@ -95,12 +96,12 @@ function copyText(text: string): Promise<void> {
   }
 }
 
-export function MessageView({ message, isStreaming, toolResults, modelNames, entryId, onFork, forking, onNavigate, prevAssistantEntryId, onEditContent, showTimestamp, prevTimestamp, workflowCwd, onWorkflowDagNodeSelect, onGoalRequirements, onGoalSliceSelect, onConfirmGoalDesign, onGoalRequirementSelect, onConfirmRequirements, goalRequirementContentOverride, goalLibraryImportCandidatesOverride, onGoalValidationResume, onGoalContractSelect, onWorkflowGoalRevise, onLibraryGraphNodeSelect, onWorkspaceSurfaceChange }: Props) {
+export function MessageView({ message, isStreaming, toolResults, modelNames, entryId, onFork, forking, onNavigate, prevAssistantEntryId, onEditContent, showTimestamp, prevTimestamp, workflowCwd, onWorkflowDagNodeSelect, onGoalRequirements, onGoalSliceSelect, onCreateGoalSliceRevision, onConfirmGoalDesign, onGoalRequirementSelect, onConfirmRequirements, goalRequirementContentOverride, goalLibraryImportCandidatesOverride, onGoalValidationResume, onGoalContractSelect, onWorkflowGoalRevise, onLibraryGraphNodeSelect, onWorkspaceSurfaceChange }: Props) {
   if (message.role === "user") {
     return <UserMessageView message={message as UserMessage} entryId={entryId} onFork={onFork} forking={forking} onNavigate={onNavigate} prevAssistantEntryId={prevAssistantEntryId} onEditContent={onEditContent} />;
   }
   if (message.role === "assistant") {
-    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} workflowCwd={workflowCwd} onWorkflowDagNodeSelect={onWorkflowDagNodeSelect} onGoalRequirements={onGoalRequirements} onGoalSliceSelect={onGoalSliceSelect} onConfirmGoalDesign={onConfirmGoalDesign} onGoalRequirementSelect={onGoalRequirementSelect} onConfirmRequirements={onConfirmRequirements} goalRequirementContentOverride={goalRequirementContentOverride} goalLibraryImportCandidatesOverride={goalLibraryImportCandidatesOverride} onGoalValidationResume={onGoalValidationResume} onGoalContractSelect={onGoalContractSelect} onWorkflowGoalRevise={onWorkflowGoalRevise} onLibraryGraphNodeSelect={onLibraryGraphNodeSelect} onWorkspaceSurfaceChange={onWorkspaceSurfaceChange} />;
+    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} workflowCwd={workflowCwd} onWorkflowDagNodeSelect={onWorkflowDagNodeSelect} onGoalRequirements={onGoalRequirements} onGoalSliceSelect={onGoalSliceSelect} onCreateGoalSliceRevision={onCreateGoalSliceRevision} onConfirmGoalDesign={onConfirmGoalDesign} onGoalRequirementSelect={onGoalRequirementSelect} onConfirmRequirements={onConfirmRequirements} goalRequirementContentOverride={goalRequirementContentOverride} goalLibraryImportCandidatesOverride={goalLibraryImportCandidatesOverride} onGoalValidationResume={onGoalValidationResume} onGoalContractSelect={onGoalContractSelect} onWorkflowGoalRevise={onWorkflowGoalRevise} onLibraryGraphNodeSelect={onLibraryGraphNodeSelect} onWorkspaceSurfaceChange={onWorkspaceSurfaceChange} />;
   }
   if (message.role === "toolResult") {
     // Rendered inline under its toolCall — skip standalone rendering if paired
@@ -321,6 +322,7 @@ function AssistantMessageView({
   onWorkflowDagNodeSelect,
   onGoalRequirements,
   onGoalSliceSelect,
+  onCreateGoalSliceRevision,
   onConfirmGoalDesign,
   onGoalRequirementSelect,
   onConfirmRequirements,
@@ -342,6 +344,7 @@ function AssistantMessageView({
   onWorkflowDagNodeSelect?: (node: WorkflowDagNode) => void;
   onGoalRequirements?: (content: GoalRequirementsContent) => void;
   onGoalSliceSelect?: (selection: GoalSliceSelection) => void;
+  onCreateGoalSliceRevision?: (selection: GoalSliceSelection) => void | Promise<void>;
   onConfirmGoalDesign?: (selection: GoalSliceSelection) => void;
   onGoalRequirementSelect?: (selection: GoalRequirementSelection) => void;
   onConfirmRequirements?: (confirmation: GoalRequirementsConfirmation) => void | Promise<GoalRequirementsConfirmationResult | void>;
@@ -511,7 +514,7 @@ function AssistantMessageView({
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {blocks.map((block, i) => (
-          <BlockView key={i} block={block} toolResults={toolResults} isStreaming={isStreaming} streamingDuration={streamingDurations.get(i) ?? (block.type === "thinking" ? thinkingDurationFromFile : undefined)} toolCallDurations={toolCallDurations} workflowCwd={workflowCwd} onWorkflowDagNodeSelect={onWorkflowDagNodeSelect} onGoalRequirements={onGoalRequirements} onGoalSliceSelect={onGoalSliceSelect} onConfirmGoalDesign={onConfirmGoalDesign} onGoalRequirementSelect={onGoalRequirementSelect} onConfirmRequirements={onConfirmRequirements} goalRequirementContentOverride={goalRequirementContentOverride} goalLibraryImportCandidatesOverride={goalLibraryImportCandidatesOverride} onGoalValidationResume={onGoalValidationResume} onGoalContractSelect={onGoalContractSelect} onWorkflowGoalRevise={onWorkflowGoalRevise} onLibraryGraphNodeSelect={onLibraryGraphNodeSelect} onWorkspaceSurfaceChange={onWorkspaceSurfaceChange} />
+          <BlockView key={i} block={block} toolResults={toolResults} isStreaming={isStreaming} streamingDuration={streamingDurations.get(i) ?? (block.type === "thinking" ? thinkingDurationFromFile : undefined)} toolCallDurations={toolCallDurations} workflowCwd={workflowCwd} onWorkflowDagNodeSelect={onWorkflowDagNodeSelect} onGoalRequirements={onGoalRequirements} onGoalSliceSelect={onGoalSliceSelect} onCreateGoalSliceRevision={onCreateGoalSliceRevision} onConfirmGoalDesign={onConfirmGoalDesign} onGoalRequirementSelect={onGoalRequirementSelect} onConfirmRequirements={onConfirmRequirements} goalRequirementContentOverride={goalRequirementContentOverride} goalLibraryImportCandidatesOverride={goalLibraryImportCandidatesOverride} onGoalValidationResume={onGoalValidationResume} onGoalContractSelect={onGoalContractSelect} onWorkflowGoalRevise={onWorkflowGoalRevise} onLibraryGraphNodeSelect={onLibraryGraphNodeSelect} onWorkspaceSurfaceChange={onWorkspaceSurfaceChange} />
         ))}
       </div>
 
@@ -564,7 +567,7 @@ function AssistantMessageView({
   );
 }
 
-function BlockView({ block, toolResults, isStreaming, streamingDuration, toolCallDurations, workflowCwd, onWorkflowDagNodeSelect, onGoalRequirements, onGoalSliceSelect, onConfirmGoalDesign, onGoalRequirementSelect, onConfirmRequirements, goalRequirementContentOverride, goalLibraryImportCandidatesOverride, onGoalValidationResume, onGoalContractSelect, onWorkflowGoalRevise, onLibraryGraphNodeSelect, onWorkspaceSurfaceChange }: { block: AssistantContentBlock; toolResults?: Map<string, ToolResultMessage>; isStreaming?: boolean; streamingDuration?: number; toolCallDurations?: Map<string, number>; workflowCwd?: string | null; onWorkflowDagNodeSelect?: (node: WorkflowDagNode) => void; onGoalRequirements?: (content: GoalRequirementsContent) => void; onGoalSliceSelect?: (selection: GoalSliceSelection) => void; onConfirmGoalDesign?: (selection: GoalSliceSelection) => void; onGoalRequirementSelect?: (selection: GoalRequirementSelection) => void; onConfirmRequirements?: (confirmation: GoalRequirementsConfirmation) => void | Promise<GoalRequirementsConfirmationResult | void>; goalRequirementContentOverride?: GoalRequirementsContent | null; goalLibraryImportCandidatesOverride?: LibraryImportCandidatesContent | null; onGoalValidationResume?: (value: unknown) => void; onGoalContractSelect?: (dag: WorkflowDag) => void; onWorkflowGoalRevise?: (dag: WorkflowDag, choice?: string) => void; onLibraryGraphNodeSelect?: (node: LibraryGraphChartNode) => void; onWorkspaceSurfaceChange?: (surface: WorkspaceSurface) => void }) {
+function BlockView({ block, toolResults, isStreaming, streamingDuration, toolCallDurations, workflowCwd, onWorkflowDagNodeSelect, onGoalRequirements, onGoalSliceSelect, onCreateGoalSliceRevision, onConfirmGoalDesign, onGoalRequirementSelect, onConfirmRequirements, goalRequirementContentOverride, goalLibraryImportCandidatesOverride, onGoalValidationResume, onGoalContractSelect, onWorkflowGoalRevise, onLibraryGraphNodeSelect, onWorkspaceSurfaceChange }: { block: AssistantContentBlock; toolResults?: Map<string, ToolResultMessage>; isStreaming?: boolean; streamingDuration?: number; toolCallDurations?: Map<string, number>; workflowCwd?: string | null; onWorkflowDagNodeSelect?: (node: WorkflowDagNode) => void; onGoalRequirements?: (content: GoalRequirementsContent) => void; onGoalSliceSelect?: (selection: GoalSliceSelection) => void; onCreateGoalSliceRevision?: (selection: GoalSliceSelection) => void | Promise<void>; onConfirmGoalDesign?: (selection: GoalSliceSelection) => void; onGoalRequirementSelect?: (selection: GoalRequirementSelection) => void; onConfirmRequirements?: (confirmation: GoalRequirementsConfirmation) => void | Promise<GoalRequirementsConfirmationResult | void>; goalRequirementContentOverride?: GoalRequirementsContent | null; goalLibraryImportCandidatesOverride?: LibraryImportCandidatesContent | null; onGoalValidationResume?: (value: unknown) => void; onGoalContractSelect?: (dag: WorkflowDag) => void; onWorkflowGoalRevise?: (dag: WorkflowDag, choice?: string) => void; onLibraryGraphNodeSelect?: (node: LibraryGraphChartNode) => void; onWorkspaceSurfaceChange?: (surface: WorkspaceSurface) => void }) {
   if (block.type === "text") {
     return <TextBlock block={block as TextContent} isStreaming={isStreaming} />;
   }
@@ -572,7 +575,7 @@ function BlockView({ block, toolResults, isStreaming, streamingDuration, toolCal
     return <WorkflowDagBlock dag={(block as WorkflowDagContent).dag} cwd={workflowCwd} onNodeSelect={onWorkflowDagNodeSelect} onGoalContractSelect={onGoalContractSelect} onReviseGoal={onWorkflowGoalRevise} onLibraryGraphNodeSelect={onLibraryGraphNodeSelect} />;
   }
   if (block.type === "goalDesign") {
-    return <GoalSlicePlanBlock block={block as GoalDesignContent} requirementContent={goalRequirementContentOverride} onSliceSelect={onGoalSliceSelect} onConfirmGoalDesign={onConfirmGoalDesign} onLibraryGraphNodeSelect={onLibraryGraphNodeSelect} />;
+    return <GoalSlicePlanBlock block={block as GoalDesignContent} requirementContent={goalRequirementContentOverride} onSliceSelect={onGoalSliceSelect} onCreateGoalSliceRevision={onCreateGoalSliceRevision} onConfirmGoalDesign={onConfirmGoalDesign} onLibraryGraphNodeSelect={onLibraryGraphNodeSelect} />;
   }
   if (block.type === "goalRequirements") {
     const requirementsBlock = block as GoalRequirementsContent;
@@ -614,7 +617,7 @@ function BlockView({ block, toolResults, isStreaming, streamingDuration, toolCal
     const tc = block as ToolCallContent;
     const result = toolResults?.get(tc.toolCallId);
     const duration = toolCallDurations?.get(tc.toolCallId);
-    return <ToolCallBlock block={tc} result={result} duration={duration} workflowCwd={workflowCwd} onWorkflowDagNodeSelect={onWorkflowDagNodeSelect} onGoalRequirements={onGoalRequirements} onGoalSliceSelect={onGoalSliceSelect} onConfirmGoalDesign={onConfirmGoalDesign} onGoalRequirementSelect={onGoalRequirementSelect} onConfirmRequirements={onConfirmRequirements} goalRequirementContentOverride={goalRequirementContentOverride} onGoalValidationResume={onGoalValidationResume} onGoalContractSelect={onGoalContractSelect} onWorkflowGoalRevise={onWorkflowGoalRevise} onLibraryGraphNodeSelect={onLibraryGraphNodeSelect} onWorkspaceSurfaceChange={onWorkspaceSurfaceChange} />;
+    return <ToolCallBlock block={tc} result={result} duration={duration} workflowCwd={workflowCwd} onWorkflowDagNodeSelect={onWorkflowDagNodeSelect} onGoalRequirements={onGoalRequirements} onGoalSliceSelect={onGoalSliceSelect} onCreateGoalSliceRevision={onCreateGoalSliceRevision} onConfirmGoalDesign={onConfirmGoalDesign} onGoalRequirementSelect={onGoalRequirementSelect} onConfirmRequirements={onConfirmRequirements} goalRequirementContentOverride={goalRequirementContentOverride} onGoalValidationResume={onGoalValidationResume} onGoalContractSelect={onGoalContractSelect} onWorkflowGoalRevise={onWorkflowGoalRevise} onLibraryGraphNodeSelect={onLibraryGraphNodeSelect} onWorkspaceSurfaceChange={onWorkspaceSurfaceChange} />;
   }
   return null;
 }
@@ -683,6 +686,7 @@ function ToolCallBlock({
   onWorkflowDagNodeSelect,
   onGoalRequirements,
   onGoalSliceSelect,
+  onCreateGoalSliceRevision,
   onConfirmGoalDesign,
   onGoalRequirementSelect,
   onConfirmRequirements,
@@ -700,6 +704,7 @@ function ToolCallBlock({
   onWorkflowDagNodeSelect?: (node: WorkflowDagNode) => void;
   onGoalRequirements?: (content: GoalRequirementsContent) => void;
   onGoalSliceSelect?: (selection: GoalSliceSelection) => void;
+  onCreateGoalSliceRevision?: (selection: GoalSliceSelection) => void | Promise<void>;
   onConfirmGoalDesign?: (selection: GoalSliceSelection) => void;
   onGoalRequirementSelect?: (selection: GoalRequirementSelection) => void;
   onConfirmRequirements?: (confirmation: GoalRequirementsConfirmation) => void | Promise<GoalRequirementsConfirmationResult | void>;
@@ -720,6 +725,7 @@ function ToolCallBlock({
       onWorkflowDagNodeSelect={onWorkflowDagNodeSelect}
       onGoalRequirements={onGoalRequirements}
       onGoalSliceSelect={onGoalSliceSelect}
+      onCreateGoalSliceRevision={onCreateGoalSliceRevision}
       onConfirmGoalDesign={onConfirmGoalDesign}
       onGoalRequirementSelect={onGoalRequirementSelect}
       onConfirmRequirements={onConfirmRequirements}
@@ -822,6 +828,7 @@ function SouthstarToolResultBlock({
   onWorkflowDagNodeSelect,
   onGoalRequirements,
   onGoalSliceSelect,
+  onCreateGoalSliceRevision,
   onConfirmGoalDesign,
   onGoalRequirementSelect,
   onConfirmRequirements,
@@ -838,6 +845,7 @@ function SouthstarToolResultBlock({
   onWorkflowDagNodeSelect?: (node: WorkflowDagNode) => void;
   onGoalRequirements?: (content: GoalRequirementsContent) => void;
   onGoalSliceSelect?: (selection: GoalSliceSelection) => void;
+  onCreateGoalSliceRevision?: (selection: GoalSliceSelection) => void | Promise<void>;
   onConfirmGoalDesign?: (selection: GoalSliceSelection) => void;
   onGoalRequirementSelect?: (selection: GoalRequirementSelection) => void;
   onConfirmRequirements?: (confirmation: GoalRequirementsConfirmation) => void | Promise<GoalRequirementsConfirmationResult | void>;
@@ -888,7 +896,7 @@ function SouthstarToolResultBlock({
   if (goalDesign) {
     structuredBlocks.push(
       <SouthstarResultBox key="goal-design" title="Southstar · Slice plan">
-        <GoalSlicePlanBlock block={goalDesign} requirementContent={goalRequirementContentOverride} onSliceSelect={onGoalSliceSelect} onConfirmGoalDesign={onConfirmGoalDesign} onLibraryGraphNodeSelect={onLibraryGraphNodeSelect} />
+        <GoalSlicePlanBlock block={goalDesign} requirementContent={goalRequirementContentOverride} onSliceSelect={onGoalSliceSelect} onCreateGoalSliceRevision={onCreateGoalSliceRevision} onConfirmGoalDesign={onConfirmGoalDesign} onLibraryGraphNodeSelect={onLibraryGraphNodeSelect} />
       </SouthstarResultBox>,
     );
   }

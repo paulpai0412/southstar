@@ -1,0 +1,49 @@
+schemaVersion: southstar.library.artifact_contract_file.v1
+id: artifact.finance-expense-ledger-outcome-bundle
+title: "Finance Expense Ledger Outcome Bundle"
+scope: "finance"
+status: approved
+semanticTags:
+  - "daily-bookkeeping"
+  - "expense-entry"
+  - "ledger"
+  - "balance-tracking"
+  - "ledger-math"
+  - "expense-statistics"
+  - "spending-summary"
+  - "data-persistence"
+  - "daily-continuity"
+artifactType: "finance-expense-ledger-outcome-bundle"
+mediaTypes:
+  - "application/json"
+evidenceKinds:
+  - "artifact-ref"
+  - "screenshot"
+  - "test-result"
+  - "url"
+  - "command-output"
+  - "workspace-snapshot"
+validationRules:
+  - "Expense records must preserve canonical fields and value types across capture and replay."
+  - "Accepted entries must reconcile between submission evidence and rendered ledger listings."
+  - "Invalid monetary input attempts must be represented with rejection outcome evidence."
+  - "Current balance must reconcile with starting balance minus cumulative accepted expenses."
+  - "Daily and monthly aggregates must equal deterministic group-by sums from the same ledger dataset."
+  - "Persistence roundtrip snapshots must remain structurally and numerically consistent after reload/restart."
+schemaRef: "southstar.finance.expense_ledger_outcome_bundle.v1"
+requiredFields:
+  - "entries"
+  - "entryValidationResults"
+  - "startingBalance"
+  - "balanceSnapshots"
+  - "dailySummaries"
+  - "monthlySummaries"
+  - "persistenceRoundtrip"
+  - "evidenceIndex"
+provenanceRequirements:
+  - "Link all dataset sections to originating run/task evidence references."
+  - "Record capture timestamps and environment context for each snapshot."
+  - "Preserve immutable references for automated test outputs and UI/browser evidence used for verification."
+importDraftId: "library-import-goal-0da614c86964f7a26332161a094bedc6"
+importCandidateKey: "artifact.finance-expense-ledger-outcome-bundle"
+importSourcePath: "Confirmed-Goal-validation-gaps.md"

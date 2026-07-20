@@ -36,7 +36,9 @@ interface Props {
   workflowCwd?: string | null;
   onWorkflowDagNodeSelect?: (node: WorkflowDagNode) => void;
   onGoalRequirements?: (content: GoalRequirementsContent) => void;
+  onGoalDesignComposed?: (selection: GoalSliceSelection) => void;
   onGoalSliceSelect?: (selection: GoalSliceSelection) => void;
+  onCreateGoalSliceRevision?: (selection: GoalSliceSelection) => void | Promise<void>;
   onConfirmGoalDesign?: (selection: GoalSliceSelection) => void;
   onGoalRequirementSelect?: (selection: GoalRequirementSelection) => void;
   onConfirmRequirements?: (confirmation: GoalRequirementsConfirmation) => void | Promise<GoalRequirementsConfirmationResult | void>;
@@ -169,7 +171,7 @@ function Typewriter({ phrases }: { phrases: string[] }) {
   );
 }
 
-export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, sessionKind, libraryScope, workflowMode, workflowTemplate, workflowCwd, onWorkflowDagNodeSelect, onGoalRequirements, onGoalSliceSelect, onConfirmGoalDesign, onGoalRequirementSelect, onConfirmRequirements, goalDesignRevisionAnchor, goalRequirementRevisionAnchor, goalRequirementContentOverride, goalDesignContentOverride, goalLibraryImportCandidatesOverride, onGoalValidationResume, onGoalContractSelect, onWorkflowGoalRevise, onLibraryGraphNodeSelect, onWorkspaceSurfaceChange }: Props) {
+export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, sessionKind, libraryScope, workflowMode, workflowTemplate, workflowCwd, onWorkflowDagNodeSelect, onGoalRequirements, onGoalDesignComposed, onGoalSliceSelect, onCreateGoalSliceRevision, onConfirmGoalDesign, onGoalRequirementSelect, onConfirmRequirements, goalDesignRevisionAnchor, goalRequirementRevisionAnchor, goalRequirementContentOverride, goalDesignContentOverride, goalLibraryImportCandidatesOverride, onGoalValidationResume, onGoalContractSelect, onWorkflowGoalRevise, onLibraryGraphNodeSelect, onWorkspaceSurfaceChange }: Props) {
   const {
     loading, error, messages, entryIds, streamState,
     agentRunning, modelNames, modelList, modelThinkingLevels, modelThinkingLevelMaps, toolPreset, thinkingLevel,
@@ -191,7 +193,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
     session, newSessionCwd, onAgentEnd, onSessionCreated, onSessionForked,
     modelsRefreshKey, onBranchDataChange, onSystemPromptChange, onSessionStatsPanelOpen,
     sessionKind, libraryScope, workflowMode, workflowTemplate, workflowCwd, onWorkflowDagNodeSelect, goalDesignRevisionAnchor,
-    goalRequirementRevisionAnchor, goalRequirementContentOverride, onGoalRequirements,
+    goalRequirementRevisionAnchor, goalRequirementContentOverride, onGoalRequirements, onGoalDesignComposed,
   });
 
   const { soundEnabled, onSoundToggle, playDoneSound } = useAudio();
@@ -263,6 +265,29 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
   ));
   const goalRequirementContentForViewer = goalRequirementContentOverride
     ?? latestGoalRequirementsContent(messages, streamState.streamingMessage);
+
+  // A staged Slice revision is persisted in the workflow transcript as an
+  // assistant state message. On reload the normal chat behavior intentionally
+  // restores the transcript bottom, which can leave the actionable revision
+  // above the fold behind later workflow-state messages. Bring the current
+  // staged revision into view once after it has rendered; the user can still
+  // scroll normally afterwards.
+  const stagedRevisionDraftId = workflowMode
+    && goalDesignContentForViewer?.draftId.includes(":slice-revision:")
+    && goalDesignContentForViewer.goalDesignPhase === "slice_review"
+    ? goalDesignContentForViewer.draftId
+    : null;
+  const stagedRevisionFocusedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!stagedRevisionDraftId || stagedRevisionFocusedRef.current === stagedRevisionDraftId) return;
+    const target = [...(scrollContainerRef.current?.querySelectorAll<HTMLElement>('[data-testid="goal-slice-plan-block"]') ?? [])]
+      .find((element) => element.dataset.draftId === stagedRevisionDraftId);
+    if (!target) return;
+    stagedRevisionFocusedRef.current = stagedRevisionDraftId;
+    requestAnimationFrame(() => {
+      target.scrollIntoView({ behavior: "instant", block: "start" });
+    });
+  }, [stagedRevisionDraftId]);
 
   const isEmptyNew = isNew && visibleMessages.length === 0 && !streamState.isStreaming && !agentRunning;
   const shouldAnchorBottom = visibleMessages.length > 0 || streamState.isStreaming || agentRunning;
@@ -503,6 +528,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
                     onWorkflowDagNodeSelect={onWorkflowDagNodeSelect}
                     onGoalRequirements={onGoalRequirements}
                     onGoalSliceSelect={onGoalSliceSelect}
+                    onCreateGoalSliceRevision={onCreateGoalSliceRevision}
                     onConfirmGoalDesign={onConfirmGoalDesign ?? handleConfirmGoalDesign}
                     onGoalRequirementSelect={onGoalRequirementSelect}
                     onConfirmRequirements={onConfirmRequirements}
@@ -528,7 +554,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
             })()}
 
             {streamState.isStreaming && streamState.streamingMessage && (
-              <MessageView message={streamState.streamingMessage as AgentMessage} isStreaming modelNames={modelNames} workflowCwd={workflowCwd} onWorkflowDagNodeSelect={onWorkflowDagNodeSelect} onGoalRequirements={onGoalRequirements} onGoalSliceSelect={onGoalSliceSelect} onConfirmGoalDesign={onConfirmGoalDesign ?? handleConfirmGoalDesign} onGoalRequirementSelect={onGoalRequirementSelect} onConfirmRequirements={onConfirmRequirements} goalRequirementContentOverride={goalRequirementContentForViewer} goalLibraryImportCandidatesOverride={goalLibraryImportCandidatesOverride} onGoalValidationResume={onGoalValidationResume} onGoalContractSelect={onGoalContractSelect} onWorkflowGoalRevise={onWorkflowGoalRevise} onLibraryGraphNodeSelect={onLibraryGraphNodeSelect} onWorkspaceSurfaceChange={onWorkspaceSurfaceChange} />
+              <MessageView message={streamState.streamingMessage as AgentMessage} isStreaming modelNames={modelNames} workflowCwd={workflowCwd} onWorkflowDagNodeSelect={onWorkflowDagNodeSelect} onGoalRequirements={onGoalRequirements} onGoalSliceSelect={onGoalSliceSelect} onCreateGoalSliceRevision={onCreateGoalSliceRevision} onConfirmGoalDesign={onConfirmGoalDesign ?? handleConfirmGoalDesign} onGoalRequirementSelect={onGoalRequirementSelect} onConfirmRequirements={onConfirmRequirements} goalRequirementContentOverride={goalRequirementContentForViewer} goalLibraryImportCandidatesOverride={goalLibraryImportCandidatesOverride} onGoalValidationResume={onGoalValidationResume} onGoalContractSelect={onGoalContractSelect} onWorkflowGoalRevise={onWorkflowGoalRevise} onLibraryGraphNodeSelect={onLibraryGraphNodeSelect} onWorkspaceSurfaceChange={onWorkspaceSurfaceChange} />
             )}
 
             {goalDesignContentForViewer && !goalDesignAlreadyRendered ? (
@@ -537,6 +563,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
                   block={goalDesignContentForViewer}
                   requirementContent={goalRequirementContentForViewer}
                   onSliceSelect={onGoalSliceSelect}
+                  onCreateGoalSliceRevision={onCreateGoalSliceRevision}
                   onConfirmGoalDesign={onConfirmGoalDesign ?? handleConfirmGoalDesign}
                   onLibraryGraphNodeSelect={onLibraryGraphNodeSelect}
                 />

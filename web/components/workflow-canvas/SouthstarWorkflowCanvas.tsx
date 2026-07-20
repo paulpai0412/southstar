@@ -35,8 +35,17 @@ export function SouthstarWorkflowCanvas(props: {
   const [nodes, setNodes] = useState<Array<Node<WorkflowTaskNodeData>>>([]);
   const [edges, setEdges] = useState<Array<Edge<WorkflowDependencyEdgeData>>>([]);
   const [layoutError, setLayoutError] = useState<string | null>(null);
-  const [collapsedTaskIds, setCollapsedTaskIds] = useState<Set<string>>(new Set());
+  const [collapsedTaskIds, setCollapsedTaskIds] = useState<Set<string>>(
+    () => new Set(props.canvas.nodes.map((node) => node.id)),
+  );
+  const collapsedGraphIdRef = useRef<string | null>(null);
   const positionsByGraphRef = useRef<Record<string, Record<string, { x: number; y: number }>>>({});
+
+  useEffect(() => {
+    if (props.canvas.nodes.length === 0 || collapsedGraphIdRef.current === props.canvas.graphId) return;
+    collapsedGraphIdRef.current = props.canvas.graphId;
+    setCollapsedTaskIds(new Set(props.canvas.nodes.map((node) => node.id)));
+  }, [props.canvas.graphId, props.canvas.nodes.length]);
 
   const toggleCollapse = useCallback((taskId: string) => {
     setCollapsedTaskIds((current) => {

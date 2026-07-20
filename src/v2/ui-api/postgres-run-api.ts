@@ -26,7 +26,6 @@ import {
   type GoalContractV1,
 } from "../orchestration/goal-contract.ts";
 import {
-  validateGoalDesignPackage,
   validateGoalDesignPackageV2,
   type GoalDesignPackage,
 } from "../orchestration/goal-design.ts";
@@ -1432,6 +1431,11 @@ export async function getPostgresPlannerDraftOrchestration(
   const status = plannerDraftStatus(draft.status);
   const vocabularyGaps = parseVocabularyGaps(payload.vocabularyGaps);
   const requirementOnly = Boolean(stagedRequirement && !contract);
+  const goalDesignPackage = payload.goalDesignPackage && typeof payload.goalDesignPackage === "object"
+    ? payload.goalDesignPackage as GoalDesignPackage
+    : undefined;
+  const goalDesignPackageHash = stringValue(payload.goalDesignPackageHash)
+    ?? goalDesignPackage?.packageHash;
 
   return {
     draftId: input.draftId,
@@ -1448,6 +1452,8 @@ export async function getPostgresPlannerDraftOrchestration(
     ...(stringValue(payload.goalDesignPhase) ? { goalDesignPhase: stringValue(payload.goalDesignPhase) } : {}),
     ...(stagedRequirement ? { goalRequirementDraft: stagedRequirement } : {}),
     ...(confirmable !== undefined ? { confirmable } : {}),
+    ...(goalDesignPackageHash ? { goalDesignPackageHash } : {}),
+    ...(goalDesignPackage ? { goalDesignPackage } : {}),
     blockers: status === PLANNER_DRAFT_STATUS_NEEDS_LIBRARY_INPUT
       ? parseVocabularyGapBlockers(vocabularyGaps)
       : requirementOnly
@@ -1766,9 +1772,8 @@ function requiredStoredGoalContract(value: unknown, draftId: string): GoalContra
 function storedGoalDesignPackage(value: unknown): GoalDesignPackage | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const pkg = value as GoalDesignPackage;
-  const issues = pkg.schemaVersion === "southstar.goal_design_package.v2"
-    ? validateGoalDesignPackageV2(pkg)
-    : validateGoalDesignPackage(pkg);
+  if (pkg.schemaVersion !== "southstar.goal_design_package.v2") return undefined;
+  const issues = validateGoalDesignPackageV2(pkg);
   return issues.length === 0 ? pkg : undefined;
 }
 

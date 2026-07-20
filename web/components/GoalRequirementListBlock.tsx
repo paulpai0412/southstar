@@ -682,6 +682,7 @@ export function goalRequirementsConfirmationFromUnknown(
           type: "goalDesign",
           draftId,
           status,
+          goalDesignPhase: "slice_review",
           goalDesignPackageHash: packageHash,
           package: envelope.goalDesignPackage,
         };
@@ -709,6 +710,7 @@ export function goalDesignContinuationFromUnknown(value: unknown): GoalDesignCon
     type: "goalDesign",
     draftId,
     status,
+    goalDesignPhase: "slice_review",
     goalDesignPackageHash: packageHash,
     package: continued.goalDesignPackage,
   };

@@ -16,6 +16,7 @@ export function WorkflowTaskNode(props: NodeProps<WorkflowTaskFlowNode>) {
   const expectedOutputs = props.data.expectedOutputs ?? [];
   const badges = props.data.badges;
   const attention = props.data.attention;
+  const nodeType = props.data.nodeType?.trim();
 
   return (
     <article
@@ -44,7 +45,15 @@ export function WorkflowTaskNode(props: NodeProps<WorkflowTaskFlowNode>) {
         </div>
       </header>
       {props.data.collapsed ? (
-        <p className="ss-flow-node-collapsed-summary">Click + to expand node details</p>
+        <div className="ss-flow-node-collapsed-summary">
+          {purpose ? <p className="ss-flow-node-collapsed-purpose" data-node-field="purpose">Does: {purpose}</p> : null}
+          <div className="ss-flow-node-collapsed-meta">
+            {nodeType ? <span data-node-field="nodeType">{nodeType}</span> : null}
+            {requirementIds.length > 0 ? <span data-node-field="requirementIds">Requirements: {requirementIds.length}</span> : null}
+            {sliceId ? <span data-node-field="sliceId">Slice: {sliceId}</span> : null}
+            {expectedOutputs.length > 0 ? <span data-node-field="expectedOutputs">Outputs: {expectedOutputs.length}</span> : null}
+          </div>
+        </div>
       ) : null}
       {!props.data.collapsed ? <>
       {purpose ? <p className="ss-flow-node-purpose" data-node-field="purpose">Does: {purpose}</p> : null}
@@ -56,7 +65,7 @@ export function WorkflowTaskNode(props: NodeProps<WorkflowTaskFlowNode>) {
           {sliceId ? <p className="ss-flow-node-lineage" data-node-field="sliceId">Produces slice: {sliceId}</p> : null}
         </>
       ) : null}
-      {props.data.nodeType ? <p className="ss-flow-node-lineage" data-node-field="nodeType">Work type: {props.data.nodeType}</p> : null}
+      {nodeType ? <p className="ss-flow-node-lineage" data-node-field="nodeType">Work type: {nodeType}</p> : null}
       {expectedOutputs.length > 0 ? <p className="ss-flow-node-lineage" data-node-field="expectedOutputs">Produces: {expectedOutputs.join(", ")}</p> : null}
       <p className="ss-flow-node-ref" data-node-field="taskId">
         taskId: {props.data.id}
@@ -70,6 +79,7 @@ export function WorkflowTaskNode(props: NodeProps<WorkflowTaskFlowNode>) {
       <p className="ss-flow-node-ref" data-node-field="artifactKind">
         artifactKind: {artifactKind}
       </p>
+      </> : null}
       {badges.length > 0 ? (
         <div className="ss-flow-node-badges" data-node-field="badges">
           {badges.map((badge, index) => (
@@ -84,7 +94,6 @@ export function WorkflowTaskNode(props: NodeProps<WorkflowTaskFlowNode>) {
           attention: {attention.severity} · {attention.reason}
         </p>
       ) : null}
-      </> : null}
       <Handle type="source" position={Position.Bottom} className="ss-flow-handle" />
     </article>
   );

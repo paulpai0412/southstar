@@ -265,6 +265,7 @@ export function createRuntimeServerLifecycle(input: RuntimeServerLifecycleInput 
       `export SOUTHSTAR_TEST_ADMIN_DATABASE_URL=${quoteShellArg(options.env.testAdminDatabaseUrl)}`,
       `export TORK_BASE_URL=${quoteShellArg(options.env.torkBaseUrl)}`,
       `export SOUTHSTAR_SERVER_URL=${quoteShellArg(options.env.serverUrl)}`,
+      "export SOUTHSTAR_AGENT_IMAGES='southstar/pi-agent:local'",
       ...(options.env.containerCallbackBaseUrl ? [`export SOUTHSTAR_CONTAINER_CALLBACK_BASE_URL=${quoteShellArg(options.env.containerCallbackBaseUrl)}`] : []),
       `export SOUTHSTAR_REQUIRE_DOCKER=${quoteShellArg(options.env.dockerRequired ? "1" : "0")}`,
       `export SOUTHSTAR_LIBRARY_ROOT=${quoteShellArg(options.libraryRoot)}`,

@@ -70,11 +70,31 @@ export function selectGraphNeighborhood(
   };
 }
 
+export function selectDirectGraphNeighborhood(
+  graph: LibraryGraphSelectionGraph,
+  objectKey: string,
+): LibraryGraphSelectionGraph {
+  const visibleKeys = new Set([objectKey]);
+  const edges = graph.edges.filter((edge) => {
+    const isIncident = edge.fromObjectKey === objectKey || edge.toObjectKey === objectKey;
+    if (isIncident) {
+      visibleKeys.add(edge.fromObjectKey);
+      visibleKeys.add(edge.toObjectKey);
+    }
+    return isIncident;
+  });
+  return {
+    activeScope: graph.activeScope,
+    nodes: graph.nodes.filter((node) => visibleKeys.has(node.objectKey)),
+    edges,
+  };
+}
+
 export function prepareGraphNodeSelection(
   graph: LibraryGraphSelectionGraph,
   node: LibraryGraphChartNode,
 ): LibraryGraphChartNode {
-  const selectedGraph = selectGraphNeighborhood(graph, node.objectKey);
+  const selectedGraph = selectDirectGraphNeighborhood(graph, node.objectKey);
   return {
     ...node,
     viewOnly: true,

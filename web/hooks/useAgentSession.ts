@@ -28,6 +28,7 @@ import { confirmGoalDesignStream, generateWorkflowDagStream, WorkflowGenerateHtt
 import { appendWorkflowStreamText, normalizeWorkflowStreamText } from "@/lib/workflow/stream-text";
 import { goalRequirementsContentFromUnknown } from "@/components/GoalRequirementListBlock";
 import { runLibraryChatCommand } from "@/lib/library/chat-stream";
+import { readCurrentGoalDesignDraft } from "@/lib/workflow/goal-design-draft";
 import type { ToolEntry } from "@/lib/tool-presets";
 import type { SessionStatsInfo } from "@/lib/pi-types";
 import type { WorkflowDag } from "@/lib/workflow/types";
@@ -242,6 +243,8 @@ export interface UseAgentSessionOptions {
   onWorkflowDagNodeSelect?: (node: import("@/lib/workflow/types").WorkflowDagNode) => void;
   /** Receives every host-authoritative Goal Requirements SSE/result projection. */
   onGoalRequirements?: (content: GoalRequirementsContent) => void;
+  /** Replaces the UI Goal Design projection after the host validates its DAG. */
+  onGoalDesignComposed?: (selection: GoalSliceSelection) => void;
   /** Uses the latest in-memory Goal Requirements projection for the next revision. */
   goalRequirementContentOverride?: GoalRequirementsContent | null;
   goalDesignRevisionAnchor?: GoalSliceSelection | null;
@@ -1120,7 +1123,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
               type: "goalDesign",
               draftId,
               ...(status ? { status } : {}),
+              ...(typeof goalDesign.phase === "string" ? { goalDesignPhase: goalDesign.phase as GoalDesignContent["goalDesignPhase"] } : {}),
               ...(goalDesignPackageHash ? { goalDesignPackageHash } : {}),
+              ...(goalDesign.goalRequirementDraft && typeof goalDesign.goalRequirementDraft === "object" ? { goalRequirementDraft: goalDesign.goalRequirementDraft as GoalDesignContent["goalRequirementDraft"] } : {}),
+              ...(typeof goalDesign.goalRequirementDraftHash === "string" ? { goalRequirementDraftHash: goalDesign.goalRequirementDraftHash } : {}),
               ...(goalDesign.package !== undefined ? { package: goalDesign.package } : {}),
             };
             updateWorkflowProgress("Goal Design slice plan is ready for review.", { stage: "goal_design" });
@@ -1369,8 +1375,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   }, [effectiveNewSessionCwd, isNew, newSessionModel, toolPreset, thinkingLevel, session, messages, agentRunning, connectEvents, ensureNewSession, promoteNewSession, waitForPromptSettlement, sessionKind, opts.workflowMode, opts.workflowCwd, opts.workflowTemplate, opts.libraryScope, opts.goalDesignRevisionAnchor, opts.goalRequirementRevisionAnchor, opts.goalRequirementContentOverride, addNotice, persistWorkflowMessage]);
 
   const handleConfirmGoalDesign = useCallback(async (selection: GoalSliceSelection) => {
-    const packageHash = selection.goalDesignPackageHash;
-    if (!packageHash || agentRunningRef.current) return;
+    if (agentRunningRef.current) return;
     const controller = new AbortController();
     workflowAbortControllerRef.current?.abort();
     workflowAbortControllerRef.current = controller;
@@ -1396,9 +1401,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       });
     };
     try {
+      const current = await readCurrentGoalDesignDraft(selection.draftId, { signal: controller.signal });
       await confirmGoalDesignStream({
         draftId: selection.draftId,
-        expectedPackageHash: packageHash,
+        expectedPackageHash: current.goalDesignPackageHash,
         signal: controller.signal,
         onHeartbeat(heartbeat) {
           const stage = typeof heartbeat.phase === "string" ? heartbeat.phase : "goal_design_confirmation";
@@ -1442,6 +1448,14 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       });
       if (!dag) throw new Error("goal design confirmation completed without a DAG");
       const confirmedDag = dag as WorkflowDag;
+      opts.onGoalDesignComposed?.({
+        ...selection,
+        ...(current.status ? { status: current.status } : {}),
+        goalDesignPhase: "dag_validated",
+        goalDesignPackageHash: current.goalDesignPackageHash,
+        package: current.goalDesignPackage,
+        ...(current.goalRequirementDraft ? { requirementDraft: current.goalRequirementDraft } : {}),
+      });
       const assistantMsg: AgentMessage = {
         role: "assistant",
         content: [
@@ -1478,7 +1492,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       setWorkflowProgress(null);
       dispatch({ type: "end" });
     }
-  }, [addNotice, persistWorkflowMessage]);
+  }, [addNotice, opts.onGoalDesignComposed, persistWorkflowMessage]);
 
   const handleAbort = useCallback(async () => {
     if (workflowAbortControllerRef.current) {

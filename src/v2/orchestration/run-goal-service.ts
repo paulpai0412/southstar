@@ -13,16 +13,14 @@ import { materializeGoalExecutionSetPg } from "./goal-execution-set.ts";
 import {
   loadCurrentGoalDesignPackagePg,
   preparePostgresGoalRequirementDraft,
-  preparePostgresGoalDesignDraft,
   type GoalDesignPhase,
   type GoalRequirementReviewIssue,
   type GoalRequirementReviewResult,
 } from "./goal-design-draft-service.ts";
 import {
-  validateGoalDesignPackage,
   validateGoalDesignPackageV2,
   type GoalDesignPackage,
-  type GoalDesigner,
+  type GoalSliceDesigner,
   type GoalDesignMode,
   type WorkflowTemplatePolicyV1,
 } from "./goal-design.ts";
@@ -97,7 +95,7 @@ export type SubmitGoalContext = {
   db: SouthstarDb;
   goalInterpreter: GoalContractInterpreter;
   goalRequirementInterpreter?: GoalRequirementDraftInterpreter;
-  goalDesigner?: GoalDesigner;
+  goalSliceDesigner?: GoalSliceDesigner;
   composer?: WorkflowComposer;
   libraryImportLlmProvider?: LibraryImportLlmProvider;
   libraryImportSourceFetcher?: LibraryImportSourceFetcher;
@@ -149,9 +147,7 @@ export async function submitClaimedGoalPg(
   if (context.goalRequirementInterpreter) {
     return await submitGoalRequirementDraftPg(context, request, claim);
   }
-  if (context.goalDesigner) {
-    return await submitGoalDesignDraftPg(context, request, claim);
-  }
+  throw new Error("Goal Requirement interpreter is not configured");
 
   const observedStages: string[] = [];
   let draftResource: Parameters<typeof upsertRuntimeResourcePg>[1] | undefined;
@@ -288,93 +284,6 @@ async function submitGoalRequirementDraftPg(
     validationIssues: draft.validationIssues,
   });
   context.onStage?.("done");
-  return result;
-}
-
-async function submitGoalDesignDraftPg(
-  context: SubmitGoalContext,
-  request: RunGoalRequest,
-  claim: GoalSubmissionClaim,
-): Promise<RunGoalResult> {
-  const observedStages: string[] = [];
-  let draft: Awaited<ReturnType<typeof preparePostgresGoalDesignDraft>>;
-  const goalDesignMode = request.goalDesignMode ?? "review_before_compose";
-  const templatePolicy = request.templatePolicy ?? { mode: "auto" };
-  try {
-    draft = await preparePostgresGoalDesignDraft(context.db, {
-      goalPrompt: request.goalPrompt,
-      cwd: request.cwd,
-      ...(request.sessionId ? { sessionId: request.sessionId } : {}),
-      ...(request.projectRef !== undefined ? { projectRef: request.projectRef } : {}),
-      mode: goalDesignMode,
-      templatePolicy,
-      goalInterpreter: context.goalInterpreter,
-      goalDesigner: context.goalDesigner!,
-      libraryImportLlmProvider: context.libraryImportLlmProvider,
-      libraryImportSourceFetcher: context.libraryImportSourceFetcher,
-      onProgress(event) {
-        if (event.stage === "goal_contract.interpreted" || event.stage === "goal_design.persisted" || event.stage === "draft.persisted") {
-          observedStages.push(event.stage);
-        }
-      },
-    });
-  } catch (error) {
-    await failSubmissionPg(context.db, claim.submissionId, error, observedStages);
-    throw error;
-  }
-  const draftStatus = draft.status === "ready_for_review"
-    ? "ready_for_review"
-    : draft.status === "needs_library_input"
-      ? "needs_library_input"
-    : draft.status === "needs_input"
-      ? "needs_input"
-      : draft.status === "template_incompatible"
-        ? "template_incompatible"
-        : draft.status === "validated"
-          ? "validated"
-          : "invalid";
-  const result: RunGoalResult = {
-    goalContractHash: draft.goalContractHash,
-    ...(draft.goalDesignPackageHash ? { goalDesignPackageHash: draft.goalDesignPackageHash } : {}),
-    draftId: draft.draftId,
-    draftStatus,
-    blockers: draft.blockers,
-    ...(draft.vocabularyGaps ? { vocabularyGaps: draft.vocabularyGaps } : {}),
-    ...(draft.libraryImportDraftId ? { libraryImportDraftId: draft.libraryImportDraftId } : {}),
-  };
-  const finalStages = draftStatus === "ready_for_review"
-    ? ["draft.ready_for_review", "done"]
-    : draftStatus === "needs_library_input"
-      ? ["draft.needs_library_input", "done"]
-    : draftStatus === "needs_input"
-      ? ["draft.needs_input", "done"]
-      : ["done"];
-  try {
-    if (goalDesignMode === "auto_until_blocked" && draftStatus === "ready_for_review" && draft.goalDesignPackageHash) {
-      const autoResult = await continueGoalDesignToRunPg(context, {
-        draftId: draft.draftId,
-        expectedPackageHash: draft.goalDesignPackageHash,
-        confirmationMode: "auto",
-      });
-      await completeSubmissionPg(context.db, claim.submissionId, autoResult, [...observedStages, "done"]);
-      for (const stage of observedStages) {
-        context.onStage?.(stage, stage === "goal_design.persisted"
-          ? { draftId: draft.draftId, goalDesignPackageHash: draft.goalDesignPackageHash, draftStatus: result.draftStatus, package: draft.goalDesignPackage }
-          : undefined);
-      }
-      return autoResult;
-    }
-    await completeSubmissionPg(context.db, claim.submissionId, result, [...observedStages, ...finalStages]);
-  } catch (error) {
-    await failSubmissionPg(context.db, claim.submissionId, error, []);
-    throw error;
-  }
-  for (const stage of observedStages) {
-    context.onStage?.(stage, stage === "goal_design.persisted"
-      ? { draftId: draft.draftId, goalDesignPackageHash: draft.goalDesignPackageHash, draftStatus: result.draftStatus, package: draft.goalDesignPackage }
-      : undefined);
-  }
-  finalStages.forEach((stage) => context.onStage?.(stage));
   return result;
 }
 
@@ -1340,9 +1249,8 @@ function stringArray(value: unknown): string[] {
 function storedGoalDesignPackage(value: unknown): GoalDesignPackage | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const pkg = value as GoalDesignPackage;
-  const issues = pkg.schemaVersion === "southstar.goal_design_package.v2"
-    ? validateGoalDesignPackageV2(pkg)
-    : validateGoalDesignPackage(pkg);
+  if (pkg.schemaVersion !== "southstar.goal_design_package.v2") return undefined;
+  const issues = validateGoalDesignPackageV2(pkg);
   return issues.length === 0 ? pkg : undefined;
 }
 

@@ -1081,33 +1081,20 @@ function candidateRefs(packet: CandidatePacket): Set<string> {
 function goalDesignHostRefs(packageValue: GoalDesignPackage): Set<string> {
   return new Set([
     ...packageValue.slicePlan.slices.flatMap((slice) => slice.expectedArtifactRefs),
-    ...(packageValue.schemaVersion === "southstar.goal_design_package.v1"
-      ? packageValue.evaluatorContracts.map((contract) => contract.id)
-      : []),
+    ...packageValue.validationBindings.flatMap((binding) => [
+      binding.evaluatorProfileRef,
+      ...binding.artifactContractRefs,
+    ]),
   ]);
 }
 
 function goalDesignEvaluatorArtifactRefs(packageValue: GoalDesignPackage | undefined): Map<string, Set<string>> {
   const result = new Map<string, Set<string>>();
   if (!packageValue) return result;
-  if (packageValue.schemaVersion === "southstar.goal_design_package.v2") {
-    for (const binding of packageValue.validationBindings) {
-      const refs = result.get(binding.evaluatorProfileRef) ?? new Set<string>();
-      for (const artifactRef of binding.artifactContractRefs) refs.add(artifactRef);
-      result.set(binding.evaluatorProfileRef, refs);
-    }
-    return result;
-  }
-  const artifactRefsByRequirementId = new Map<string, Set<string>>();
-  for (const slice of packageValue.slicePlan.slices) {
-    for (const requirementId of slice.requirementIds) {
-      const refs = artifactRefsByRequirementId.get(requirementId) ?? new Set<string>();
-      for (const artifactRef of slice.expectedArtifactRefs) refs.add(artifactRef);
-      artifactRefsByRequirementId.set(requirementId, refs);
-    }
-  }
-  for (const evaluator of packageValue.evaluatorContracts) {
-    result.set(evaluator.id, new Set(artifactRefsByRequirementId.get(evaluator.requirementId) ?? []));
+  for (const binding of packageValue.validationBindings) {
+    const refs = result.get(binding.evaluatorProfileRef) ?? new Set<string>();
+    for (const artifactRef of binding.artifactContractRefs) refs.add(artifactRef);
+    result.set(binding.evaluatorProfileRef, refs);
   }
   return result;
 }

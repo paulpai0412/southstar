@@ -312,6 +312,7 @@ test("start exports canonical Postgres and Tork env into detached serve process"
   assert.match(launchedScript, /TORK_BASE_URL='http:\/\/127\.0\.0\.1:8000'/);
   assert.match(launchedScript, /SOUTHSTAR_SERVER_URL='http:\/\/127\.0\.0\.1:3100'/);
   assert.match(launchedScript, /SOUTHSTAR_CONTAINER_CALLBACK_BASE_URL='http:\/\/172\.17\.0\.1:3100'/);
+  assert.match(launchedScript, /SOUTHSTAR_AGENT_IMAGES='southstar\/pi-agent:local'/);
 });
 
 test("retries transient Postgres startup errors before succeeding", async () => {

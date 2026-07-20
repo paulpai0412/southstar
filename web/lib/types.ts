@@ -54,7 +54,10 @@ export interface GoalDesignContent {
   type: "goalDesign";
   draftId: string;
   status?: string;
+  goalDesignPhase?: GoalDesignPhase;
   goalDesignPackageHash?: string;
+  goalRequirementDraft?: GoalRequirementDraftView;
+  goalRequirementDraftHash?: string;
   package?: unknown;
   selectedSliceId?: string;
 }
@@ -178,6 +181,7 @@ export type UiInteractionContractSelection = {
 export type GoalSliceSelection = {
   draftId: string;
   status?: string;
+  goalDesignPhase?: GoalDesignPhase;
   goalDesignPackageHash?: string;
   selectedSliceId: string;
   package?: unknown;

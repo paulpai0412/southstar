@@ -48,6 +48,7 @@ import {
   resumeGoalValidationAfterLibraryImportPg,
   persistGoalValidationResolutionPg,
   persistGoalDesignPackageRevisionPg,
+  createStagedGoalSliceRevisionPg,
   persistGoalRequirementDraftRevisionPg,
   preparePostgresGoalRequirementDraft,
   preparePostgresGoalDesignDraft,
@@ -299,6 +300,138 @@ test("Requirement revisions preserve reviewable UI contracts when their bindings
   });
 });
 
+test("Requirement revisions preserve unaffected UI contracts when regeneration is partial", async () => {
+  await withDb(async (db) => {
+    await seedGoalDesignSkill(db);
+    const cwd = process.cwd();
+    const goalPrompt = "Create two review interactions";
+    const semanticDraft = multiVisualRequirementDraft(goalPrompt, cwd);
+    const firstRequirement = semanticDraft.requirements[0]!;
+    const secondRequirement = semanticDraft.requirements[1]!;
+    const firstContract = finalizeUiInteractionContract(
+      visualContractInput(firstRequirement.id, firstRequirement.acceptanceCriteria[0]!.id),
+      semanticDraft,
+      { id: "ui-review-first" },
+    );
+    const secondContract = finalizeUiInteractionContract(
+      visualContractInput(secondRequirement.id, secondRequirement.acceptanceCriteria[0]!.id),
+      semanticDraft,
+      { id: "ui-review-second" },
+    );
+    const draft = await preparePostgresGoalRequirementDraft(db, {
+      goalPrompt,
+      cwd,
+      requirementInterpreter: {
+        async interpret() { return semanticDraft; },
+        async revise() { return { kind: "revision", draft: semanticDraft, summary: "unchanged" }; },
+        async designUiInteractionContracts() { return [firstContract, secondContract]; },
+      },
+    });
+
+    const revised = await reviseGoalRequirementPg(db, {
+      draftId: draft.draftId,
+      expectedDraftHash: draft.goalRequirementDraftHash,
+      requirementId: firstRequirement.id,
+      patch: { statement: "The first learner can reveal the answer for a card after clarification." },
+      uiInteractionContracts: [firstContract],
+    });
+
+    assert.deepEqual(
+      revised.uiInteractionContracts?.map((contract) => contract.id).sort(),
+      ["ui-review-first", "ui-review-second"],
+    );
+    assert.equal(revised.validationIssues.some((entry) => entry.code === "missing_ui_interaction_contract"), false);
+    assert.equal(await loadCurrentUiInteractionContractPg(db, {
+      draftId: draft.draftId,
+      contractId: "ui-review-second",
+    }).then((contract) => contract.status), "draft");
+  });
+});
+
+test("Missing current UI contracts can be recovered from persisted revisions", async () => {
+  await withDb(async (db) => {
+    await seedGoalDesignSkill(db);
+    const cwd = process.cwd();
+    const goalPrompt = "Recover a review interaction";
+    const semanticDraft = visualRequirementDraft(goalPrompt, cwd);
+    const requirement = semanticDraft.requirements[0]!;
+    const generatedContract = finalizeUiInteractionContract(
+      visualContractInput(requirement.id, requirement.acceptanceCriteria[0]!.id),
+      semanticDraft,
+      { id: "ui-review" },
+    );
+    const draft = await preparePostgresGoalRequirementDraft(db, {
+      goalPrompt,
+      cwd,
+      requirementInterpreter: {
+        async interpret() { return semanticDraft; },
+        async revise() { return { kind: "revision", draft: semanticDraft, summary: "unchanged" }; },
+        async designUiInteractionContracts() { return [generatedContract]; },
+      },
+    });
+    await db.query(
+      `update southstar.runtime_resources
+          set payload_json = payload_json - 'uiInteractionContracts' - 'uiInteractionContractHashes'
+        where resource_type = 'planner_draft' and resource_key = $1`,
+      [draft.draftId],
+    );
+    const recovered = await loadCurrentUiInteractionContractPg(db, {
+      draftId: draft.draftId,
+      contractId: "ui-review",
+    });
+    assert.equal(recovered.status, "draft");
+    assert.equal(recovered.revision, 2);
+    const confirmed = await reviseUiInteractionContractPg(db, {
+      draftId: draft.draftId,
+      contractId: recovered.id,
+      expectedContractHash: recovered.contractHash,
+      patch: { kind: "confirm" },
+    });
+    assert.equal(confirmed.uiInteractionContracts?.[0]?.status, "confirmed");
+    assert.equal(confirmed.validationIssues.some((entry) => entry.code === "missing_ui_interaction_contract"), false);
+  });
+});
+
+test("Changed requirement criteria rebase a persisted UI contract for review", async () => {
+  await withDb(async (db) => {
+    await seedGoalDesignSkill(db);
+    const cwd = process.cwd();
+    const goalPrompt = "Rebase a review interaction";
+    const semanticDraft = visualRequirementDraft(goalPrompt, cwd);
+    const requirement = semanticDraft.requirements[0]!;
+    const generatedContract = finalizeUiInteractionContract(
+      visualContractInput(requirement.id, requirement.acceptanceCriteria[0]!.id),
+      semanticDraft,
+      { id: "ui-review" },
+    );
+    const draft = await preparePostgresGoalRequirementDraft(db, {
+      goalPrompt,
+      cwd,
+      requirementInterpreter: {
+        async interpret() { return semanticDraft; },
+        async revise() { return { kind: "revision", draft: semanticDraft, summary: "unchanged" }; },
+        async designUiInteractionContracts() { return [generatedContract]; },
+      },
+    });
+
+    const revised = await reviseGoalRequirementPg(db, {
+      draftId: draft.draftId,
+      expectedDraftHash: draft.goalRequirementDraftHash,
+      requirementId: requirement.id,
+      patch: { acceptanceCriteria: [{ statement: "Reveal changes the card into its answer state.", evidenceIntent: ["screenshot"] }] },
+    });
+
+    assert.equal(revised.validationIssues.some((entry) => entry.code === "missing_ui_interaction_contract"), false);
+    const recovered = await loadCurrentUiInteractionContractPg(db, {
+      draftId: draft.draftId,
+      contractId: "ui-review",
+    });
+    assert.equal(recovered.status, "draft");
+    assert.equal(recovered.revision, 2);
+    assert.equal(recovered.criterionBindings[0]?.criterionId, revised.goalRequirementDraft.requirements[0]?.acceptanceCriteria[0]?.id);
+  });
+});
+
 test("Chat requirement revisions regenerate missing UI contracts for visual requirements", async () => {
   await withDb(async (db) => {
     await seedGoalDesignSkill(db);
@@ -343,6 +476,146 @@ test("Chat requirement revisions regenerate missing UI contracts for visual requ
     assert.equal(revised.uiInteractionContracts?.[0]?.id, "ui-review");
     assert.equal(revised.validationIssues.some((entry) => entry.code === "missing_ui_interaction_contract"), false);
     assert.equal(revised.validationIssues.some((entry) => entry.code === "unconfirmed_ui_interaction_contract"), true);
+  });
+});
+
+test("Chat requirement revisions design UI contracts against the persisted requirement criteria", async () => {
+  await withDb(async (db) => {
+    await seedGoalDesignSkill(db);
+    const cwd = process.cwd();
+    const goalPrompt = "Revise a review interaction";
+    const initialDraft = visualRequirementDraft(goalPrompt, cwd);
+    const initialRequirement = initialDraft.requirements[0]!;
+    const initialContract = finalizeUiInteractionContract(
+      visualContractInput(initialRequirement.id, initialRequirement.acceptanceCriteria[0]!.id),
+      initialDraft,
+      { id: "ui-review" },
+    );
+    const revisedDraft = finalizeGoalRequirementDraft({
+      goalPrompt,
+      cwd,
+      summary: "Review a card and reveal its revised answer.",
+      requirements: [{
+        title: "Review card",
+        statement: "A learner can reveal the revised answer for a card.",
+        source: "explicit",
+        blocking: true,
+        userVisibleBehaviors: ["The revised answer is hidden until requested."],
+        businessRules: [],
+        acceptanceCriteria: [{ statement: "Reveal changes the card into its revised answer state.", evidenceIntent: ["screenshot"] }],
+        expectedOutcomeArtifacts: [{ description: "Revised review interaction" }],
+        verificationIntent: ["Exercise the revised reveal."],
+        assumptions: [],
+        openQuestions: [],
+        riskTags: [],
+        interactionContractRefs: ["ui-review"],
+      }],
+      nonGoals: [],
+      blockingInputs: [],
+    });
+    const revisedRequirement = revisedDraft.requirements[0]!;
+    const revisedContract = finalizeUiInteractionContract(
+      visualContractInput(revisedRequirement.id, revisedRequirement.acceptanceCriteria[0]!.id),
+      revisedDraft,
+      { id: "ui-review" },
+    );
+    const draft = await preparePostgresGoalRequirementDraft(db, {
+      goalPrompt,
+      cwd,
+      requirementInterpreter: {
+        async interpret() { return initialDraft; },
+        async revise() { return { kind: "revision", draft: revisedDraft, summary: "revised" }; },
+        async designUiInteractionContracts() { return [initialContract]; },
+      },
+    });
+
+    const revised = await reviseGoalRequirementFromChatPg(db, {
+      draftId: draft.draftId,
+      expectedDraftHash: draft.goalRequirementDraftHash,
+      message: "Revise the visual requirement.",
+      selectedRequirementId: initialRequirement.id,
+      requirementInterpreter: {
+        async interpret() { return initialDraft; },
+        async revise() { return { kind: "revision", draft: revisedDraft, summary: "revised" }; },
+        async designUiInteractionContracts() { return [revisedContract]; },
+      },
+    });
+
+    if ("kind" in revised) assert.fail("expected a persisted revision");
+    assert.equal(revised.uiInteractionContracts?.[0]?.criterionBindings[0]?.criterionId, revised.goalRequirementDraft.requirements[0]?.acceptanceCriteria[0]?.id);
+    assert.equal(revised.validationIssues.some((entry) => entry.code === "missing_ui_interaction_contract"), false);
+  });
+});
+
+test("Chat requirement revisions rebind stale generated UI contract criteria by stable binding order", async () => {
+  await withDb(async (db) => {
+    await seedGoalDesignSkill(db);
+    const cwd = process.cwd();
+    const goalPrompt = "Rebind a review interaction";
+    const initialDraft = visualRequirementDraft(goalPrompt, cwd);
+    const initialRequirement = initialDraft.requirements[0]!;
+    const initialContract = finalizeUiInteractionContract(
+      visualContractInput(initialRequirement.id, initialRequirement.acceptanceCriteria[0]!.id),
+      initialDraft,
+      { id: "ui-review" },
+    );
+    const revisedDraft = finalizeGoalRequirementDraft({
+      goalPrompt,
+      cwd,
+      summary: "Review a card and reveal its revised answer.",
+      requirements: [{
+        title: "Review card",
+        statement: "A learner can reveal the revised answer for a card.",
+        source: "explicit",
+        blocking: true,
+        userVisibleBehaviors: ["The revised answer is hidden until requested."],
+        businessRules: [],
+        acceptanceCriteria: [{ statement: "Reveal changes the card into its revised answer state.", evidenceIntent: ["screenshot"] }],
+        expectedOutcomeArtifacts: [{ description: "Revised review interaction" }],
+        verificationIntent: ["Exercise the revised reveal."],
+        assumptions: [],
+        openQuestions: [],
+        riskTags: [],
+        interactionContractRefs: ["ui-review"],
+      }],
+      nonGoals: [],
+      blockingInputs: [],
+    });
+    const revisedRequirement = revisedDraft.requirements[0]!;
+    const validRevisedContract = finalizeUiInteractionContract(
+      visualContractInput(revisedRequirement.id, revisedRequirement.acceptanceCriteria[0]!.id),
+      revisedDraft,
+      { id: "ui-review" },
+    );
+    const staleGeneratedContract = {
+      ...structuredClone(validRevisedContract),
+      criterionBindings: structuredClone(initialContract.criterionBindings),
+    };
+    const draft = await preparePostgresGoalRequirementDraft(db, {
+      goalPrompt,
+      cwd,
+      requirementInterpreter: {
+        async interpret() { return initialDraft; },
+        async revise() { return { kind: "revision", draft: revisedDraft, summary: "revised" }; },
+        async designUiInteractionContracts() { return [initialContract]; },
+      },
+    });
+
+    const revised = await reviseGoalRequirementFromChatPg(db, {
+      draftId: draft.draftId,
+      expectedDraftHash: draft.goalRequirementDraftHash,
+      message: "Rebind the revised visual requirement.",
+      selectedRequirementId: initialRequirement.id,
+      requirementInterpreter: {
+        async interpret() { return initialDraft; },
+        async revise() { return { kind: "revision", draft: revisedDraft, summary: "revised" }; },
+        async designUiInteractionContracts() { return [staleGeneratedContract]; },
+      },
+    });
+
+    if ("kind" in revised) assert.fail("expected a persisted revision");
+    assert.equal(revised.uiInteractionContracts?.[0]?.criterionBindings[0]?.criterionId, revised.goalRequirementDraft.requirements[0]?.acceptanceCriteria[0]?.id);
+    assert.equal(revised.validationIssues.some((entry) => entry.code === "missing_ui_interaction_contract"), false);
   });
 });
 
@@ -635,6 +908,15 @@ test("validation_ready continues on the same planner draft into a V2 Slice revie
           workspaceDiscoveryHash: input.workspaceDiscovery.discoveryHash,
           mode: input.mode,
         });
+      },
+      async revise(input) {
+        return {
+          kind: "revision",
+          slicePlan: { slices: input.currentPackage.slicePlan.slices },
+          compositionStrategy: input.currentPackage.compositionStrategy,
+          summary: "unchanged",
+          changedSliceIds: [],
+        };
       },
     };
 
@@ -1641,6 +1923,123 @@ test("Goal Design package revisions are immutable resources", async () => {
   });
 });
 
+test("dag-validated Goal Design can fork one staged Slice revision without changing Requirements", async () => {
+  await withDb(async (db) => {
+    const goal = await createConfirmedGoalRequirementDraft(db, "Revise the staged slices after DAG validation");
+    const resolution = validationResolution(goal, true);
+    await persistGoalValidationResolutionPg(db, {
+      draftId: goal.draftId,
+      expectedGoalContractHash: goal.goalContractHash,
+      expectedGoalRequirementDraftHash: goal.goalRequirementDraftHash,
+      resolution,
+      actor: "test",
+    });
+    const designed = await designAndPersistGoalSlicesPg(db, {
+      draftId: goal.draftId,
+      expectedResolutionHash: resolution.resolutionHash,
+      sliceDesigner: inlineArticleSliceDesigner(),
+    });
+    const source = await getResourceByKeyPg(db, "planner_draft", goal.draftId);
+    assert.ok(source);
+    await upsertRuntimeResourcePg(db, {
+      id: source.id,
+      resourceType: "planner_draft",
+      resourceKey: goal.draftId,
+      scope: source.scope,
+      status: source.status,
+      ...(source.title ? { title: source.title } : {}),
+      payload: {
+        ...source.payload,
+        goalDesignPhase: "dag_validated",
+        composedDraftId: "draft-composed-existing",
+      },
+      summary: {
+        ...source.summary,
+        goalDesignPhase: "dag_validated",
+      },
+    });
+
+    const revision = await createStagedGoalSliceRevisionPg(db, {
+      draftId: goal.draftId,
+      expectedPackageHash: designed.goalDesignPackageHash,
+    });
+
+    assert.notEqual(revision.draftId, goal.draftId);
+    assert.equal(revision.phase, "slice_review");
+    assert.equal(revision.parentDraftId, goal.draftId);
+    assert.equal(revision.parentPackageHash, designed.goalDesignPackageHash);
+    assert.equal(revision.goalRequirementDraftHash, goal.goalRequirementDraftHash);
+    assert.equal(revision.goalContractHash, goal.goalContractHash);
+    assert.equal(revision.goalDesignPackageHash, designed.goalDesignPackageHash);
+    assert.deepEqual(revision.goalRequirementDraft, goal.goalRequirementDraft);
+    assert.equal(
+      (await getPostgresPlannerDraftOrchestration(db, { draftId: goal.draftId })).goalDesignPhase,
+      "dag_validated",
+    );
+    assert.equal(
+      (await getPostgresPlannerDraftOrchestration(db, { draftId: revision.draftId })).goalDesignPhase,
+      "slice_review",
+    );
+
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "planner_draft",
+      resourceKey: "draft-composed-existing",
+      scope: "planner",
+      status: "validated",
+      payload: { goalDesignPackageHash: designed.goalDesignPackageHash },
+      summary: { goalDesignPackageHash: designed.goalDesignPackageHash },
+    });
+    await db.query(
+      `insert into southstar.workflow_runs (
+        id, status, domain, goal_prompt, workflow_manifest_json, execution_projection_json,
+        snapshot_json, runtime_context_json, metrics_json, created_at, updated_at
+      ) values ($1, 'created', 'software', 'goal', '{}'::jsonb, '{}'::jsonb, '{}'::jsonb,
+        $2::jsonb, '{}'::jsonb, now(), now())`,
+      ["run-composed-existing", JSON.stringify({ draftId: "draft-composed-existing" })],
+    );
+
+    const edited = await reviseGoalSlicePg(db, {
+      draftId: revision.draftId,
+      sliceId: revision.goalDesignPackage.slicePlan.slices[0]!.id,
+      expectedPackageHash: revision.goalDesignPackageHash,
+      patch: { outcome: "Review the revised staged Slice" },
+    });
+    assert.equal(edited.revision, revision.goalDesignPackage.revision + 1);
+    const editedView = await getPostgresPlannerDraftOrchestration(db, { draftId: revision.draftId });
+    assert.equal(editedView.goalDesignPackageHash, edited.packageHash);
+    assert.equal(editedView.goalDesignPackage?.revision, edited.revision);
+    const parentAfterEdit = await getResourceByKeyPg(db, "planner_draft", goal.draftId);
+    assert.ok(parentAfterEdit);
+    assert.equal(parentAfterEdit.status, "ready_for_review");
+    assert.equal((parentAfterEdit.payload as Record<string, unknown>).goalDesignPhase, "dag_validated");
+
+    const repeated = await createStagedGoalSliceRevisionPg(db, {
+      draftId: goal.draftId,
+      expectedPackageHash: designed.goalDesignPackageHash,
+    });
+    assert.equal(repeated.draftId, revision.draftId);
+  });
+});
+
+test("removed V1 Goal Design drafts are not readable", async () => {
+  await withDb(async (db) => {
+    const legacy = packageRevision(1);
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "planner_draft",
+      resourceKey: "legacy-v1-draft",
+      scope: "planner",
+      status: "ready_for_review",
+      payload: { goalDesignPackage: legacy },
+      summary: { goalDesignPackageHash: legacy.packageHash },
+    });
+
+    await assert.rejects(
+      () => loadCurrentGoalDesignPackagePg(db, "legacy-v1-draft"),
+      /Goal Design package not found: legacy-v1-draft/,
+    );
+  });
+});
+
 test("valid Slice edit creates one immutable package revision", async () => {
   await withDb(async (db) => {
     const { draftId, package: before } = await createReadyReviewGoalDesignDraft(db);
@@ -1779,6 +2178,59 @@ test("review chat clarification leaves the package unchanged", async () => {
     assert.deepEqual(result, { kind: "needs_input", question: "Which outcome boundary should change?" });
     assert.equal((await loadCurrentGoalDesignPackagePg(db, draftId)).packageHash, before.packageHash);
     assert.equal(await countGoalDesignRevisions(db, draftId), 1);
+  });
+});
+
+test("Package V2 review chat revises through the staged Slice designer", async () => {
+  await withDb(async (db) => {
+    const goal = await createConfirmedGoalRequirementDraft(db, "Review an offline article");
+    const resolution = validationResolution(goal, true);
+    await persistGoalValidationResolutionPg(db, {
+      draftId: goal.draftId,
+      expectedGoalContractHash: goal.goalContractHash,
+      expectedGoalRequirementDraftHash: goal.goalRequirementDraftHash,
+      resolution,
+      actor: "test",
+    });
+    const designed = await designAndPersistGoalSlicesPg(db, {
+      draftId: goal.draftId,
+      expectedResolutionHash: resolution.resolutionHash,
+      sliceDesigner: inlineArticleSliceDesigner(),
+    });
+    const stagedSliceDesigner = {
+      ...inlineArticleSliceDesigner(),
+      async revise(input: any) {
+        const currentSlice = input.currentPackage.slicePlan.slices[0];
+        return {
+          kind: "revision" as const,
+          summary: "Updated the staged Slice outcome.",
+          changedSliceIds: [currentSlice.id],
+          slicePlan: {
+            schemaVersion: "southstar.goal_slice_plan.v1" as const,
+            goalContractHash: "host-filled",
+            revision: input.currentPackage.revision + 1,
+            slices: [{ ...currentSlice, outcome: "Review the revised offline article" }],
+          },
+          compositionStrategy: input.currentPackage.compositionStrategy,
+        };
+      },
+    };
+    const revised = await reviseGoalDesignFromChatPg({
+      db,
+      goalInterpreter: fixedGoalInterpreter(goal.goalContract),
+      goalSliceDesigner: stagedSliceDesigner,
+    }, {
+      draftId: goal.draftId,
+      expectedPackageHash: designed.goalDesignPackageHash,
+      message: "revise the article outcome",
+    });
+
+    assert.equal(revised.kind, "revision");
+    if (revised.kind !== "revision") assert.fail("expected a revision");
+    assert.equal(revised.package.schemaVersion, "southstar.goal_design_package.v2");
+    assert.equal(revised.package.revision, designed.goalDesignPackage.revision + 1);
+    assert.equal(revised.package.slicePlan.slices[0]!.outcome, "Review the revised offline article");
+    assert.equal(revised.draftStatus, "ready_for_review");
   });
 });
 
@@ -3707,6 +4159,48 @@ function visualRequirementDraft(goalPrompt: string, cwd: string) {
   });
 }
 
+function multiVisualRequirementDraft(goalPrompt: string, cwd: string) {
+  return finalizeGoalRequirementDraft({
+    goalPrompt,
+    cwd,
+    summary: "Review two cards and reveal their answers.",
+    requirements: [
+      {
+        title: "First review card",
+        statement: "A learner can reveal the answer for the first card.",
+        source: "explicit",
+        blocking: true,
+        userVisibleBehaviors: ["The first answer is hidden until requested."],
+        businessRules: [],
+        acceptanceCriteria: [{ statement: "Reveal changes the first question to its answer state.", evidenceIntent: ["screenshot"] }],
+        expectedOutcomeArtifacts: [{ description: "First review interaction" }],
+        verificationIntent: ["Exercise the first reveal."],
+        assumptions: [],
+        openQuestions: [],
+        riskTags: [],
+        interactionContractRefs: ["ui-review-first"],
+      },
+      {
+        title: "Second review card",
+        statement: "A learner can reveal the answer for the second card.",
+        source: "explicit",
+        blocking: true,
+        userVisibleBehaviors: ["The second answer is hidden until requested."],
+        businessRules: [],
+        acceptanceCriteria: [{ statement: "Reveal changes the second question to its answer state.", evidenceIntent: ["screenshot"] }],
+        expectedOutcomeArtifacts: [{ description: "Second review interaction" }],
+        verificationIntent: ["Exercise the second reveal."],
+        assumptions: [],
+        openQuestions: [],
+        riskTags: [],
+        interactionContractRefs: ["ui-review-second"],
+      },
+    ],
+    nonGoals: [],
+    blockingInputs: [],
+  });
+}
+
 function visualContractInput(requirementId: string, criterionId: string) {
   return {
     requirementIds: [requirementId],
@@ -3759,6 +4253,15 @@ function inlineArticleSliceDesigner(): GoalSliceDesigner {
         workspaceDiscoveryHash: input.workspaceDiscovery.discoveryHash,
         mode: input.mode,
       });
+    },
+    async revise(input) {
+      return {
+        kind: "revision",
+        slicePlan: { slices: input.currentPackage.slicePlan.slices },
+        compositionStrategy: input.currentPackage.compositionStrategy,
+        summary: "unchanged",
+        changedSliceIds: [],
+      };
     },
   };
 }

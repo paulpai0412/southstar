@@ -21,6 +21,7 @@ import {
   finalizeGoalDesignPackageV2,
   goalDesignPackageHash,
   loadGoalDesignSkillPg,
+  reviseGoalSlicesWithLlm,
   validateGoalDesignPackage,
   validateGoalDesignPackageV2,
   type GoalDesignPackageV2,
@@ -278,6 +279,65 @@ test("Slice designer receives confirmed bindings and cannot invent requirements 
   assert.equal(pkg.validationBindings[0]!.evaluatorProfileRef, binding.evaluatorProfileRef);
   assert.deepEqual(pkg.slicePlan.slices[0]!.evaluatorContractRefs, [binding.id]);
   assert.equal(validateGoalDesignPackageV2(pkg).length, 0);
+});
+
+test("staged Slice designer revises Package V2 without changing frozen bindings", async () => {
+  const staged = stagedGoalInput();
+  const binding = validationBinding(staged.requirementDraft, staged.goalContract);
+  const current = packageV2(staged.requirementDraft, staged.goalContract, binding);
+  const result = await reviseGoalSlicesWithLlm({
+    currentPackage: current,
+    goalContract: staged.goalContract,
+    requirementDraft: staged.requirementDraft,
+    validationBindings: [binding],
+    workspaceDiscovery: discovery(staged.goalContract.workspace.cwd),
+    mode: "review_before_compose",
+    templatePolicy: { mode: "auto" },
+    skill: {
+      objectKey: current.goalDesignSkillRef,
+      versionRef: current.goalDesignSkillVersionRef,
+      stateHash: "goal-design-state-v2",
+      body: "Create cohesive outcome slices from confirmed requirements.",
+    },
+    message: "make the article outcome more explicit",
+    selectedSliceId: current.slicePlan.slices[0]!.id,
+    client: {
+      async generateText({ prompt }) {
+        assert.match(prompt, /CurrentGoalDesignPackage/);
+        assert.match(prompt, /Frozen validation bindings|ValidationBindings/);
+        return JSON.stringify({
+          kind: "revision",
+          summary: "Made the article outcome explicit.",
+          changedSliceIds: ["article-delivery"],
+          slicePlan: {
+            slices: [{
+              id: "article-delivery",
+              requirementIds: [staged.goalContract.requirements[0]!.id],
+              outcome: "Deliver the verified offline article with explicit offline loading",
+              stateOrArtifactOwner: "article/article.html",
+              mutationBoundary: "one self-contained HTML artifact",
+              expectedArtifactRefs: binding.artifactContractRefs,
+              evaluatorContractRefs: [binding.id],
+              dependsOnSliceIds: [],
+              dependencyArtifactRefs: [],
+            }],
+          },
+          compositionStrategy: {
+            mode: "single-run",
+            sliceIds: ["article-delivery"],
+            rationale: "one cohesive artifact boundary",
+          },
+        });
+      },
+    },
+    model: "inline-slice-revision-test",
+  });
+
+  assert.equal(result.kind, "revision");
+  if (result.kind !== "revision") assert.fail("expected revision");
+  assert.equal(result.changedSliceIds.length, 1);
+  assert.equal(result.slicePlan.slices[0]!.evaluatorContractRefs[0], binding.id);
+  assert.equal(result.slicePlan.slices[0]!.outcome, "Deliver the verified offline article with explicit offline loading");
 });
 
 test("Package V2 rejects unresolved bindings, criteria drift, and Slice-owned invented binding refs", () => {

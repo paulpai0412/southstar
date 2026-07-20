@@ -38,6 +38,7 @@ import type { ChatInputHandle } from "./ChatInput";
 import type { SessionStatsInfo } from "@/lib/pi-types";
 import { buildGoalJourney, type GoalJourneyStep } from "@/lib/goal-journey";
 import { persistWorkflowUiMessage } from "@/lib/workflow/session-persistence-client";
+import { goalDesignContentFromSelection, goalSliceSelectionFromCurrentDraft, readCurrentGoalDesignDraft } from "@/lib/workflow/goal-design-draft";
 
 function goalRequirementContentFromSelection(selection: GoalRequirementSelection): GoalRequirementsContent {
   return {
@@ -780,21 +781,89 @@ export function AppShell() {
   }, [goalDesignRevisionAnchor, openSidecarTab]);
 
   const handleGoalSlicePackageChange = useCallback((selection: GoalSliceSelection) => {
+    const nextContent = goalDesignContentFromSelection(selection);
     setGoalDesignRevisionAnchor(selection);
-    persistGoalWorkflowState([{
-      type: "goalDesign",
-      draftId: selection.draftId,
-      ...(selection.status ? { status: selection.status } : {}),
-      selectedSliceId: selection.selectedSliceId,
-      ...(selection.goalDesignPackageHash ? { goalDesignPackageHash: selection.goalDesignPackageHash } : {}),
-      ...(selection.package !== undefined ? { package: selection.package } : {}),
-    }]);
+    setGoalDesignContentOverride(nextContent);
+    // Persist the complete current snapshot. A partial workflow-state block
+    // would become the latest transcript block after reload and hide the
+    // package that the next mutation must be based on.
+    persistGoalWorkflowState([nextContent]);
     setSidecarTabs((current) => current.map((tab) => (
       tab.kind === "goalSlice" && tab.draftId === selection.draftId && tab.goalSliceSelection?.selectedSliceId === selection.selectedSliceId
         ? { ...tab, goalSliceSelection: selection, refreshKey: (tab.refreshKey ?? 0) + 1 }
         : tab
     )));
   }, [persistGoalWorkflowState]);
+
+  const handleGoalDesignComposed = useCallback((selection: GoalSliceSelection) => {
+    handleGoalSlicePackageChange({ ...selection, goalDesignPhase: "dag_validated" });
+  }, [handleGoalSlicePackageChange]);
+
+  const handleCreateGoalSliceRevision = useCallback(async (selection: GoalSliceSelection) => {
+    const current = await readCurrentGoalDesignDraft(selection.draftId);
+    const response = await fetch(`/api/workflow/planner-drafts/${encodeURIComponent(selection.draftId)}/goal-design/slice-revisions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ expectedPackageHash: current.goalDesignPackageHash }),
+    });
+    const payload = await response.json().catch(() => undefined) as unknown;
+    const envelope = payload && typeof payload === "object" && !Array.isArray(payload) ? payload as { result?: unknown; error?: unknown; message?: unknown } : undefined;
+    if (!response.ok) {
+      const message = typeof envelope?.error === "string" ? envelope.error : typeof envelope?.message === "string" ? envelope.message : `HTTP ${response.status}`;
+      throw new Error(message);
+    }
+    const result = envelope?.result;
+    if (!result || typeof result !== "object" || Array.isArray(result)) throw new Error("Slice revision response was invalid.");
+    const revision = result as {
+      draftId?: unknown;
+      status?: unknown;
+      phase?: unknown;
+      goalDesignPackage?: unknown;
+      goalDesignPackageHash?: unknown;
+      goalRequirementDraft?: unknown;
+      goalRequirementDraftHash?: unknown;
+    };
+    if (typeof revision.draftId !== "string"
+      || typeof revision.goalDesignPackageHash !== "string"
+      || !revision.goalDesignPackage
+      || typeof revision.goalDesignPackage !== "object"
+      || !revision.goalRequirementDraft
+      || typeof revision.goalRequirementDraft !== "object") {
+      throw new Error("Slice revision response is missing immutable Goal Design lineage.");
+    }
+    const nextSelection: GoalSliceSelection = {
+      ...goalSliceSelectionFromCurrentDraft(current, selection),
+      draftId: revision.draftId,
+      status: typeof revision.status === "string" ? revision.status : "ready_for_review",
+      goalDesignPhase: "slice_review",
+      package: revision.goalDesignPackage,
+      goalDesignPackageHash: revision.goalDesignPackageHash,
+      ...(typeof revision.goalRequirementDraft === "object" ? { requirementDraft: revision.goalRequirementDraft as GoalSliceSelection["requirementDraft"] } : {}),
+    };
+    const nextContent: GoalDesignContent = {
+      type: "goalDesign",
+      draftId: revision.draftId,
+      status: nextSelection.status,
+      goalDesignPhase: "slice_review",
+      goalDesignPackageHash: revision.goalDesignPackageHash,
+      package: revision.goalDesignPackage,
+      goalRequirementDraft: nextSelection.requirementDraft,
+      ...(typeof revision.goalRequirementDraftHash === "string" ? { goalRequirementDraftHash: revision.goalRequirementDraftHash } : {}),
+      selectedSliceId: nextSelection.selectedSliceId,
+    };
+    setChatWorkspaceSurface("workflow");
+    setGoalDesignRevisionAnchor(nextSelection);
+    setGoalDesignContentOverride(nextContent);
+    persistGoalWorkflowState([nextContent]);
+    openSidecarTab({
+      id: `goal-slice:${nextSelection.draftId}:${nextSelection.selectedSliceId}`,
+      label: `Slice ${nextSelection.selectedSliceId}`,
+      filePath: `${nextSelection.draftId}/${nextSelection.selectedSliceId}`,
+      kind: "goalSlice",
+      draftId: nextSelection.draftId,
+      goalSliceSelection: nextSelection,
+    });
+  }, [openSidecarTab, persistGoalWorkflowState]);
 
   const handleGoalRequirementSelect = useCallback((selection: GoalRequirementSelection) => {
     setChatWorkspaceSurface("workflow");
@@ -1430,6 +1499,9 @@ export function AppShell() {
       .sidebar-overlay-backdrop {
         display: none;
       }
+      .mobile-sidebar-close-bar {
+        display: none;
+      }
       .pi-app-shell {
         --pi-sidebar-width: 288px;
       }
@@ -1473,6 +1545,15 @@ export function AppShell() {
           min-width: var(--pi-sidebar-width);
           max-width: var(--pi-sidebar-width);
           transform: translateX(calc(-1 * var(--pi-sidebar-width) - 1px));
+        }
+        .mobile-sidebar-close-bar {
+          display: flex;
+          align-items: center;
+          justify-content: flex-end;
+          min-height: 36px;
+          padding: 0 8px;
+          border-bottom: 1px solid var(--border);
+          flex-shrink: 0;
         }
       }
       @media (prefers-reduced-motion: reduce) {
@@ -1525,6 +1606,28 @@ export function AppShell() {
           zIndex: 200,
         }}
       >
+        <div className="mobile-sidebar-close-bar">
+          <button
+            type="button"
+            data-testid="mobile-sidebar-close"
+            onClick={() => setSidebarOpen(false)}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 5,
+              height: 28,
+              padding: "0 8px",
+              border: "1px solid var(--border)",
+              borderRadius: 6,
+              background: "var(--bg-hover)",
+              color: "var(--text-muted)",
+              cursor: "pointer",
+              fontSize: 11,
+            }}
+          >
+            Close sidebar
+          </button>
+        </div>
         {sidebarContent}
       </div>
 
@@ -1972,7 +2075,9 @@ export function AppShell() {
                 workflowCwd={chatCurrentCwd}
                 onWorkflowDagNodeSelect={handleWorkflowDagNodeSelect}
                 onGoalRequirements={handleGoalRequirementsContent}
+                onGoalDesignComposed={handleGoalDesignComposed}
                 onGoalSliceSelect={handleGoalSliceSelect}
+                onCreateGoalSliceRevision={handleCreateGoalSliceRevision}
                 onGoalRequirementSelect={handleGoalRequirementSelect}
                 onConfirmRequirements={handleConfirmRequirements}
                 goalDesignRevisionAnchor={goalDesignRevisionAnchor}
@@ -2009,7 +2114,9 @@ export function AppShell() {
               workflowCwd={workflowCurrentCwd}
               onWorkflowDagNodeSelect={handleWorkflowDagNodeSelect}
               onGoalRequirements={handleGoalRequirementsContent}
+              onGoalDesignComposed={handleGoalDesignComposed}
               onGoalSliceSelect={handleGoalSliceSelect}
+              onCreateGoalSliceRevision={handleCreateGoalSliceRevision}
               onGoalRequirementSelect={handleGoalRequirementSelect}
               onConfirmRequirements={handleConfirmRequirements}
               goalDesignRevisionAnchor={goalDesignRevisionAnchor}

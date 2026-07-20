@@ -1348,13 +1348,9 @@ function pinnedRefsForGoal(goalContract: GoalContractV1, goalDesignPackage?: Com
   ]);
   const policy = goalDesignPackage?.templatePolicy;
   if (policy && policy.mode !== "auto") refs.add(policy.templateRef);
-  for (const binding of goalDesignPackage?.schemaVersion === "southstar.goal_design_package.v2"
-    ? goalDesignPackage.validationBindings
-    : goalDesignPackage?.evaluatorContracts ?? []) {
-    if ("evaluatorProfileRef" in binding && typeof binding.evaluatorProfileRef === "string") refs.add(binding.evaluatorProfileRef);
-    for (const ref of "artifactContractRefs" in binding && Array.isArray(binding.artifactContractRefs) ? binding.artifactContractRefs : []) {
-      if (typeof ref === "string") refs.add(ref);
-    }
+  for (const binding of goalDesignPackage?.validationBindings ?? []) {
+    refs.add(binding.evaluatorProfileRef);
+    for (const ref of binding.artifactContractRefs) refs.add(ref);
   }
   return refs;
 }

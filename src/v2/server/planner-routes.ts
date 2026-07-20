@@ -1,6 +1,6 @@
 import type { WorkflowComposer } from "../orchestration/composer.ts";
 import { LlmWorkflowComposer, loadWorkflowComposerSopPg } from "../orchestration/llm-composer.ts";
-import { createLlmGoalDesigner, createLlmGoalSliceDesigner } from "../orchestration/goal-design.ts";
+import { createLlmGoalSliceDesigner } from "../orchestration/goal-design.ts";
 import {
   createLlmGoalRequirementDraftInterpreter,
   type GoalRequirementDraftInterpreter,
@@ -26,12 +26,11 @@ import {
 } from "../design-library/files/library-reconcile-service.ts";
 import {
   isReviewableGoalDesignDraftPg,
-  isGoalDesignVocabularyGapDraftPg,
-  retryPostgresGoalDesignAfterVocabularyApprovalPg,
   loadCurrentGoalDesignPackagePg,
   reviseGoalDesignFromChatPg,
   reviseGoalSlicePg,
   reviseGoalTemplatePolicyPg,
+  createStagedGoalSliceRevisionPg,
   confirmGoalRequirementsPg,
   designAndPersistGoalSlicesPg,
   reviseGoalRequirementPg,
@@ -110,7 +109,6 @@ export async function handlePlannerRoute(
       db: context.db,
       goalInterpreter: resolveGoalInterpreter(context),
       goalRequirementInterpreter: resolveGoalRequirementInterpreter(context),
-      goalDesigner: resolveGoalDesigner(context),
       composer: resolvePlannerWorkflowComposer(context),
       libraryImportLlmProvider: context.libraryImportLlmProvider,
       libraryImportSourceFetcher: context.libraryImportSourceFetcher,
@@ -144,7 +142,6 @@ export async function handlePlannerRoute(
       return json("goal-design-confirmation", await confirmGoalDesignPg({
         db: context.db,
         goalInterpreter: resolveGoalInterpreter(context),
-        goalDesigner: resolveGoalDesigner(context),
         composer: resolvePlannerWorkflowComposer(context),
         libraryImportLlmProvider: context.libraryImportLlmProvider,
         libraryImportSourceFetcher: context.libraryImportSourceFetcher,
@@ -267,6 +264,19 @@ export async function handlePlannerRoute(
   }
 
   const goalDesignSlicePatchMatch = url.pathname.match(/^\/api\/v2\/planner\/drafts\/([^/]+)\/goal-design\/slices\/([^/]+)$/);
+  const goalDesignSliceRevisionMatch = url.pathname.match(/^\/api\/v2\/planner\/drafts\/([^/]+)\/goal-design\/slice-revisions$/);
+  if (request.method === "POST" && goalDesignSliceRevisionMatch) {
+    const body = await readJsonBody<{ expectedPackageHash?: unknown }>(request);
+    try {
+      return json("goal-design-slice-revision", await createStagedGoalSliceRevisionPg(context.db, {
+        draftId: decodeURIComponent(goalDesignSliceRevisionMatch[1]!),
+        expectedPackageHash: requiredString(body.expectedPackageHash, "expectedPackageHash"),
+      }));
+    } catch (error) {
+      return goalDesignRevisionErrorResponse(error);
+    }
+  }
+
   if (request.method === "PATCH" && goalDesignSlicePatchMatch) {
     const body = await readJsonBody<{ expectedPackageHash?: unknown; patch?: unknown }>(request);
     try {
@@ -316,7 +326,6 @@ export async function handlePlannerRoute(
         db: context.db,
         goalInterpreter: resolveGoalInterpreter(context),
         goalRequirementInterpreter: resolveGoalRequirementInterpreter(context),
-        goalDesigner: resolveGoalDesigner(context),
         composer: resolvePlannerWorkflowComposer(context),
         libraryImportLlmProvider: context.libraryImportLlmProvider,
         libraryImportSourceFetcher: context.libraryImportSourceFetcher,
@@ -334,21 +343,12 @@ export async function handlePlannerRoute(
       expectedPackageHash?: unknown;
       selectedSliceId?: unknown;
     }>(request);
-    if (await isGoalDesignVocabularyGapDraftPg(context.db, draftId)) {
-      return json("planner-draft", await retryPostgresGoalDesignAfterVocabularyApprovalPg(context.db, {
-        draftId,
-        goalInterpreter: resolveGoalInterpreter(context),
-        goalDesigner: resolveGoalDesigner(context),
-        libraryImportLlmProvider: context.libraryImportLlmProvider,
-        libraryImportSourceFetcher: context.libraryImportSourceFetcher,
-      }));
-    }
     if (await isReviewableGoalDesignDraftPg(context.db, draftId)) {
       try {
         return json("goal-design-revision", await reviseGoalDesignFromChatPg({
           db: context.db,
           goalInterpreter: resolveGoalInterpreter(context),
-          goalDesigner: resolveGoalDesigner(context),
+          goalSliceDesigner: resolveGoalSliceDesigner(context),
         }, {
           draftId,
           expectedPackageHash: requiredString(body.expectedPackageHash, "expectedPackageHash"),
@@ -433,7 +433,6 @@ function createRunGoalStreamResponse(
           db: context.db,
           goalInterpreter: resolveGoalInterpreter(context),
           goalRequirementInterpreter: resolveGoalRequirementInterpreter(context),
-          goalDesigner: resolveGoalDesigner(context),
           composer: resolvePlannerWorkflowComposer(context),
           libraryImportLlmProvider: context.libraryImportLlmProvider,
           libraryImportSourceFetcher: context.libraryImportSourceFetcher,
@@ -504,7 +503,6 @@ function createGoalDesignConfirmationStreamResponse(
         const result = await confirmGoalDesignPg({
           db: context.db,
           goalInterpreter: resolveGoalInterpreter(context),
-          goalDesigner: resolveGoalDesigner(context),
           composer: resolvePlannerWorkflowComposer(context, {
             onStreamDegraded(message) {
               send("planner.stage", { stage: "planner.stream.degraded", message });
@@ -761,7 +759,6 @@ function createPlannerDraftStreamResponse(
           db: context.db,
           goalInterpreter: resolveGoalInterpreter(context),
           goalRequirementInterpreter: resolveGoalRequirementInterpreter(context),
-          goalDesigner: resolveGoalDesigner(context),
           composer: resolvePlannerWorkflowComposer(context, {
             onStreamDegraded(message) {
               send("planner.stage", { stage: "planner.stream.degraded", message });
@@ -896,41 +893,20 @@ function createPlannerDraftRevisionStreamResponse(
           send("done", result);
           return;
         }
-        if (await isGoalDesignVocabularyGapDraftPg(context.db, draftId)) {
-          send("planner.stage", { stage: "goal_design.vocabulary.retry", message: "Retrying Goal Design with approved Library vocabulary." });
-          const draft = await retryPostgresGoalDesignAfterVocabularyApprovalPg(context.db, {
-            draftId,
-            goalInterpreter: resolveGoalInterpreter(context),
-            goalDesigner: resolveGoalDesigner(context),
-            libraryImportLlmProvider: context.libraryImportLlmProvider,
-            libraryImportSourceFetcher: context.libraryImportSourceFetcher,
-            onProgress(event) {
-              send("planner.stage", event);
-            },
-          });
-          if (draft.goalDesignPackage) {
-            send("goal_design", {
-              draftId: draft.draftId,
-              status: draft.status,
-              goalDesignPackageHash: draft.goalDesignPackageHash,
-              package: draft.goalDesignPackage,
-            });
-          }
-          send("draft", { draft });
-          send("done", { draftId: draft.draftId, draftStatus: draft.status, goalDesignPackageHash: draft.goalDesignPackageHash });
-          return;
-        }
         if (await isReviewableGoalDesignDraftPg(context.db, draftId)) {
           send("planner.stage", { stage: "goal_design.revision.requested", message: "Accepted Goal Design revision request." });
           const result = await reviseGoalDesignFromChatPg({
             db: context.db,
             goalInterpreter: resolveGoalInterpreter(context),
-            goalDesigner: resolveGoalDesigner(context),
+            goalSliceDesigner: resolveGoalSliceDesigner(context),
           }, {
             draftId,
             expectedPackageHash: requiredString(body.expectedPackageHash, "expectedPackageHash"),
             message: requiredString(body.prompt, "prompt"),
             selectedSliceId: optionalString(body.selectedSliceId),
+            onDelta(text) {
+              send("message.delta", { text });
+            },
           });
           if (result.kind === "needs_input") {
             send("message.delta", { text: result.question });
@@ -1040,6 +1016,8 @@ function goalDesignRevisionErrorResponse(error: unknown): Response {
     message.includes("goal_design_package_stale")
     || message.includes("goal_design_already_materialized")
     || message.includes("goal_design_frozen")
+    || message.includes("goal_design_revision_source_not_frozen")
+    || message.includes("goal_design_revision_conflict")
     || message.includes("not ready for review")
   ) {
     return errorJson(message, 409);
@@ -1132,29 +1110,10 @@ export function resolveGoalInterpreter(context: RuntimeServerContext): GoalContr
   };
 }
 
-/**
- * Resolve the staged Requirement interpreter. Test/runtime callers that inject
- * the legacy Goal Designer remain on that explicit legacy path; production
- * server contexts (which do not inject a designer) use the LLM interpreter.
- */
-export function resolveGoalRequirementInterpreter(context: RuntimeServerContext): GoalRequirementDraftInterpreter | undefined {
+export function resolveGoalRequirementInterpreter(context: RuntimeServerContext): GoalRequirementDraftInterpreter {
   if (context.goalRequirementInterpreter) return context.goalRequirementInterpreter;
-  if (context.goalDesigner) return undefined;
   return createLlmGoalRequirementDraftInterpreter({
     model: process.env.SOUTHSTAR_GOAL_REQUIREMENT_MODEL ?? "southstar-runtime-goal-requirement-interpreter",
-    client: {
-      generateText: ({ prompt }) => context.plannerClient.generate(prompt),
-      generateTextStream: context.plannerClient.generateStream
-        ? ({ prompt }, handlers) => context.plannerClient.generateStream!(prompt, { onDelta: handlers.onDelta })
-        : undefined,
-    },
-  });
-}
-
-export function resolveGoalDesigner(context: RuntimeServerContext) {
-  if (context.goalDesigner) return context.goalDesigner;
-  return createLlmGoalDesigner(context.db, {
-    model: process.env.SOUTHSTAR_GOAL_DESIGN_MODEL ?? "southstar-runtime-goal-designer",
     client: {
       generateText: ({ prompt }) => context.plannerClient.generate(prompt),
       generateTextStream: context.plannerClient.generateStream

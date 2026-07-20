@@ -1,7 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { SouthstarEnv } from "../../src/v2/config/env.ts";
-import { createSouthstarInfraLifecycle, filterAllowedTorkBindSources, mergeTorkBindSources } from "../../src/v2/server/infra-lifecycle.ts";
+import {
+  createSouthstarInfraLifecycle,
+  ensureTorkWorkerQueueConcurrency,
+  filterAllowedTorkBindSources,
+  mergeTorkBindSources,
+} from "../../src/v2/server/infra-lifecycle.ts";
 
 test("infra start brings up local Postgres before Tork", async () => {
   const calls: string[] = [];
@@ -83,6 +88,9 @@ sources = [
   "/home/timmypai/apps/southstar-vocab"
 ]
 
+[worker.queues]
+default = 5
+
 [coordinator]
 address = "0.0.0.0:8000"
 `}`,
@@ -148,6 +156,12 @@ dir = "/tmp"
   assert.match(merged, /"\/tmp\/southstar-runs"/);
   assert.match(merged, /"\/home\/timmypai\/apps\/southstar"/);
   assert.equal((merged.match(/"\/tmp\/southstar-runs"/g) ?? []).length, 1);
+});
+
+test("ensureTorkWorkerQueueConcurrency adds Tork-managed queue subscribers without replacing explicit config", () => {
+  assert.match(ensureTorkWorkerQueueConcurrency("[datastore]\ntype = \"postgres\"\n"), /\[worker\.queues\]\ndefault = 5/);
+  const explicit = "[worker.queues]\ndefault = 2\n";
+  assert.equal(ensureTorkWorkerQueueConcurrency(explicit), explicit);
 });
 
 test("filterAllowedTorkBindSources keeps legal repos and excludes Southstar project roots", () => {

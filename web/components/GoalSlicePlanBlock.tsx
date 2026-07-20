@@ -1,9 +1,10 @@
 "use client";
 
-import { useMemo } from "react";
-import type { GoalDesignContent, GoalRequirementsContent, GoalSliceSelection } from "@/lib/types";
+import { useEffect, useMemo, useState } from "react";
+import type { GoalDesignContent, GoalDesignPhase, GoalRequirementsContent, GoalSliceSelection } from "@/lib/types";
 import { CoverageGraphPreview, type CoverageGraphData } from "./CoverageGraphPreview";
 import type { LibraryGraphChartEdge, LibraryGraphChartNode } from "./library/LibraryGraphChart";
+import { readCurrentGoalDesignDraft } from "@/lib/workflow/goal-design-draft";
 
 type GoalSliceView = {
   id: string;
@@ -27,33 +28,85 @@ type GoalDesignPackageView = {
   templatePolicy?: { mode?: string; templateRef?: string; versionRef?: string };
 };
 
+type LiveDraftView = Pick<GoalDesignContent, "status" | "goalDesignPhase" | "goalDesignPackageHash" | "goalRequirementDraft" | "goalRequirementDraftHash" | "package">;
+
 export function GoalSlicePlanBlock({
   block,
   requirementContent,
   onSliceSelect,
   onConfirmGoalDesign,
+  onCreateGoalSliceRevision,
   onLibraryGraphNodeSelect,
 }: {
   block: GoalDesignContent;
   requirementContent?: GoalRequirementsContent | null;
   onSliceSelect?: (selection: GoalSliceSelection) => void;
   onConfirmGoalDesign?: (selection: GoalSliceSelection) => void;
+  onCreateGoalSliceRevision?: (selection: GoalSliceSelection) => void | Promise<void>;
   onLibraryGraphNodeSelect?: (node: LibraryGraphChartNode) => void;
 }) {
-  const pkg = goalDesignPackageView(block.package);
+  const [livePhase, setLivePhase] = useState<GoalDesignPhase | undefined>(block.goalDesignPhase);
+  const [liveDraft, setLiveDraft] = useState<LiveDraftView | null>(null);
+  const stagedRevision = block.draftId.includes(":slice-revision:");
+  const [liveDraftState, setLiveDraftState] = useState<"not-needed" | "loading" | "ready" | "error">(
+    stagedRevision ? "loading" : "not-needed",
+  );
+  const [revisionState, setRevisionState] = useState<"idle" | "creating" | "error">("idle");
+  const [revisionError, setRevisionError] = useState<string | undefined>();
+  const currentPackage = liveDraft?.package ?? block.package;
+  const pkg = goalDesignPackageView(currentPackage);
   const slices = pkg?.slicePlan?.slices ?? [];
   const requirementContentForBlock = requirementContent?.draftId === block.draftId ? requirementContent : null;
-  const packageHash = block.goalDesignPackageHash ?? pkg?.packageHash;
+  const requirementDraft = liveDraft?.goalRequirementDraft ?? requirementContentForBlock?.draft ?? block.goalRequirementDraft;
+  const phase = liveDraft?.goalDesignPhase ?? livePhase ?? block.goalDesignPhase;
+  const status = liveDraft?.status ?? block.status;
+  const requirementContentForGraph = requirementContentForBlock ?? (requirementDraft ? {
+    type: "goalRequirements" as const,
+    draftId: block.draftId,
+    status: phase ?? status ?? "slice_review",
+    goalRequirementDraftHash: liveDraft?.goalRequirementDraftHash ?? block.goalRequirementDraftHash ?? requirementDraft.draftHash,
+    draft: requirementDraft,
+    confirmable: false,
+  } : null);
+  const packageHash = liveDraft?.goalDesignPackageHash ?? block.goalDesignPackageHash ?? pkg?.packageHash;
   const strategyMode = pkg?.compositionStrategy?.mode ?? "unknown";
   const templateMode = pkg?.templatePolicy?.mode ?? "auto";
-  const coverageGraph = useMemo(() => buildSliceCoverageGraph(slices, requirementContentForBlock), [requirementContentForBlock, slices]);
+  const phaseKnown = Boolean(phase);
+  const frozen = phase === "composing" || phase === "dag_validated";
+  const liveRevisionReady = !stagedRevision || liveDraftState === "ready";
+  const coverageGraph = useMemo(() => buildSliceCoverageGraph(slices, requirementContentForGraph), [requirementContentForGraph, slices]);
+
+  useEffect(() => {
+    if (block.goalDesignPhase && !stagedRevision) return;
+    let active = true;
+    setLiveDraftState("loading");
+    void readCurrentGoalDesignDraft(block.draftId)
+      .then((current) => {
+        if (!active) return;
+        const next: LiveDraftView = {
+          ...(current.status ? { status: current.status } : {}),
+          ...(current.goalDesignPhase ? { goalDesignPhase: current.goalDesignPhase } : {}),
+          goalDesignPackageHash: current.goalDesignPackageHash,
+          package: current.goalDesignPackage,
+          ...(current.goalRequirementDraft ? { goalRequirementDraft: current.goalRequirementDraft } : {}),
+          ...(current.goalRequirementDraftHash ? { goalRequirementDraftHash: current.goalRequirementDraftHash } : {}),
+        };
+        setLiveDraft(next);
+        if (next.goalDesignPhase) setLivePhase(next.goalDesignPhase);
+        setLiveDraftState("ready");
+      })
+      .catch(() => {
+        if (active) setLiveDraftState("error");
+      });
+    return () => { active = false; };
+  }, [block.draftId, block.goalDesignPhase, stagedRevision]);
 
   if (!pkg || slices.length === 0) {
     return (
       <section data-testid="goal-slice-plan-block" style={cardStyle}>
         <Header
           title="Goal slice plan"
-          subtitle={block.status ? `draft ${block.draftId} · ${block.status}` : `draft ${block.draftId}`}
+          subtitle={status ? `draft ${block.draftId} · ${status}` : `draft ${block.draftId}`}
           right={packageHash ? packageHash.slice(0, 12) : undefined}
         />
         <p style={bodyStyle}>No slice plan package was attached to this message.</p>
@@ -62,12 +115,16 @@ export function GoalSlicePlanBlock({
   }
 
   return (
-    <section data-testid="goal-slice-plan-block" style={cardStyle}>
+    <section
+      data-testid="goal-slice-plan-block"
+      data-draft-id={block.draftId}
+      style={cardStyle}
+    >
       <Header
         title={pkg.goalContract?.summary ?? "Goal slice plan"}
         subtitle={[
           `draft ${block.draftId}`,
-          block.status,
+          status,
           packageHash ? packageHash.slice(0, 12) : undefined,
         ].filter(Boolean).join(" · ")}
         right={`rev ${pkg.revision ?? "?"}`}
@@ -75,7 +132,23 @@ export function GoalSlicePlanBlock({
       <div style={metaRowStyle}>
         <span style={pillStyle}>strategy: {strategyMode}</span>
         <span style={pillStyle}>template: {templateMode}</span>
+        {stagedRevision ? (
+          <span data-testid="goal-slice-staged-revision" style={{ ...pillStyle, color: "var(--accent)", borderColor: "color-mix(in srgb, var(--accent) 42%, var(--border))" }}>
+            Staged Slice revision · editable
+          </span>
+        ) : null}
       </div>
+      {stagedRevision && liveDraftState === "loading" ? (
+        <div style={{ marginTop: 8, color: "var(--text-muted)", fontSize: 11 }}>Checking current staged revision before enabling actions…</div>
+      ) : null}
+      {stagedRevision && liveDraftState === "error" ? (
+        <div style={{ marginTop: 8, color: "#f87171", fontSize: 11 }}>Unable to verify the current staged revision. Reload before continuing.</div>
+      ) : null}
+      {stagedRevision && liveRevisionReady && !frozen ? (
+        <div style={{ marginTop: 8, padding: "7px 9px", borderRadius: 6, border: "1px solid color-mix(in srgb, var(--accent) 28%, var(--border))", background: "color-mix(in srgb, var(--accent) 6%, var(--bg-panel))", color: "var(--text-muted)", fontSize: 11, lineHeight: 1.45 }}>
+          This staged revision keeps the confirmed Requirement / Contract lineage. Select S1–S4 to edit the Slice in the right-side editor, then choose <strong style={{ color: "var(--text)" }}>Save slice</strong>.
+        </div>
+      ) : null}
       <details data-testid="goal-slice-plan-guide" style={guideStyle}>
         <summary style={guideSummaryStyle}>How slices connect the goal to execution</summary>
         <div style={guideBodyStyle}>
@@ -96,11 +169,12 @@ export function GoalSlicePlanBlock({
             data-testid={`goal-slice-plan-item-${slice.id}`}
             onClick={() => onSliceSelect?.({
               draftId: block.draftId,
-              status: block.status,
+              status,
               goalDesignPackageHash: packageHash,
               selectedSliceId: slice.id,
-              package: block.package,
-              ...(requirementContentForBlock?.draft ? { requirementDraft: requirementContentForBlock.draft } : {}),
+              package: currentPackage,
+              ...(phase ? { goalDesignPhase: phase } : {}),
+              ...(requirementDraft ? { requirementDraft } : {}),
             })}
             style={sliceButtonStyle}
           >
@@ -129,17 +203,54 @@ export function GoalSlicePlanBlock({
         description="Slice coverage currently available from requirements, slice dependencies, artifact refs, and evaluator refs."
         onSelectNode={onLibraryGraphNodeSelect}
       />
-      {block.status === "ready_for_review" && packageHash && onConfirmGoalDesign ? (
+      {frozen && liveRevisionReady && packageHash && onCreateGoalSliceRevision ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 7, marginTop: 10, padding: 10, border: "1px solid color-mix(in srgb, var(--accent) 30%, var(--border))", borderRadius: 7, background: "color-mix(in srgb, var(--accent) 6%, var(--bg-panel))" }}>
+          <div style={{ color: "var(--text-muted)", fontSize: 11, lineHeight: 1.45 }}>
+            This Slice plan is read-only because the DAG is already validated. Create a new staged Slice revision to edit it without changing the existing DAG.
+          </div>
+          <button
+            type="button"
+            data-testid="goal-design-create-slice-revision"
+            disabled={revisionState === "creating"}
+            onClick={() => {
+              setRevisionState("creating");
+              setRevisionError(undefined);
+              const selection: GoalSliceSelection = {
+                draftId: block.draftId,
+                status,
+                goalDesignPackageHash: packageHash,
+                selectedSliceId: slices[0]?.id,
+                package: currentPackage,
+                ...(phase ? { goalDesignPhase: phase } : {}),
+                ...(requirementDraft ? { requirementDraft } : {}),
+              };
+              void Promise.resolve(onCreateGoalSliceRevision(selection)).catch((error) => {
+                setRevisionState("error");
+                setRevisionError(error instanceof Error ? error.message : String(error));
+              }).then(() => {
+                setRevisionState((current) => current === "creating" ? "idle" : current);
+              });
+            }}
+            style={{ ...confirmButtonStyle, opacity: revisionState === "creating" ? 0.6 : 1 }}
+          >
+            {revisionState === "creating" ? "Creating Slice revision…" : "Create new Slice revision"}
+          </button>
+          {revisionError ? <div style={{ color: "#f87171", fontSize: 10, overflowWrap: "anywhere" }}>{revisionError}</div> : null}
+        </div>
+      ) : null}
+      {!phaseKnown ? <div style={{ marginTop: 10, color: "var(--text-dim)", fontSize: 11 }}>Checking current Goal Design phase…</div> : null}
+      {phaseKnown && liveRevisionReady && !frozen && status === "ready_for_review" && packageHash && onConfirmGoalDesign ? (
         <button
           type="button"
           data-testid="goal-design-confirm-compose"
           onClick={() => onConfirmGoalDesign({
             draftId: block.draftId,
-            status: block.status,
+            status,
             goalDesignPackageHash: packageHash,
-            package: block.package,
+            package: currentPackage,
             selectedSliceId: slices[0]?.id,
-            ...(requirementContentForBlock?.draft ? { requirementDraft: requirementContentForBlock.draft } : {}),
+            ...(phase ? { goalDesignPhase: phase } : {}),
+            ...(requirementDraft ? { requirementDraft } : {}),
           })}
           style={confirmButtonStyle}
         >

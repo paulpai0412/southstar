@@ -484,46 +484,29 @@ export async function compileGoalDesignArtifactContracts(
   db: SouthstarDb,
   packageValue: GoalDesignPackage,
 ): Promise<ArtifactContract[]> {
-  if (packageValue.schemaVersion === "southstar.goal_design_package.v2") {
-    const contracts = new Map<string, ArtifactContract>();
-    for (const binding of packageValue.validationBindings) {
-      for (const [index, artifactRef] of binding.artifactContractRefs.entries()) {
-        const versionRef = required(
-          binding.artifactContractVersionRefs[index],
-          `missing frozen artifact version for ${artifactRef}`,
-        );
-        const object = await requireApprovedPinnedLibraryObject(db, artifactRef, versionRef, "artifact_contract");
-        const state = object.state;
-        contracts.set(normalizeArtifactRef(artifactRef), {
-          id: normalizeArtifactRef(artifactRef),
-          artifactType: stringAt(state.artifactType, `${artifactRef}.artifactType`),
-          requiredFields: stringArrayAt(state.requiredFields, `${artifactRef}.requiredFields`),
-          evidenceFields: optionalStringArrayAt(state.evidenceFields) ?? [],
-          mediaTypes: stringArrayAt(state.mediaTypes, `${artifactRef}.mediaTypes`),
-          validationRules: stringArrayAt(state.validationRules, `${artifactRef}.validationRules`),
-          evidenceKinds: stringArrayAt(state.evidenceKinds, `${artifactRef}.evidenceKinds`),
-          schemaRef: stringAt(state.schemaRef, `${artifactRef}.schemaRef`),
-          provenanceRequirements: stringArrayAt(state.provenanceRequirements, `${artifactRef}.provenanceRequirements`),
-          libraryObjectRef: artifactRef,
-          libraryVersionRef: versionRef,
-        });
-      }
-    }
-    return [...contracts.values()].sort((left, right) => left.id.localeCompare(right.id));
-  }
   const contracts = new Map<string, ArtifactContract>();
-  for (const artifactRef of uniqueSorted(packageValue.slicePlan.slices.flatMap((slice) => slice.expectedArtifactRefs))) {
-    const id = normalizeArtifactRef(artifactRef);
-    contracts.set(id, {
-      id,
-      artifactType: artifactRef,
-      requiredFields: ["summary"],
-      evidenceFields: [
-        "summary",
-        "acceptanceCriteria",
-        "requiredEvidenceKinds",
-      ],
-    });
+  for (const binding of packageValue.validationBindings) {
+    for (const [index, artifactRef] of binding.artifactContractRefs.entries()) {
+      const versionRef = required(
+        binding.artifactContractVersionRefs[index],
+        `missing frozen artifact version for ${artifactRef}`,
+      );
+      const object = await requireApprovedPinnedLibraryObject(db, artifactRef, versionRef, "artifact_contract");
+      const state = object.state;
+      contracts.set(normalizeArtifactRef(artifactRef), {
+        id: normalizeArtifactRef(artifactRef),
+        artifactType: stringAt(state.artifactType, `${artifactRef}.artifactType`),
+        requiredFields: stringArrayAt(state.requiredFields, `${artifactRef}.requiredFields`),
+        evidenceFields: optionalStringArrayAt(state.evidenceFields) ?? [],
+        mediaTypes: stringArrayAt(state.mediaTypes, `${artifactRef}.mediaTypes`),
+        validationRules: stringArrayAt(state.validationRules, `${artifactRef}.validationRules`),
+        evidenceKinds: stringArrayAt(state.evidenceKinds, `${artifactRef}.evidenceKinds`),
+        schemaRef: stringAt(state.schemaRef, `${artifactRef}.schemaRef`),
+        provenanceRequirements: stringArrayAt(state.provenanceRequirements, `${artifactRef}.provenanceRequirements`),
+        libraryObjectRef: artifactRef,
+        libraryVersionRef: versionRef,
+      });
+    }
   }
   return [...contracts.values()].sort((left, right) => left.id.localeCompare(right.id));
 }
@@ -532,9 +515,8 @@ export async function compileGoalDesignEvaluatorPipelines(
   db: SouthstarDb,
   packageValue: GoalDesignPackage,
 ): Promise<EvaluatorPipelineDefinition[]> {
-  if (packageValue.schemaVersion === "southstar.goal_design_package.v2") {
-    const pipelines = new Map<string, EvaluatorPipelineDefinition>();
-    for (const binding of packageValue.validationBindings) {
+  const pipelines = new Map<string, EvaluatorPipelineDefinition>();
+  for (const binding of packageValue.validationBindings) {
       const object = await requireApprovedPinnedLibraryObject(
         db,
         binding.evaluatorProfileRef,
@@ -600,25 +582,8 @@ export async function compileGoalDesignEvaluatorPipelines(
         validationBindingIds: uniqueSorted([...(existing?.validationBindingIds ?? []), binding.id]),
         onFailure: { defaultStrategy: "request-workflow-revision" },
       });
-    }
-    return [...pipelines.values()].sort((left, right) => left.id.localeCompare(right.id));
   }
-  return packageValue.evaluatorContracts.map((contract): EvaluatorPipelineDefinition => ({
-    id: normalizeEvaluatorRef(contract.id),
-    evaluators: [{
-      id: `${normalizeEvaluatorRef(contract.id)}-goal-design-contract`,
-      kind: "evidence",
-      required: true,
-      config: {
-        requirementId: contract.requirementId,
-        acceptanceCriteria: contract.acceptanceCriteria,
-        requiredEvidenceKinds: contract.requiredEvidenceKinds,
-        independence: contract.independence,
-        failureClassifications: contract.failureClassifications,
-      },
-    }],
-    onFailure: { defaultStrategy: "request-workflow-revision" },
-  })).sort((left, right) => left.id.localeCompare(right.id));
+  return [...pipelines.values()].sort((left, right) => left.id.localeCompare(right.id));
 }
 
 async function requireApprovedPinnedLibraryObject(
