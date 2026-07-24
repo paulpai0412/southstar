@@ -19,6 +19,7 @@ export type ArtifactRefWriteInput = {
   status: ArtifactRefStatus;
   content: unknown;
   contractRefs: string[];
+  contractVersionRefs?: string[];
   summary: string;
   failedArtifactRefs?: string[];
   evidenceRefs?: string[];
@@ -167,6 +168,9 @@ function buildArtifactRefPayload(
       sha256: values.contentHash,
     },
     contractRefs: values.contractRefs,
+    ...(input.contractVersionRefs && input.contractVersionRefs.length > 0
+      ? { contractVersionRefs: [...new Set(input.contractVersionRefs)].sort() }
+      : {}),
     summary: input.summary,
     ...(input.failedArtifactRefs && input.failedArtifactRefs.length > 0 ? { failedArtifactRefs: [...input.failedArtifactRefs] } : {}),
     evidenceRefs: input.evidenceRefs ?? [],

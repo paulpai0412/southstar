@@ -51,6 +51,154 @@ test("Pi SDK agent harness sends TaskEnvelope prompt and parses assistant artifa
   }));
 });
 
+test("Pi SDK agent harness keeps semantic browser test results separate from observed executions", async () => {
+  const listeners: Array<(event: unknown) => void> = [];
+  const harness = createPiSdkAgentHarness({
+    createSession: async () => ({
+      subscribe: (listener: (event: unknown) => void) => {
+        listeners.push(listener);
+        return () => undefined;
+      },
+      prompt: async () => {
+        for (const listener of listeners) {
+          listener({
+            type: "tool_execution_start",
+            toolCallId: "tool-open",
+            toolName: "bash",
+            args: { command: "playwright-cli open http://127.0.0.1:30141 --browser chromium" },
+          });
+          listener({
+            type: "tool_execution_end",
+            toolCallId: "tool-open",
+            toolName: "bash",
+            result: { content: [{ type: "text", text: "Page URL: http://127.0.0.1:30141" }] },
+            isError: false,
+          });
+          listener({
+            type: "agent_end",
+            messages: [{
+              role: "assistant",
+              content: [{
+                type: "text",
+                text: JSON.stringify({
+                  artifact: {
+                    summary: "browser checked",
+                    commandsRun: ["echo not-observed"],
+                    testResults: [{ command: "echo not-observed", status: "passed" }],
+                  },
+                  progress: ["checked browser"],
+                }),
+              }],
+            }],
+          });
+        }
+      },
+    }),
+  });
+
+  const result = await harness.run({ envelope: browserEvaluatorEnvelope(), attempt: 1 });
+  const expected = [{
+    ref: "playwright-cli open http://127.0.0.1:30141 --browser chromium",
+    command: "playwright-cli open http://127.0.0.1:30141 --browser chromium",
+    status: "passed",
+    ok: true,
+  }];
+
+  assert.deepEqual(result.artifact.runtimeCommandExecutions, expected);
+  assert.deepEqual(result.artifact.commandsRun, expected);
+  assert.deepEqual(result.artifact.testResults, [{ command: "echo not-observed", status: "passed" }]);
+});
+
+test("Pi SDK agent harness does not turn failed setup commands into browser test results", async () => {
+  const listeners: Array<(event: unknown) => void> = [];
+  const harness = createPiSdkAgentHarness({
+    createSession: async () => ({
+      subscribe: (listener: (event: unknown) => void) => {
+        listeners.push(listener);
+        return () => undefined;
+      },
+      prompt: async () => {
+        listeners.forEach((listener) => {
+          listener({
+            type: "tool_execution_start",
+            toolCallId: "tool-install",
+            toolName: "bash",
+            args: { command: "playwright-cli install-browser chromium" },
+          });
+          listener({
+            type: "tool_execution_end",
+            toolCallId: "tool-install",
+            toolName: "bash",
+            result: { content: [{ type: "text", text: "browser install failed" }] },
+            isError: true,
+          });
+          listener({
+            type: "agent_end",
+            messages: [{
+              role: "assistant",
+              content: [{
+                type: "text",
+                text: JSON.stringify({
+                  artifact: { summary: "browser checked" },
+                  progress: ["checked browser"],
+                }),
+              }],
+            }],
+          });
+        });
+      },
+    }),
+  });
+
+  const result = await harness.run({ envelope: browserEvaluatorEnvelope(), attempt: 1 });
+
+  assert.equal(
+    result.artifact.testResults?.some((entry) => entry.command === "playwright-cli install-browser chromium"),
+    false,
+  );
+  assert.deepEqual(result.artifact.commandsRun, [{
+    ref: "playwright-cli install-browser chromium",
+    command: "playwright-cli install-browser chromium",
+    status: "failed",
+    ok: false,
+  }]);
+});
+
+test("Pi SDK agent harness marks runner sessions as internal workflow sessions", async () => {
+  const listeners: Array<(event: unknown) => void> = [];
+  const metadata: Array<{ customType: string; data: unknown }> = [];
+  const harness = createPiSdkAgentHarness({
+    createSession: async () => ({
+      sessionManager: {
+        appendCustomEntry: (customType: string, data: unknown) => metadata.push({ customType, data }),
+      },
+      subscribe: (listener: (event: unknown) => void) => {
+        listeners.push(listener);
+        return () => undefined;
+      },
+      prompt: async () => {
+        listeners.forEach((listener) => listener({
+          type: "agent_end",
+          messages: [{
+            role: "assistant",
+            content: [{ type: "text", text: JSON.stringify({
+              artifact: { summary: "implemented", commandsRun: [], risks: [] },
+              progress: ["done"],
+            }) }],
+          }],
+        }));
+      },
+    }),
+  });
+
+  await harness.run({ envelope: envelope(), attempt: 1 });
+
+  assert.deepEqual(metadata, [{
+    customType: "southstar.session.kind",
+    data: { kind: "workflow", visibility: "internal" },
+  }]);
+});
+
 test("Pi SDK agent harness canonicalizes bare assistant artifact JSON", async () => {
   const listeners: Array<(event: unknown) => void> = [];
   const harness = createPiSdkAgentHarness({
@@ -769,6 +917,26 @@ function envelopeV2WithVerificationReport(): TaskEnvelopeV2 {
     requiredFields: ["verdict", "checks", "evidenceRefs", "summary", "pass", "safeToSave", "verifiedArtifactRefs", "commandsRun", "testResults", "remainingFailures"],
     evidenceFields: ["checks", "evidenceRefs", "verifiedArtifactRefs", "commandsRun", "testResults"],
   }];
+  return env;
+}
+
+function browserEvaluatorEnvelope(): TaskEnvelopeV2 {
+  const env = envelopeV2WithVerificationReport();
+  env.evaluatorPipeline = {
+    id: "browser-quality",
+    evaluators: [{
+      id: "criterion-browser",
+      kind: "checker-agent",
+      required: true,
+      config: {
+        criterionId: "criterion-1",
+        verificationMode: "browser_interaction",
+        instruction: "Verify the user journey in a real browser.",
+        expectedEvidenceKinds: ["command-output"],
+      },
+    }],
+    onFailure: { defaultStrategy: "rollback-workspace" },
+  };
   return env;
 }
 

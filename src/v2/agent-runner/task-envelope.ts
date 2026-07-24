@@ -500,11 +500,23 @@ function formatEvaluatorPipelineContract(pipeline: EvaluatorPipelineDefinition):
     "- verdict allowed values are passed, failed, blocked. Do not emit any other value.",
     "- evidenceRefs must point to explicit ref/evidenceRef/artifactRef/id/resourceKey/path/url values in the returned artifact evidence fields.",
     "- an overall artifact verdict/pass flag is advisory only; Southstar computes the final verdict from every criterion and validated evidence.",
-    ...criterionSteps.map(({ config }) => {
+    ...criterionSteps.flatMap(({ config }) => {
       const kinds = Array.isArray(config.expectedEvidenceKinds)
         ? config.expectedEvidenceKinds.filter((value): value is string => typeof value === "string")
         : [];
-      return `- ${String(config.criterionId)}: ${String(config.acceptanceCriterion ?? "")}; required evidence kinds: ${kinds.join(", ")}.`;
+      const verificationMode = typeof config.verificationMode === "string" ? config.verificationMode : "missing";
+      const instruction = typeof config.instruction === "string" ? config.instruction.trim() : "";
+      return [
+        `- ${String(config.criterionId)}: ${String(config.acceptanceCriterion ?? "")}; verification mode: ${verificationMode}; required evidence kinds: ${kinds.join(", ")}.`,
+        ...(instruction ? [`  Procedure: ${instruction}`] : []),
+        ...(verificationMode === "browser_interaction"
+          ? [
+            "  Browser runtime evidence: execute direct playwright-cli commands in this runtime; reported-only or shell-chained commands do not count.",
+            "  Run each playwright-cli command as its own direct bash tool call; do not place it inside a shell script, function, command substitution, pipeline, or chained command.",
+            "  Browser sequence: start with playwright-cli open <url> --browser chromium (or use goto in that open session), then run at least one observation command (snapshot, find, eval, run-code, screenshot, or console); screenshot evidence requires a successful playwright-cli screenshot command.",
+          ]
+          : []),
+      ];
     }),
   ].join("\n");
 }

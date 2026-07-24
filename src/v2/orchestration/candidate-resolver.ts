@@ -28,6 +28,9 @@ export type ApprovedValidationCandidatesV1 = {
   artifactContracts: LibraryObjectSummary[];
   evaluatorProfiles: LibraryObjectSummary[];
   evaluatorProfilesByArtifact: Record<string, LibraryObjectSummary[]>;
+  /** Approved validator/oracle primitives referenced by executable procedures. */
+  approvedOracleRefs?: Set<string>;
+  approvedOracleVersionRefs?: Map<string, string>;
 };
 
 export async function resolveApprovedValidationCandidates(
@@ -61,7 +64,17 @@ export async function resolveApprovedValidationCandidates(
       .filter((evaluator, index, all) => all.findIndex((candidate) => candidate.objectKey === evaluator.objectKey) === index)
       .sort((left, right) => left.objectKey.localeCompare(right.objectKey));
   }
-  return { artifactContracts: artifacts, evaluatorProfiles: evaluators, evaluatorProfilesByArtifact };
+  const oracleObjects = (await findApprovedLibraryObjectsByKind(db, "validator_spec"))
+    .filter((object) => object.headVersionId !== null);
+  const oracleRefs = new Set(oracleObjects.map((object) => object.objectKey));
+  const oracleVersionRefs = new Map(oracleObjects.map((object) => [object.objectKey, object.headVersionId!]));
+  return {
+    artifactContracts: artifacts,
+    evaluatorProfiles: evaluators,
+    evaluatorProfilesByArtifact,
+    approvedOracleRefs: oracleRefs,
+    approvedOracleVersionRefs: oracleVersionRefs,
+  };
 }
 
 async function approvedObjectsForValidation(

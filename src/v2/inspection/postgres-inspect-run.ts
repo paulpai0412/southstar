@@ -1,5 +1,6 @@
 import type { SouthstarDb } from "../db/postgres.ts";
 import { ARTIFACT_REF_RESOURCE_TYPE } from "../artifacts/types.ts";
+import { runtimeAttemptNumber } from "../executor/attempt-identity.ts";
 import { allRuntimeGatesPassed, evaluateRuntimeInspectionGates } from "./runtime-gates.ts";
 import type { InspectionCause, InspectedTask, RunInspection, RunInspectionCounts } from "./types.ts";
 
@@ -12,9 +13,15 @@ export async function inspectRunPg(db: SouthstarDb, input: { runId: string }): P
     [input.runId],
   )).rows;
   const resources = await resourcesForRun(db, input.runId);
-  const inspectedTasks = tasks.map((task) => inspectTask(task, resources));
-  const counts = countInspection(tasks, resources);
-  const stopConditionStatus = resources.stopConditions.at(-1)?.status;
+  const acceptedArtifactTaskIds = new Set(
+    resources.artifactRefs
+      .filter((resource) => resource.status === "accepted" && resource.taskId)
+      .map((resource) => resource.taskId!),
+  );
+  const supersededTaskIds = await supersededDynamicRepairTaskIdsPg(db, input.runId, acceptedArtifactTaskIds);
+  const inspectedTasks = tasks.map((task) => inspectTask(task, resources, supersededTaskIds));
+  const counts = countInspection(tasks, resources, supersededTaskIds);
+  const stopConditionStatus = aggregateStopConditionStatus(resources.stopConditions);
   const gates = evaluateRuntimeInspectionGates({ runStatus: run.status, counts, stopConditionStatus });
   const causes = [...inspectedTasks.flatMap((task) => task.causes), ...gateCauses(gates)];
   const primaryCause = causes.find((cause) => cause.severity === "blocking") ?? null;
@@ -33,6 +40,12 @@ export async function inspectRunPg(db: SouthstarDb, input: { runId: string }): P
     designLibrary: { available: false, reason: "lineage_not_found" },
     tasks: inspectedTasks,
   };
+}
+
+function aggregateStopConditionStatus(stopConditions: RuntimeResource[]): string | undefined {
+  if (stopConditions.length === 0) return undefined;
+  if (stopConditions.every((resource) => resource.status === "passed")) return "passed";
+  return stopConditions.find((resource) => resource.status !== "passed")?.status ?? "failed";
 }
 
 async function resourcesForRun(db: SouthstarDb, runId: string): Promise<RunResources> {
@@ -67,20 +80,21 @@ async function resourcesForRun(db: SouthstarDb, runId: string): Promise<RunResou
   };
 }
 
-function inspectTask(task: WorkflowTaskRow, resources: RunResources): InspectedTask {
-  const artifacts = [...resources.artifacts, ...resources.artifactRefs].filter((resource) => resource.taskId === task.id);
-  const evidencePackets = resources.evidencePackets.filter((resource) => resource.taskId === task.id);
-  const validators = resources.validators.filter((resource) => resource.taskId === task.id);
+function inspectTask(task: WorkflowTaskRow, resources: RunResources, supersededTaskIds: ReadonlySet<string>): InspectedTask {
+  const artifacts = latestTaskAttemptResources([...resources.artifacts, ...resources.artifactRefs], task.id);
+  const evidencePackets = latestTaskAttemptResources(resources.evidencePackets, task.id);
+  const validators = latestTaskAttemptResources(resources.validators, task.id);
   const binding = resources.executorBindings.filter((resource) => resource.taskId === task.id).at(-1);
   const handExecution = resources.handExecutions.filter((resource) => resource.taskId === task.id).at(-1);
   const causes: InspectionCause[] = [];
-  if (task.status === "failed") causes.push({ code: "task_failed", severity: "blocking", taskId: task.id, message: `Task failed: ${task.id}` });
+  const superseded = supersededTaskIds.has(task.id);
+  if (task.status === "failed" && !superseded) causes.push({ code: "task_failed", severity: "blocking", taskId: task.id, message: `Task failed: ${task.id}` });
   if (!binding && !handExecution && ["running", "pending", "queued", "claimed"].includes(task.status)) {
     causes.push({ code: "executor_issue", severity: "blocking", taskId: task.id, message: `Task has no executor binding: ${task.id}` });
   }
   for (const artifact of artifacts) {
-    if (artifact.status === "rejected") causes.push({ code: "artifact_rejected", severity: "blocking", taskId: task.id, resourceRef: artifact.id, message: `Artifact rejected for task ${task.id}` });
-    if (artifact.status === "needs_repair") causes.push({ code: "artifact_needs_repair", severity: "blocking", taskId: task.id, resourceRef: artifact.id, message: `Artifact needs repair for task ${task.id}` });
+    if (artifact.status === "rejected" && !superseded) causes.push({ code: "artifact_rejected", severity: "blocking", taskId: task.id, resourceRef: artifact.id, message: `Artifact rejected for task ${task.id}` });
+    if (artifact.status === "needs_repair" && !superseded) causes.push({ code: "artifact_needs_repair", severity: "blocking", taskId: task.id, resourceRef: artifact.id, message: `Artifact needs repair for task ${task.id}` });
   }
   for (const evidence of evidencePackets) {
     if (evidence.status === "incomplete") causes.push({ code: "incomplete_evidence", severity: "blocking", taskId: task.id, resourceRef: evidence.id, message: `Evidence packet incomplete for task ${task.id}` });
@@ -131,6 +145,75 @@ function inspectTask(task: WorkflowTaskRow, resources: RunResources): InspectedT
   };
 }
 
+function latestTaskAttemptResources(resources: RuntimeResource[], taskId: string): RuntimeResource[] {
+  const taskResources = resources.filter((resource) => resource.taskId === taskId);
+  if (taskResources.length <= 1) return taskResources;
+  const attemptNumbers = taskResources.map(resourceAttemptNumber);
+  const latestAttempt = Math.max(...attemptNumbers);
+  if (latestAttempt > 0) {
+    return taskResources.filter((resource) => resourceAttemptNumber(resource) === latestAttempt);
+  }
+  return taskResources.slice(-1);
+}
+
+function currentTaskAttemptResources(resources: RuntimeResource[], supersededTaskIds: ReadonlySet<string>): RuntimeResource[] {
+  const byTask = new Map<string, RuntimeResource[]>();
+  const unscoped: RuntimeResource[] = [];
+  for (const resource of resources) {
+    if (!resource.taskId) {
+      unscoped.push(resource);
+      continue;
+    }
+    const taskResources = byTask.get(resource.taskId) ?? [];
+    taskResources.push(resource);
+    byTask.set(resource.taskId, taskResources);
+  }
+  return [
+    ...unscoped,
+    ...[...byTask.entries()]
+      .filter(([taskId]) => !supersededTaskIds.has(taskId))
+      .flatMap(([taskId, taskResources]) => latestTaskAttemptResources(taskResources, taskId)),
+  ];
+}
+
+function resourceAttemptNumber(resource: RuntimeResource): number {
+  const payload = asRecord(resource.payload);
+  const lineage = asRecord(payload.lineage);
+  return runtimeAttemptNumber(
+    stringField(payload.attemptId)
+      ?? stringField(payload.evaluatorAttemptId)
+      ?? stringField(lineage.evaluatorAttemptId),
+  );
+}
+
+async function supersededDynamicRepairTaskIdsPg(
+  db: SouthstarDb,
+  runId: string,
+  acceptedArtifactTaskIds: ReadonlySet<string>,
+): Promise<Set<string>> {
+  if (acceptedArtifactTaskIds.size === 0) return new Set();
+  const rows = (await db.query<{ payload_json: unknown }>(
+    `select payload_json
+       from southstar.runtime_resources
+      where run_id = $1
+        and resource_type = 'workflow_dynamic_repair_revision'
+        and status = 'applied'
+      order by created_at, resource_key`,
+    [runId],
+  )).rows;
+  const superseded = new Set<string>();
+  for (const row of rows) {
+    const payload = asRecord(row.payload_json);
+    const rootFailedTaskId = stringField(payload.rootFailedTaskId) ?? stringField(payload.originalFailedTaskId);
+    const newTaskIds = stringArray(payload.newTaskIds);
+    const reconnectTargetTaskId = newTaskIds.at(-1);
+    if (rootFailedTaskId && reconnectTargetTaskId && acceptedArtifactTaskIds.has(reconnectTargetTaskId)) {
+      superseded.add(rootFailedTaskId);
+    }
+  }
+  return superseded;
+}
+
 function missingInspection(runId: string): RunInspection {
   const counts = emptyCounts();
   const gates = evaluateRuntimeInspectionGates({ runStatus: "missing", counts });
@@ -148,7 +231,21 @@ function missingInspection(runId: string): RunInspection {
   };
 }
 
-function countInspection(tasks: WorkflowTaskRow[], resources: RunResources): RunInspectionCounts {
+function countInspection(
+  tasks: WorkflowTaskRow[],
+  resources: RunResources,
+  supersededTaskIds: ReadonlySet<string> = new Set(),
+): RunInspectionCounts {
+  const currentEvidencePackets = currentTaskAttemptResources(resources.evidencePackets, supersededTaskIds);
+  const currentValidators = currentTaskAttemptResources(resources.validators, supersededTaskIds);
+  const acceptedArtifactRefs = resources.artifactRefs.filter((resource) => resource.status === "accepted");
+  const evaluatorArtifactRefs = acceptedArtifactRefs.filter((resource) => {
+    const payload = asRecord(resource.payload);
+    return stringArray(payload.evaluatorResultRefs).length > 0 || stringArray(payload.evidenceRefs).length > 0;
+  });
+  const evidenceRequiredArtifactRefs = evaluatorArtifactRefs.length > 0
+    ? evaluatorArtifactRefs.length
+    : acceptedArtifactRefs.length;
   const oversizedPayloadRows = [...resources.artifacts, ...resources.artifactRefs, ...resources.evidencePackets, ...resources.validators]
     .concat(resources.handExecutions, resources.taskExecutionIntents, resources.toolProxyViolations)
     .filter((resource) => JSON.stringify(resource.payload).length > 50_000).length;
@@ -162,15 +259,16 @@ function countInspection(tasks: WorkflowTaskRow[], resources: RunResources): Run
     },
     resources: {
       acceptedArtifacts: resources.artifacts.filter((resource) => resource.status === "accepted").length,
-      acceptedArtifactRefs: resources.artifactRefs.filter((resource) => resource.status === "accepted").length,
+      acceptedArtifactRefs: acceptedArtifactRefs.length,
+      evidenceRequiredArtifactRefs,
       needsRepairArtifacts: resources.artifacts.filter((resource) => resource.status === "needs_repair").length,
       rejectedArtifacts: resources.artifacts.filter((resource) => resource.status === "rejected").length,
       handExecutions: resources.handExecutions.length,
       taskExecutionIntents: resources.taskExecutionIntents.length,
       blockingToolProxyViolations: resources.toolProxyViolations.filter((resource) => resource.status === "blocking").length,
-      completeEvidencePackets: resources.evidencePackets.filter((resource) => resource.status === "complete").length,
-      incompleteEvidencePackets: resources.evidencePackets.filter((resource) => resource.status === "incomplete").length,
-      blockingValidatorFailures: resources.validators.filter((resource) => resource.status === "failed" && asRecord(resource.payload).blocking === true).length,
+      completeEvidencePackets: currentEvidencePackets.filter((resource) => resource.status === "complete").length,
+      incompleteEvidencePackets: currentEvidencePackets.filter((resource) => resource.status === "incomplete").length,
+      blockingValidatorFailures: currentValidators.filter((resource) => resource.status === "failed" && asRecord(resource.payload).blocking === true).length,
       oversizedPayloadRows,
     },
   };
@@ -238,6 +336,7 @@ function emptyCounts(): RunInspectionCounts {
     resources: {
       acceptedArtifacts: 0,
       acceptedArtifactRefs: 0,
+      evidenceRequiredArtifactRefs: 0,
       needsRepairArtifacts: 0,
       rejectedArtifacts: 0,
       handExecutions: 0,

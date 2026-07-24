@@ -12,7 +12,7 @@ import { installLibraryImportCandidates } from "../../src/v2/design-library/impo
 import { reconcileLibraryFilesPg } from "../../src/v2/design-library/files/library-reconcile-service.ts";
 import type { LibraryImportLlmProvider } from "../../src/v2/design-library/importers/library-llm-import-analyzer.ts";
 import { contentHashForPayload } from "../../src/v2/design-library/canonical-json.ts";
-import type { GoalValidationResolutionV1, WorkflowCompositionPlan } from "../../src/v2/design-library/types.ts";
+import type { GoalValidationResolutionV2, WorkflowCompositionPlan } from "../../src/v2/design-library/types.ts";
 import type { ComposeWorkflowInput, WorkflowComposer } from "../../src/v2/orchestration/composer.ts";
 import { resolveWorkflowCandidates } from "../../src/v2/orchestration/candidate-resolver.ts";
 import {
@@ -21,7 +21,7 @@ import {
   deterministicFixtureComposition,
   seedDeterministicWorkflowGraph,
 } from "./fixtures/deterministic-workflow-composer.ts";
-import { getResourceByKeyPg, upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
+import { createWorkflowRunPg, getResourceByKeyPg, upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import {
   finalizeGoalContract,
   goalContractHash,
@@ -30,8 +30,8 @@ import {
   type GoalContractV1,
 } from "../../src/v2/orchestration/goal-contract.ts";
 import {
-  finalizeGoalDesignPackageV2,
-  type GoalDesignPackageV2,
+  finalizeGoalDesignPackageV3,
+  type GoalDesignPackageV3,
   type GoalSliceDesigner,
 } from "../../src/v2/orchestration/goal-design.ts";
 import {
@@ -53,7 +53,7 @@ import {
   loadCurrentUiInteractionContractPg,
   reviseUiInteractionContractPg,
 } from "../../src/v2/orchestration/goal-design-draft-service.ts";
-import { finalizeGoalRequirementDraft, type GoalRequirementDraftInputV1 } from "../../src/v2/orchestration/goal-requirement-draft.ts";
+import { finalizeGoalRequirementDraft, goalRequirementDraftHash, type GoalRequirementDraftInputV1 } from "../../src/v2/orchestration/goal-requirement-draft.ts";
 import { finalizeUiInteractionContract } from "../../src/v2/orchestration/ui-interaction-contract.ts";
 import { resolveGoalValidationPg } from "../../src/v2/orchestration/goal-validation-resolver.ts";
 import {
@@ -90,7 +90,7 @@ test("planner draft creation rejects missing and incompatible Goal Design packag
     for (const [packageValue, expectedCode] of [
       [undefined, "canonical_goal_design_package_required"],
       [{ schemaVersion: "southstar.goal_design_package.v1" }, "canonical_goal_design_package_invalid"],
-      [{ schemaVersion: "southstar.goal_design_package.v2" }, "canonical_goal_design_package_invalid"],
+      [{ schemaVersion: "southstar.goal_design_package.v3" }, "canonical_goal_design_package_invalid"],
     ] as const) {
       let interpreterCalled = false;
       await assert.rejects(
@@ -171,13 +171,14 @@ async function seedCanonicalValidationEdges(
   goalDesignPackage: CreatePostgresPlannerDraftInput["goalDesignPackage"],
 ): Promise<void> {
   for (const binding of goalDesignPackage.validationBindings) {
-    for (const [index, artifactRef] of binding.artifactContractRefs.entries()) {
+    for (const criterionBinding of binding.criterionBindings) {
+      const artifactRef = criterionBinding.artifactContractRef;
       const current = await findLibraryObjectByKey(db, artifactRef);
       await upsertLibraryObject(db, {
         objectKey: artifactRef,
         objectKind: "artifact_contract",
         status: "approved",
-        headVersionId: binding.artifactContractVersionRefs[index]!,
+        headVersionId: criterionBinding.artifactContractVersionRef,
         state: {
           ...(current?.state ?? {}),
           scope: goalDesignPackage.goalContract.domain,
@@ -192,34 +193,38 @@ async function seedCanonicalValidationEdges(
         },
       });
     }
-    const evaluator = await findLibraryObjectByKey(db, binding.evaluatorProfileRef);
-    await upsertLibraryObject(db, {
-      objectKey: binding.evaluatorProfileRef,
-      objectKind: "evaluator_profile",
-      status: "approved",
-      headVersionId: binding.evaluatorProfileVersionRef,
-      state: {
-        ...(evaluator?.state ?? {}),
-        scope: goalDesignPackage.goalContract.domain,
-        requiredInputs: ["accepted-artifact"],
-        evidenceKinds: ["test-result"],
-        verificationModes: ["deterministic"],
-        verificationProcedures: [{
-          id: "procedure.test",
-          checkKind: "deterministic",
-          instruction: "Verify the accepted implementation report against the frozen criterion.",
-          allowedEvidenceKinds: ["test-result"],
-        }],
-        resultSchemaRef: "southstar.requirement_evaluator_result.v2",
-        independencePolicy: "independent",
-        failureClassifications: ["implementation_gap"],
-      },
-    });
+    const evaluatorRefs = new Set(binding.criterionBindings.map((criterionBinding) => criterionBinding.evaluatorProfileRef));
+    for (const evaluatorRef of evaluatorRefs) {
+      const evaluator = await findLibraryObjectByKey(db, evaluatorRef);
+      const evaluatorBindings = binding.criterionBindings.filter((criterionBinding) => criterionBinding.evaluatorProfileRef === evaluatorRef);
+      await upsertLibraryObject(db, {
+        objectKey: evaluatorRef,
+        objectKind: "evaluator_profile",
+        status: "approved",
+        headVersionId: evaluatorBindings[0]!.evaluatorProfileVersionRef,
+        state: {
+          ...(evaluator?.state ?? {}),
+          scope: goalDesignPackage.goalContract.domain,
+          requiredInputs: ["accepted-artifact"],
+          evidenceKinds: [...new Set(evaluatorBindings.flatMap((criterionBinding) => criterionBinding.expectedEvidenceKinds))],
+          verificationModes: [...new Set(evaluatorBindings.map((criterionBinding) => criterionBinding.verificationMode))],
+          verificationProcedures: evaluatorBindings.map((criterionBinding) => ({
+            id: criterionBinding.procedureRef,
+            checkKind: criterionBinding.verificationMode,
+            instruction: "Verify the accepted implementation report against the frozen criterion.",
+            allowedEvidenceKinds: [...criterionBinding.expectedEvidenceKinds],
+          })),
+          resultSchemaRef: "southstar.requirement_evaluator_result.v2",
+          independencePolicy: "independent",
+          failureClassifications: [...new Set(evaluatorBindings.flatMap((criterionBinding) => criterionBinding.failureClassifications))],
+        },
+      });
+    }
   }
   const artifacts = await db.query<{ object_key: string }>(
     "select object_key from southstar.library_objects where status = 'approved' and object_kind = 'artifact_contract'",
   );
-  for (const evaluatorRef of new Set(goalDesignPackage.validationBindings.map((binding) => binding.evaluatorProfileRef))) {
+  for (const evaluatorRef of new Set(goalDesignPackage.validationBindings.flatMap((binding) => binding.criterionBindings.map((criterionBinding) => criterionBinding.evaluatorProfileRef)))) {
     for (const artifact of artifacts.rows) {
       await upsertLibraryEdge(db, {
         fromObjectKey: evaluatorRef,
@@ -560,7 +565,10 @@ test("Changed requirement criteria rebase a persisted UI contract for review", a
       draftId: draft.draftId,
       expectedDraftHash: draft.goalRequirementDraftHash,
       requirementId: requirement.id,
-      patch: { acceptanceCriteria: [{ statement: "Reveal changes the card into its answer state.", evidenceIntent: ["screenshot"] }] },
+      patch: { acceptanceCriteria: [{
+        ...atomicCriterion("Reveal changes the card into its answer state."),
+        id: requirement.acceptanceCriteria[0]!.id,
+      }] },
     });
 
     assert.equal(revised.validationIssues.some((entry) => entry.code === "missing_ui_interaction_contract"), false);
@@ -644,7 +652,7 @@ test("Chat requirement revisions design UI contracts against the persisted requi
         blocking: true,
         userVisibleBehaviors: ["The revised answer is hidden until requested."],
         businessRules: [],
-        acceptanceCriteria: [{ statement: "Reveal changes the card into its revised answer state.", evidenceIntent: ["screenshot"] }],
+        acceptanceCriteria: [atomicCriterion("Reveal changes the card into its revised answer state.")],
         expectedOutcomeArtifacts: [{ description: "Revised review interaction" }],
         verificationIntent: ["Exercise the revised reveal."],
         assumptions: [],
@@ -689,7 +697,7 @@ test("Chat requirement revisions design UI contracts against the persisted requi
   });
 });
 
-test("Chat requirement revisions rebind stale generated UI contract criteria by stable binding order", async () => {
+test("Chat requirement revisions reject stale generated UI contract criteria instead of rebinding by array position", async () => {
   await withDb(async (db) => {
     await seedGoalDesignSkill(db);
     const cwd = process.cwd();
@@ -712,7 +720,7 @@ test("Chat requirement revisions rebind stale generated UI contract criteria by 
         blocking: true,
         userVisibleBehaviors: ["The revised answer is hidden until requested."],
         businessRules: [],
-        acceptanceCriteria: [{ statement: "Reveal changes the card into its revised answer state.", evidenceIntent: ["screenshot"] }],
+        acceptanceCriteria: [atomicCriterion("Reveal changes the card into its revised answer state.")],
         expectedOutcomeArtifacts: [{ description: "Revised review interaction" }],
         verificationIntent: ["Exercise the revised reveal."],
         assumptions: [],
@@ -743,21 +751,22 @@ test("Chat requirement revisions rebind stale generated UI contract criteria by 
       },
     });
 
-    const revised = await reviseGoalRequirementFromChatPg(db, {
-      draftId: draft.draftId,
-      expectedDraftHash: draft.goalRequirementDraftHash,
-      message: "Rebind the revised visual requirement.",
-      selectedRequirementId: initialRequirement.id,
-      requirementInterpreter: {
-        async interpret() { return initialDraft; },
-        async revise() { return { kind: "revision", draft: revisedDraft, summary: "revised" }; },
-        async designUiInteractionContracts() { return [staleGeneratedContract]; },
-      },
-    });
-
-    if ("kind" in revised) assert.fail("expected a persisted revision");
-    assert.equal(revised.uiInteractionContracts?.[0]?.criterionBindings[0]?.criterionId, revised.goalRequirementDraft.requirements[0]?.acceptanceCriteria[0]?.id);
-    assert.equal(revised.validationIssues.some((entry) => entry.code === "missing_ui_interaction_contract"), false);
+    await assert.rejects(
+      () => reviseGoalRequirementFromChatPg(db, {
+        draftId: draft.draftId,
+        expectedDraftHash: draft.goalRequirementDraftHash,
+        message: "Rebind the revised visual requirement.",
+        selectedRequirementId: initialRequirement.id,
+        requirementInterpreter: {
+          async interpret() { return initialDraft; },
+          async revise() { return { kind: "revision", draft: revisedDraft, summary: "revised" }; },
+          async designUiInteractionContracts() { return [staleGeneratedContract]; },
+        },
+      }),
+      /generated UI interaction contract is incompatible with the revised criteria/,
+    );
+    const unchanged = await loadCurrentGoalRequirementDraftPg(db, draft.draftId);
+    assert.equal(unchanged.draftHash, draft.goalRequirementDraftHash);
   });
 });
 
@@ -885,9 +894,77 @@ test("Requirement confirmation is hash-bound and idempotent", async () => {
     assert.deepEqual(replay.validationIssues, []);
     assert.equal(first.goalContractHash, replay.goalContractHash);
     assert.equal(first.goalRequirementDraftHash, replay.goalRequirementDraftHash);
+    const confirmation = await getResourceByKeyPg(db, "goal_contract_confirmation", draft.draftId);
+    assert.deepEqual(
+      (confirmation?.payload as any).criterionAssignments,
+      first.goalContract!.requirements.flatMap((requirement) => requirement.acceptanceCriteria.map((criterion) => ({
+        requirementId: requirement.id,
+        proposedCriterionId: criterion.id,
+        criterionId: criterion.id,
+        criterionVersion: criterion.version,
+      }))),
+    );
     const orchestration = await getPostgresPlannerDraftOrchestration(db, { draftId: draft.draftId });
     assert.equal(orchestration.confirmable, false);
     assert.deepEqual(orchestration.validationIssues, []);
+  });
+});
+
+test("Requirement confirmation rebuilds a stale Goal Contract after a draft revision", async () => {
+  await withDb(async (db) => {
+    const goal = await createConfirmedGoalRequirementDraft(db, "Reconfirm a revised offline article requirement");
+    const requirement = goal.goalRequirementDraft.requirements[0]!;
+    const criterion = requirement.acceptanceCriteria[0]!;
+    const revised = await reviseGoalRequirementPg(db, {
+      draftId: goal.draftId,
+      expectedDraftHash: goal.goalRequirementDraftHash,
+      requirementId: requirement.id,
+      patch: {
+        acceptanceCriteria: [{
+          id: criterion.id,
+          observableClaim: `${criterion.observableClaim} with the revised acceptance wording.`,
+          blocking: criterion.blocking,
+          verificationIntent: [...criterion.verificationIntent],
+          requiredAssurance: [...criterion.requiredAssurance],
+          evidenceIntent: [...criterion.evidenceIntent],
+        }],
+      },
+    });
+
+    // Reproduce a stale validation-stage row: the latest Requirement Draft is
+    // present, but an older Goal Contract was retained by the resume path.
+    await db.query(
+      `update southstar.runtime_resources
+          set payload_json = payload_json || $2::jsonb,
+              status = 'validation_ready'
+        where resource_type = 'planner_draft' and resource_key = $1`,
+      [goal.draftId, JSON.stringify({
+        goalContract: goal.goalContract,
+        goalContractHash: goal.goalContractHash,
+        goalDesignPhase: "validation_ready",
+      })],
+    );
+
+    const reconfirmed = await confirmGoalRequirementsPg(db, {
+      draftId: goal.draftId,
+      expectedDraftHash: revised.goalRequirementDraftHash,
+      goalContractMetadata: {
+        domain: "design/article",
+        intent: "publish_article",
+        workType: "general",
+        expectedArtifactRefs: [],
+        requiredCapabilities: [],
+        assumptions: [],
+        requestedSideEffects: [],
+      },
+    });
+
+    assert.equal(reconfirmed.status, "validation_resolving");
+    assert.equal(
+      reconfirmed.goalContract?.requirements[0]?.acceptanceCriteria[0]?.version,
+      criterion.version + 1,
+    );
+    assert.notEqual(reconfirmed.goalContractHash, goal.goalContractHash);
   });
 });
 
@@ -928,12 +1005,15 @@ test("confirmed requirements with gaps create one immutable linked Library impor
     const gapSource = JSON.parse((importDraft!.payload as any).source.content);
     assert.equal(gapSource.schemaVersion, "southstar.goal_validation_import_request.v1");
     assert.deepEqual(gapSource.gaps.map((gap: any) => gap.requirementId), [goal.goalContract.requirements[0]!.id]);
-    assert.deepEqual(gapSource.requirements[0].acceptanceCriteria, goal.goalContract.requirements[0]!.acceptanceCriteria);
+    assert.deepEqual(
+      gapSource.requirements[0].acceptanceCriteria,
+      goal.goalContract.requirements[0]!.acceptanceCriteria,
+    );
     const coverageConstraint = (importDraft!.payload as any).coverageConstraints[0];
     assert.equal(coverageConstraint.requirementStatement, goal.goalContract.requirements[0]!.statement);
     assert.deepEqual(
       coverageConstraint.criterionStatements.map((criterion: any) => criterion.statement),
-      goal.goalRequirementDraft.requirements[0]!.acceptanceCriteria.map((criterion) => criterion.statement),
+      goal.goalRequirementDraft.requirements[0]!.acceptanceCriteria.map((criterion) => criterion.observableClaim),
     );
     const resolutionCount = await db.one<{ count: string }>(
       "select count(*) from southstar.runtime_resources where resource_type = 'goal_validation_resolution_revision' and resource_key like $1",
@@ -1002,9 +1082,89 @@ test("candidate install resumes the same Goal draft and reaches validation_ready
   });
 });
 
+test("installed Goal validation repairs stale Contract lineage before resume", async () => {
+  await withDb(async (db) => {
+    const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-goal-validation-stale-contract-"));
+    try {
+      await mkdir(join(libraryRoot, "skills"), { recursive: true });
+      await writeFile(join(libraryRoot, "skills/goal.skill.md"), approvedGoalValidationPurposeSkill("skill.test-goal", "goal_design"));
+      await writeFile(join(libraryRoot, "skills/composer.skill.md"), approvedGoalValidationPurposeSkill("skill.test-composer", "composer_guidance"));
+      const goal = await createConfirmedGoalRequirementDraft(db, "Repair stale Goal Contract before Slice Design");
+      const provider = realGoalValidationImportProvider();
+      const waiting = await resolveAndPersistGoalValidationPg(db, {
+        draftId: goal.draftId,
+        expectedGoalContractHash: goal.goalContractHash,
+        libraryImportLlmProvider: provider,
+      });
+      assert.ok(waiting.libraryImportDraftId);
+
+      const driftedDraft = structuredClone(goal.goalRequirementDraft);
+      driftedDraft.requirements[0]!.acceptanceCriteria[0]!.version += 1;
+      const { draftHash: _draftHash, ...withoutDraftHash } = driftedDraft;
+      driftedDraft.draftHash = goalRequirementDraftHash(withoutDraftHash);
+      await db.query(
+        `update southstar.runtime_resources
+            set payload_json = payload_json || $2::jsonb
+          where resource_type = 'planner_draft' and resource_key = $1`,
+        [goal.draftId, JSON.stringify({
+          goalRequirementDraft: driftedDraft,
+          goalRequirementDraftHash: driftedDraft.draftHash,
+        })],
+      );
+      await db.query(
+        `update southstar.runtime_resources
+            set payload_json = payload_json || $2::jsonb
+          where resource_type = 'library_import_draft' and resource_key = $1`,
+        [waiting.libraryImportDraftId, JSON.stringify({ originGoalRequirementDraftHash: driftedDraft.draftHash })],
+      );
+
+      const response = await handleRuntimeRoute({
+        db,
+        libraryRoot,
+        libraryImportLlmProvider: provider,
+      } as any, new Request(`http://local/api/v2/library/import-drafts/${waiting.libraryImportDraftId}/install`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          selectedCandidateIds: ["artifact.offline-html", "evaluator.offline-html"],
+          actor: "operator",
+          reason: "repair stale Goal Contract lineage",
+        }),
+      }));
+      const envelope = await response.json() as any;
+      assert.equal(response.status, 200, JSON.stringify(envelope));
+      assert.equal(envelope.result.goalValidationResume.ok, true, JSON.stringify(envelope));
+
+      const stored = await getResourceByKeyPg(db, "planner_draft", goal.draftId);
+      const contract = (stored!.payload as any).goalContract;
+      assert.equal(contract.requirements[0].acceptanceCriteria[0].version, 2);
+      assert.equal((stored!.payload as any).goalDesignPhase, "validation_ready");
+      const resume = await getResourceByKeyPg(db, "goal_validation_resume", waiting.libraryImportDraftId!);
+      assert.equal((resume!.payload as any).originGoalContractHash, (stored!.payload as any).goalContractHash);
+      assert.equal((resume!.payload as any).resolutionHash, envelope.result.goalValidationResume.resolutionHash);
+    } finally {
+      await rm(libraryRoot, { recursive: true, force: true });
+    }
+  });
+});
+
 test("validation_ready continues on the same planner draft into a V2 Slice review", async () => {
   await withDb(async (db) => {
     const goal = await createConfirmedGoalRequirementDraft(db, "Create an offline article with frozen validation");
+    await upsertLibraryObject(db, {
+      objectKey: "artifact.offline-html",
+      objectKind: "artifact_contract",
+      status: "approved",
+      headVersionId: "artifact.offline-html@1",
+      state: {},
+    });
+    await upsertLibraryObject(db, {
+      objectKey: "evaluator.offline-html",
+      objectKind: "evaluator_profile",
+      status: "approved",
+      headVersionId: "evaluator.offline-html@1",
+      state: {},
+    });
     const resolution = validationResolution(goal, true);
     const validation = await resolveAndPersistGoalValidationPg(db, {
       draftId: goal.draftId,
@@ -1017,8 +1177,8 @@ test("validation_ready continues on the same planner draft into a V2 Slice revie
       async design(input) {
         const binding = input.validationBindings[0]!;
         receivedBindingId = binding.id;
-        return finalizeGoalDesignPackageV2({
-          schemaVersion: "southstar.goal_design_package.v2",
+        return finalizeGoalDesignPackageV3({
+          schemaVersion: "southstar.goal_design_package.v3",
           revision: 1,
           goalContract: input.goalContract,
           requirementDraftHash: input.requirementDraft.draftHash,
@@ -1031,9 +1191,9 @@ test("validation_ready continues on the same planner draft into a V2 Slice revie
               id: "slice-offline-article",
               requirementIds: [input.goalContract.requirements[0]!.id],
               outcome: "Deliver a verified offline article",
-              stateOrArtifactOwner: binding.artifactContractRefs[0]!,
+              stateOrArtifactOwner: binding.criterionBindings[0]!.artifactContractRef,
               mutationBoundary: "one offline article artifact",
-              expectedArtifactRefs: binding.artifactContractRefs,
+              expectedArtifactRefs: binding.criterionBindings.map((criterionBinding) => criterionBinding.artifactContractRef),
               evaluatorContractRefs: [binding.id],
               dependsOnSliceIds: [],
               dependencyArtifactRefs: [],
@@ -1071,12 +1231,27 @@ test("validation_ready continues on the same planner draft into a V2 Slice revie
     assert.equal(designed.draftId, goal.draftId);
     assert.equal(designed.status, "ready_for_review");
     assert.equal(designed.phase, "slice_review");
-    assert.equal(designed.goalDesignPackage.schemaVersion, "southstar.goal_design_package.v2");
+    assert.equal(designed.goalDesignPackage.schemaVersion, "southstar.goal_design_package.v3");
     assert.equal(receivedBindingId, resolution.bindings[0]!.id);
     assert.equal((await loadCurrentGoalDesignPackagePg(db, goal.draftId)).packageHash, designed.goalDesignPackageHash);
+    const revisionResource = await getResourceByKeyPg(
+      db,
+      "goal_design_package_revision",
+      `${goal.draftId}:revision:${designed.goalDesignPackage.revision}`,
+    );
+    const persistedPackage = (revisionResource?.payload as { goalDesignPackage?: typeof designed.goalDesignPackage })?.goalDesignPackage;
+    assert.ok(persistedPackage);
+    assert.equal(persistedPackage.goalDesignSkillRef, designed.goalDesignPackage.goalDesignSkillRef);
+    assert.equal(persistedPackage.goalDesignSkillVersionRef, designed.goalDesignPackage.goalDesignSkillVersionRef);
+    assert.equal(persistedPackage.criterionPromptVersion, "southstar.goal_requirement.atomic_criterion.v1");
+    assert.match(persistedPackage.criterionSchemaHash, /^[a-f0-9]{64}$/);
     const stored = await getResourceByKeyPg(db, "planner_draft", goal.draftId);
     assert.equal(stored?.status, "ready_for_review");
     assert.equal((stored?.payload as any).goalDesignPhase, "slice_review");
+    assert.deepEqual(
+      (stored?.payload as any).goalContract.requirements[0].acceptanceCriteria,
+      goal.goalContract.requirements[0]!.acceptanceCriteria,
+    );
     const plannerDraftCount = await db.one<{ count: string }>(
       "select count(*) from southstar.runtime_resources where resource_type = 'planner_draft'",
     );
@@ -1145,7 +1320,10 @@ test("Requirement review through validated DAG has no late validation candidate 
     const stored = await getResourceByKeyPg(db, "planner_draft", composed.draftId);
     const coverage = (stored!.payload as any).goalRequirementCoverage;
     assert.equal(coverage.entries[0]!.criterionIds.length > 0, true);
-    assert.deepEqual(coverage.entries[0]!.acceptanceCriteria, goal.goalContract.requirements[0]!.acceptanceCriteria);
+    assert.deepEqual(
+      coverage.entries[0]!.acceptanceCriteria,
+      goal.goalContract.requirements[0]!.acceptanceCriteria.map((criterion) => criterion.observableClaim),
+    );
     assert.equal(coverage.entries[0]!.validationBindingId, validation.validationBindings[0]!.id);
   });
 });
@@ -1280,7 +1458,7 @@ test("Library install rejects a linked candidate when the persisted validation r
         ...changedWithoutHash,
         gaps: changedWithoutHash.gaps.map((gap) => ({ ...gap, message: `${gap.message}; resolution reranked` })),
       };
-      const changed: GoalValidationResolutionV1 = {
+      const changed: GoalValidationResolutionV2 = {
         ...changedPayload,
         resolutionHash: contentHashForPayload(changedPayload),
       };
@@ -1330,7 +1508,7 @@ test("Library install rechecks Goal validation under the install transaction loc
         ...changedWithoutHash,
         gaps: changedWithoutHash.gaps.map((gap) => ({ ...gap, message: `${gap.message}; changed during ontology analysis` })),
       };
-      const changed: GoalValidationResolutionV1 = {
+      const changed: GoalValidationResolutionV2 = {
         ...changedPayload,
         resolutionHash: contentHashForPayload(changedPayload),
       };
@@ -1580,6 +1758,34 @@ test("Goal validation resolution fails closed with a structured provider configu
   });
 });
 
+test("Goal validation persistence rejects a self-declared ready resolution without canonical bindings", async () => {
+  await withDb(async (db) => {
+    const goal = await createConfirmedGoalRequirementDraft(db, "Reject a self-declared ready validation result");
+    const valid = validationResolution(goal, true);
+    const { resolutionHash: _resolutionHash, ...withoutHash } = valid;
+    const unboundWithoutHash = {
+      ...withoutHash,
+      bindings: [],
+      ready: true,
+    };
+    const unbound = {
+      ...unboundWithoutHash,
+      resolutionHash: contentHashForPayload(unboundWithoutHash),
+    };
+
+    await assert.rejects(
+      () => persistGoalValidationResolutionPg(db, {
+        draftId: goal.draftId,
+        expectedGoalContractHash: goal.goalContractHash,
+        expectedGoalRequirementDraftHash: goal.goalRequirementDraftHash,
+        resolution: unbound,
+        actor: "test",
+      }),
+      /goal_validation_resolution_invalid/,
+    );
+  });
+});
+
 test("Requirement confirmation fails closed without interpreter or approved metadata", async () => {
   await withDb(async (db) => {
     await seedGoalDesignSkill(db);
@@ -1599,7 +1805,62 @@ test("Requirement confirmation fails closed without interpreter or approved meta
   });
 });
 
-test("editing a confirmed requirement stales validation and slice resources", async () => {
+test("Goal validation persistence locks every pinned Criterion artifact and evaluator version", async () => {
+  await withDb(async (db) => {
+    const goal = await createConfirmedGoalRequirementDraft(db, "Persist only approved pinned validation bindings");
+    const resolution = validationResolution(goal, true);
+    await upsertLibraryObject(db, {
+      objectKey: "artifact.offline-html",
+      objectKind: "artifact_contract",
+      status: "approved",
+      headVersionId: "artifact.offline-html@1",
+      state: {},
+    });
+    await upsertLibraryObject(db, {
+      objectKey: "evaluator.offline-html",
+      objectKind: "evaluator_profile",
+      status: "approved",
+      headVersionId: "evaluator.offline-html@1",
+      state: {},
+    });
+    await persistGoalValidationResolutionPg(db, {
+      draftId: goal.draftId,
+      expectedGoalContractHash: goal.goalContractHash,
+      expectedGoalRequirementDraftHash: goal.goalRequirementDraftHash,
+      resolution,
+    });
+
+    await db.query(
+      "update southstar.library_objects set head_version_id = $2 where object_key = $1",
+      ["evaluator.offline-html", "evaluator.offline-html@2"],
+    );
+    await assert.rejects(
+      () => persistGoalValidationResolutionPg(db, {
+        draftId: goal.draftId,
+        expectedGoalContractHash: goal.goalContractHash,
+        expectedGoalRequirementDraftHash: goal.goalRequirementDraftHash,
+        resolution,
+      }),
+      /goal_validation_library_binding_stale: evaluator\.offline-html@1/,
+    );
+
+    await db.query(
+      "update southstar.library_objects set head_version_id = $2, status = 'draft' where object_key = $1",
+      ["evaluator.offline-html", "evaluator.offline-html@1"],
+    );
+    await assert.rejects(
+      () => persistGoalValidationResolutionPg(db, {
+        draftId: goal.draftId,
+        expectedGoalContractHash: goal.goalContractHash,
+        expectedGoalRequirementDraftHash: goal.goalRequirementDraftHash,
+        resolution,
+      }),
+      /goal_validation_library_binding_stale: evaluator\.offline-html@1/,
+    );
+  });
+});
+
+test("editing a confirmed Criterion versions it and stales every dependent resource", async () => {
   await withDb(async (db) => {
     await seedGoalDesignSkill(db);
     await seedGoalRequirementVocabulary(db);
@@ -1622,6 +1883,21 @@ test("editing a confirmed requirement stales validation and slice resources", as
         requestedSideEffects: [],
       },
     });
+    await db.query(
+      `update southstar.runtime_resources
+          set payload_json = payload_json || $2::jsonb,
+              summary_json = summary_json || $3::jsonb
+        where resource_type = 'planner_draft' and resource_key = $1`,
+      [draft.draftId, JSON.stringify({
+        workflow: { workflowId: "old-workflow" },
+        workflowManifestHash: "old-workflow-hash",
+        goalRequirementCoverage: { entries: [] },
+        goalRequirementCoverageHash: "old-coverage-hash",
+        orchestrationSnapshot: { old: true },
+        plannerTrace: { old: true },
+        slicePlan: { slices: [] },
+      }), JSON.stringify({ workflowId: "old-workflow", taskSummaries: [{ id: "old-task" }] })],
+    );
     await upsertRuntimeResourcePg(db, {
       resourceType: "goal_validation_resolution",
       resourceKey: draft.draftId,
@@ -1636,19 +1912,150 @@ test("editing a confirmed requirement stales validation and slice resources", as
       status: "ready",
       payload: { draftId: draft.draftId },
     });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "goal_requirement_coverage",
+      resourceKey: draft.draftId,
+      scope: "planner",
+      status: "ready",
+      payload: {
+        draftId: draft.draftId,
+        goalRequirementDraftId: draft.draftId,
+        goalRequirementDraftHash: draft.goalRequirementDraftHash,
+      },
+    });
+    const dagDraftId = `${draft.draftId}:dag`;
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "planner_draft",
+      resourceKey: dagDraftId,
+      scope: "planner",
+      status: "validated",
+      payload: {
+        goalRequirementDraftId: draft.draftId,
+        goalRequirementDraftHash: draft.goalRequirementDraftHash,
+      },
+    });
+    const runId = `run-${randomUUID()}`;
+    await createWorkflowRunPg(db, {
+      id: runId,
+      status: "completed",
+      domain: "design/article",
+      goalPrompt: draft.goalRequirementDraft.originalPrompt,
+      workflowManifestJson: "{}",
+      executionProjectionJson: "{}",
+      snapshotJson: "{}",
+      runtimeContextJson: JSON.stringify({
+        draftId: dagDraftId,
+        goalRequirementDraftId: draft.draftId,
+        goalRequirementDraftHash: draft.goalRequirementDraftHash,
+      }),
+      metricsJson: "{}",
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "evidence_packet",
+      resourceKey: `${draft.draftId}:evidence`,
+      runId,
+      scope: "evaluator",
+      status: "complete",
+      payload: {
+        schemaVersion: "southstar.evidence_packet.v1",
+        id: `${draft.draftId}:evidence`,
+        runId,
+        taskId: "task-evaluator",
+        evidenceItems: [],
+        completeness: { required: 0, present: 0, missing: 0 },
+      },
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "requirement_evaluator_result",
+      resourceKey: `${draft.draftId}:evaluation`,
+      runId,
+      scope: "evaluator",
+      status: "passed",
+      payload: {
+        schemaVersion: "southstar.requirement_evaluator_result.v2",
+        requirementId: draft.goalRequirementDraft.requirements[0]!.id,
+        validationBindingId: "binding-test",
+        artifactRefs: ["artifact-test"],
+        evaluatorId: "evaluator-test",
+        evaluatorTaskId: "task-evaluator",
+        evaluatorProfileRef: "evaluator.test",
+        evaluatorProfileVersionRef: "evaluator.test@v1",
+        verdict: "passed",
+        criteriaResults: [{ criterionId: draft.goalRequirementDraft.requirements[0]!.acceptanceCriteria[0]!.id, verdict: "passed", evidenceRefs: [`${draft.draftId}:evidence`], findings: [] }],
+        evidenceRefs: [`${draft.draftId}:evidence`],
+        findings: [],
+      },
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "goal_outcome",
+      resourceKey: `goal-outcome:${runId}`,
+      runId,
+      scope: "evaluator",
+      status: "satisfied",
+      payload: {
+        schemaVersion: "southstar.goal_outcome.v1",
+        runId,
+        outcomeStatus: "satisfied",
+      },
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "validator_result",
+      resourceKey: `${draft.draftId}:validator`,
+      runId,
+      scope: "evaluator",
+      status: "passed",
+      payload: {
+        draftId: draft.draftId,
+        goalRequirementDraftId: draft.draftId,
+        goalRequirementDraftHash: draft.goalRequirementDraftHash,
+      },
+    });
+    const criterion = draft.goalRequirementDraft.requirements[0]!.acceptanceCriteria[0]!;
     const revised = await reviseGoalRequirementPg(db, {
       draftId: draft.draftId,
       expectedDraftHash: draft.goalRequirementDraftHash,
       requirementId: draft.goalRequirementDraft.requirements[0]!.id,
-      patch: { statement: "Changed observable outcome" },
+      patch: {
+        acceptanceCriteria: [{
+          id: criterion.id,
+          observableClaim: "The accepted article opens offline and renders its title.",
+          blocking: criterion.blocking,
+          verificationIntent: [...criterion.verificationIntent],
+          requiredAssurance: [...criterion.requiredAssurance],
+          evidenceIntent: [...criterion.evidenceIntent],
+        }],
+      },
     });
     assert.equal(revised.status, "requirements_review");
     assert.equal(revised.invalidated?.validationBindings, true);
     assert.equal(revised.invalidated?.slicePlan, true);
+    assert.equal(revised.invalidated?.dagDraft, true);
+    assert.equal(revised.invalidated?.evidence, true);
+    assert.equal(revised.invalidated?.evaluation, true);
+    assert.equal(revised.goalRequirementDraft.requirements[0]!.acceptanceCriteria[0]!.id, criterion.id);
+    assert.equal(revised.goalRequirementDraft.requirements[0]!.acceptanceCriteria[0]!.version, criterion.version + 1);
     const validation = await getResourceByKeyPg(db, "goal_validation_resolution", draft.draftId);
     const slice = await getResourceByKeyPg(db, "goal_slice_plan", draft.draftId);
+    const coverage = await getResourceByKeyPg(db, "goal_requirement_coverage", draft.draftId);
+    const dag = await getResourceByKeyPg(db, "planner_draft", dagDraftId);
+    const evidence = await getResourceByKeyPg(db, "evidence_packet", `${draft.draftId}:evidence`);
+    const evaluation = await getResourceByKeyPg(db, "requirement_evaluator_result", `${draft.draftId}:evaluation`);
+    const validatorResult = await getResourceByKeyPg(db, "validator_result", `${draft.draftId}:validator`);
+    const sourceDraft = await getResourceByKeyPg(db, "planner_draft", draft.draftId);
+    const outcome = await getResourceByKeyPg(db, "goal_outcome", `goal-outcome:${runId}`);
     assert.equal(validation?.status, "stale");
     assert.equal(slice?.status, "stale");
+    assert.equal(coverage?.status, "stale");
+    assert.equal(dag?.status, "stale");
+    assert.equal(evidence?.status, "stale");
+    assert.equal(evaluation?.status, "stale");
+    assert.equal(validatorResult?.status, "stale");
+    assert.equal(outcome?.status, "stale");
+    assert.equal("workflow" in (sourceDraft?.payload ?? {}), false);
+    assert.equal("workflowManifestHash" in (sourceDraft?.payload ?? {}), false);
+    assert.equal("goalRequirementCoverage" in (sourceDraft?.payload ?? {}), false);
+    assert.equal("orchestrationSnapshot" in (sourceDraft?.payload ?? {}), false);
+    assert.equal("slicePlan" in (sourceDraft?.payload ?? {}), false);
   });
 });
 
@@ -1827,15 +2234,16 @@ test("generated planner DAG keeps source requirement lineage through materializa
     );
     assert.equal(runtime.runtime_context_json.goalRequirementDraftId, sourceRequirement.draftId);
     assert.equal(runtime.runtime_context_json.goalRequirementDraftHash, sourceRequirement.goalRequirementDraftHash);
-    await assert.rejects(
-      () => reviseGoalRequirementPg(db, {
-        draftId: sourceRequirement.draftId,
-        expectedDraftHash: sourceRequirement.goalRequirementDraftHash,
-        requirementId: sourceRequirement.goalRequirementDraft.requirements[0]!.id,
-        patch: { statement: "Must not revise after a source run materializes" },
-      }),
-      /goal_requirements_already_materialized/,
-    );
+    const revised = await reviseGoalRequirementPg(db, {
+      draftId: sourceRequirement.draftId,
+      expectedDraftHash: sourceRequirement.goalRequirementDraftHash,
+      requirementId: sourceRequirement.goalRequirementDraft.requirements[0]!.id,
+      patch: { statement: "Revise the source requirement and stale its materialized DAG lineage" },
+    });
+    assert.notEqual(revised.goalRequirementDraftHash, sourceRequirement.goalRequirementDraftHash);
+    const staleDag = await getResourceByKeyPg(db, "planner_draft", draft.draftId);
+    assert.equal(staleDag?.status, "stale");
+    assert.equal((staleDag?.payload as any).supersededByDraftHash, revised.goalRequirementDraftHash);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -1983,6 +2391,7 @@ test("planner draft gives the Goal interpreter approved Library vocabulary", asy
 test("dag-validated Goal Design can fork one staged Slice revision without changing Requirements", async () => {
   await withDb(async (db) => {
     const goal = await createConfirmedGoalRequirementDraft(db, "Revise the staged slices after DAG validation");
+    await seedOfflineHtmlValidationObjects(db);
     const resolution = validationResolution(goal, true);
     await persistGoalValidationResolutionPg(db, {
       draftId: goal.draftId,
@@ -2277,9 +2686,10 @@ test("removed V1 Goal Design packages are rejected durably by every Slice revisi
   });
 });
 
-test("Package V2 review chat revises through the JSON and SSE planner routes", async () => {
+test("Package V3 review chat revises through the JSON and SSE planner routes", async () => {
   await withDb(async (db) => {
     const goal = await createConfirmedGoalRequirementDraft(db, "Review an offline article");
+    await seedOfflineHtmlValidationObjects(db);
     const resolution = validationResolution(goal, true);
     await persistGoalValidationResolutionPg(db, {
       draftId: goal.draftId,
@@ -2330,8 +2740,8 @@ test("Package V2 review chat revises through the JSON and SSE planner routes", a
       },
     ));
     assert.equal(response.status, 200, await response.clone().text());
-    const revised = (await response.json() as { result: { package: GoalDesignPackageV2; draftStatus: string } }).result;
-    assert.equal(revised.package.schemaVersion, "southstar.goal_design_package.v2");
+    const revised = (await response.json() as { result: { package: GoalDesignPackageV3; draftStatus: string } }).result;
+    assert.equal(revised.package.schemaVersion, "southstar.goal_design_package.v3");
     assert.equal(revised.package.revision, designed.goalDesignPackage.revision + 1);
     assert.equal(revised.package.slicePlan.slices[0]!.outcome, "Review the revised offline article");
     assert.equal(revised.draftStatus, "ready_for_review");
@@ -2349,13 +2759,13 @@ test("Package V2 review chat revises through the JSON and SSE planner routes", a
     ));
     const events = await streamResponse.text();
     assert.match(events, /event: goal_design/);
-    assert.match(events, /southstar\.goal_design_package\.v2/);
+    assert.match(events, /southstar\.goal_design_package\.v3/);
     assert.match(events, /event: done/);
     assert.doesNotMatch(events, /event: error/);
   });
 });
 
-test("Package V2 confirmation rejects stale hashes and materializes exactly one run", async () => {
+test("Package V3 confirmation rejects stale hashes and materializes exactly one run", async () => {
   await withDb(async (db) => {
     await seedInlineArticleValidationAndCompositionGraph(db);
     await seedOfflineHtmlValidationObjects(db);
@@ -2710,31 +3120,28 @@ test("Postgres run creation rejects tampered manifest, coverage, and Goal Design
     const requirement = contract.requirements[0]!;
     const artifactRef = contract.expectedArtifactRefs[0]!;
     const bindingId = "binding-run-hash-test";
-    const criterionIds = requirement.acceptanceCriteria.map((_, index) => `criterion-run-hash-${index + 1}`);
-    const packageValue = finalizeGoalDesignPackageV2({
-      schemaVersion: "southstar.goal_design_package.v2",
+    const criterionIds = requirement.acceptanceCriteria.map((criterion) => criterion.id);
+    const packageValue = finalizeGoalDesignPackageV3({
+      schemaVersion: "southstar.goal_design_package.v3",
       revision: 1,
       goalContract: contract,
       requirementDraftHash: "1".repeat(64),
       validationBindings: [{
-        schemaVersion: "southstar.requirement_validation_binding.v1",
+        schemaVersion: "southstar.requirement_validation_binding.v3",
         id: bindingId,
         requirementId: requirement.id,
-        criterionIds,
-        acceptanceCriteria: [...requirement.acceptanceCriteria],
-        artifactContractRefs: [artifactRef],
-        artifactContractVersionRefs: [`${artifactRef}@test`],
-        evaluatorProfileRef: "evaluator.run-hash-test",
-        evaluatorProfileVersionRef: "evaluator.run-hash-test@test",
-        verificationMode: "deterministic",
-        criterionChecks: criterionIds.map((criterionId) => ({
-          criterionId,
+        criterionBindings: requirement.acceptanceCriteria.map((criterion) => ({
+          criterionContract: { ...criterion },
+          artifactContractRef: artifactRef,
+          artifactContractVersionRef: `${artifactRef}@test`,
+          evaluatorProfileRef: "evaluator.run-hash-test",
+          evaluatorProfileVersionRef: "evaluator.run-hash-test@test",
+          verificationMode: "deterministic" as const,
           procedureRef: "procedure.run-hash-test",
-          expectedEvidenceKinds: ["test_result"],
+          expectedEvidenceKinds: ["test-result"],
+          independence: "independent" as const,
+          failureClassifications: ["implementation_gap"],
         })),
-        requiredEvidenceKinds: ["test_result"],
-        independence: "independent",
-        failureClassifications: ["implementation_gap"],
       }],
       slicePlan: {
         schemaVersion: "southstar.goal_slice_plan.v1",
@@ -3195,7 +3602,6 @@ test("Postgres planner draft can use injected scripted LLM composer for non-fixt
     await seedDeterministicWorkflowGraph(db);
     const goalContract = softwareGoalContract("implement calc sum with a single exploration task");
     const composer = new ScriptedWorkflowComposer([
-      invalidInspectOnlyPlan(goalContract),
       deterministicFixtureComposition(goalContract),
     ]);
     const draft = await createCanonicalPlannerDraftFixture(db, {
@@ -3209,9 +3615,8 @@ test("Postgres planner draft can use injected scripted LLM composer for non-fixt
       "select payload_json from southstar.runtime_resources where resource_type = 'planner_draft' and resource_key = $1",
       [draft.draftId],
     );
-    assert.equal(draftResource.payload_json.repairAttempts.length, 2);
-    assert.equal(draftResource.payload_json.repairAttempts[0]?.validation.ok, false);
-    assert.equal(draftResource.payload_json.repairAttempts[1]?.validation.ok, true);
+    assert.equal(draftResource.payload_json.repairAttempts.length, 1);
+    assert.equal(draftResource.payload_json.repairAttempts[0]?.validation.ok, true);
 
     const run = await createPostgresRunFromDraft(db, { draftId: draft.draftId });
     assert.deepEqual(run.taskIds, [
@@ -3298,8 +3703,7 @@ test("Postgres planner draft is invalid when repair loop remains invalid after m
     const goalContract = softwareGoalContract("implement calc sum with invalid explorer profile");
     const composer = new ScriptedWorkflowComposer([
       invalidInspectOnlyPlan(goalContract),
-      invalidInspectOnlyPlan(goalContract),
-      invalidInspectOnlyPlan(goalContract),
+      deterministicFixtureComposition(goalContract),
     ]);
     const draft = await createCanonicalPlannerDraftFixture(db, {
       goalPrompt: "implement calc sum with invalid explorer profile",
@@ -3320,8 +3724,12 @@ test("Postgres planner draft is invalid when repair loop remains invalid after m
       [draft.draftId],
     );
     assert.equal(draftResource.status, "invalid");
-    assert.equal(draftResource.payload_json.repairAttempts.length, 3);
-    assert.equal(draftResource.payload_json.repairAttempts[2]?.validation.ok, false);
+    assert.equal(draftResource.payload_json.repairAttempts.length, 1);
+    assert.equal(draftResource.payload_json.repairAttempts[0]?.validation.ok, false);
+    assert.match(
+      draftResource.payload_json.repairAttempts[0]?.repairBlockedReason ?? "",
+      /non_repairable_library_or_runtime_gap/,
+    );
     await assert.rejects(
       () => createPostgresRunFromDraft(db, { draftId: draft.draftId }),
       /planner draft is not validated/,
@@ -3625,7 +4033,12 @@ function articleGoalContract(goalPrompt: string): GoalContractV1 {
       summary: "Create an offline HTML article from the supplied notes",
       requirements: [{
         statement: "Create a readable offline HTML article from notes.md",
-        acceptanceCriteria: ["The article opens offline as a single HTML file"],
+        acceptanceCriteria: [{
+          observableClaim: "The article opens offline as a single HTML file",
+          blocking: true,
+          verificationIntent: ["Open the article without network access and inspect its content."],
+          requiredAssurance: ["browser_interaction"],
+        }],
         blocking: true,
         source: "explicit",
       }],
@@ -3674,6 +4087,16 @@ function requirementDraftInterpreter(goalPrompt: string, cwd: string, projectRef
   };
 }
 
+function atomicCriterion(observableClaim: string) {
+  return {
+    observableClaim,
+    blocking: true,
+    verificationIntent: ["Verify the observable claim against the accepted artifact."],
+    requiredAssurance: ["browser_interaction" as const],
+    evidenceIntent: ["screenshot" as const],
+  };
+}
+
 function validGoalRequirementDraftInput(goalPrompt: string, cwd: string, projectRef?: string): GoalRequirementDraftInputV1 {
   return {
     goalPrompt,
@@ -3687,10 +4110,7 @@ function validGoalRequirementDraftInput(goalPrompt: string, cwd: string, project
       blocking: true,
       userVisibleBehaviors: ["The article opens from a local file."],
       businessRules: [],
-      acceptanceCriteria: [{
-        statement: "The article opens offline as a single HTML file.",
-        evidenceIntent: ["screenshot"],
-      }],
+      acceptanceCriteria: [atomicCriterion("The article opens offline as a single HTML file.")],
       expectedOutcomeArtifacts: [{ description: "Offline article", mediaType: "text/html" }],
       verificationIntent: ["Open the generated file in a browser without network access."],
       assumptions: [],
@@ -3715,7 +4135,7 @@ function visualRequirementDraft(goalPrompt: string, cwd: string) {
       blocking: true,
       userVisibleBehaviors: ["The answer is hidden until requested."],
       businessRules: [],
-      acceptanceCriteria: [{ statement: "Reveal changes question to answer state.", evidenceIntent: ["screenshot"] }],
+      acceptanceCriteria: [atomicCriterion("Reveal changes question to answer state.")],
       expectedOutcomeArtifacts: [{ description: "Review interaction" }],
       verificationIntent: ["Exercise reveal."],
       assumptions: [],
@@ -3741,7 +4161,7 @@ function multiVisualRequirementDraft(goalPrompt: string, cwd: string) {
         blocking: true,
         userVisibleBehaviors: ["The first answer is hidden until requested."],
         businessRules: [],
-        acceptanceCriteria: [{ statement: "Reveal changes the first question to its answer state.", evidenceIntent: ["screenshot"] }],
+        acceptanceCriteria: [atomicCriterion("Reveal changes the first question to its answer state.")],
         expectedOutcomeArtifacts: [{ description: "First review interaction" }],
         verificationIntent: ["Exercise the first reveal."],
         assumptions: [],
@@ -3756,7 +4176,7 @@ function multiVisualRequirementDraft(goalPrompt: string, cwd: string) {
         blocking: true,
         userVisibleBehaviors: ["The second answer is hidden until requested."],
         businessRules: [],
-        acceptanceCriteria: [{ statement: "Reveal changes the second question to its answer state.", evidenceIntent: ["screenshot"] }],
+        acceptanceCriteria: [atomicCriterion("Reveal changes the second question to its answer state.")],
         expectedOutcomeArtifacts: [{ description: "Second review interaction" }],
         verificationIntent: ["Exercise the second reveal."],
         assumptions: [],
@@ -3793,8 +4213,8 @@ function inlineArticleSliceDesigner(): GoalSliceDesigner {
   return {
     async design(input) {
       const binding = input.validationBindings[0]!;
-      return finalizeGoalDesignPackageV2({
-        schemaVersion: "southstar.goal_design_package.v2",
+      return finalizeGoalDesignPackageV3({
+        schemaVersion: "southstar.goal_design_package.v3",
         revision: 1,
         goalContract: input.goalContract,
         requirementDraftHash: input.requirementDraft.draftHash,
@@ -3807,9 +4227,9 @@ function inlineArticleSliceDesigner(): GoalSliceDesigner {
             id: "slice-offline-document",
             requirementIds: [binding.requirementId],
             outcome: "Produce and verify the requested offline document",
-            stateOrArtifactOwner: binding.artifactContractRefs[0]!,
+            stateOrArtifactOwner: binding.criterionBindings[0]!.artifactContractRef,
             mutationBoundary: "the requested offline document artifact",
-            expectedArtifactRefs: binding.artifactContractRefs,
+            expectedArtifactRefs: binding.criterionBindings.map((criterionBinding) => criterionBinding.artifactContractRef),
             evaluatorContractRefs: [binding.id],
             dependsOnSliceIds: [],
             dependencyArtifactRefs: [],
@@ -3863,7 +4283,7 @@ function inlineArticleComposition(
       deliverableDocuments: [],
       expectedOutputs: outputArtifactRefs,
       testCases: [],
-      acceptanceCriteria: [...goalContract.requirements[0]!.acceptanceCriteria],
+      acceptanceCriteria: goalContract.requirements[0]!.acceptanceCriteria.map((criterion) => criterion.observableClaim),
       ...(nodeType === "implement" ? { implementationScope: ["Produce only the linked outcome artifact."] } : { verificationChecks: ["Evaluate every frozen criterion with accepted evidence."] }),
     },
     dependsOn,
@@ -4079,12 +4499,12 @@ async function createConfirmedGoalRequirementDraft(
 function validationResolution(
   goal: Awaited<ReturnType<typeof createConfirmedGoalRequirementDraft>>,
   ready: boolean,
-): GoalValidationResolutionV1 {
+): GoalValidationResolutionV2 {
   const requirement = goal.goalContract.requirements[0]!;
   const criterionIds = goal.goalRequirementDraft.requirements[0]!.acceptanceCriteria.map((criterion) => criterion.id);
-  const withoutHash: Omit<GoalValidationResolutionV1, "resolutionHash"> = ready
+  const withoutHash: Omit<GoalValidationResolutionV2, "resolutionHash"> = ready
     ? {
-      schemaVersion: "southstar.goal_validation_resolution.v1",
+      schemaVersion: "southstar.goal_validation_resolution.v2",
       goalContractHash: goal.goalContractHash,
       requirementDraftHash: goal.goalRequirementDraftHash,
       previews: [{
@@ -4096,33 +4516,33 @@ function validationResolution(
         evaluatorCandidates: [{ ref: "evaluator.offline-html", versionRef: "evaluator.offline-html@1", reason: "installed candidate" }],
         missingKinds: [],
         criterionIds,
-        acceptanceCriteria: [...requirement.acceptanceCriteria],
+        acceptanceCriteria: requirement.acceptanceCriteria.map((criterion) => criterion.observableClaim),
       }],
       bindings: [{
-        schemaVersion: "southstar.requirement_validation_binding.v1",
+        schemaVersion: "southstar.requirement_validation_binding.v3",
         id: `binding-${requirement.id}`,
         requirementId: requirement.id,
-        criterionIds,
-        acceptanceCriteria: [...requirement.acceptanceCriteria],
-        artifactContractRefs: ["artifact.offline-html"],
-        artifactContractVersionRefs: ["artifact.offline-html@1"],
-        evaluatorProfileRef: "evaluator.offline-html",
-        evaluatorProfileVersionRef: "evaluator.offline-html@1",
-        verificationMode: "browser_interaction",
-        criterionChecks: criterionIds.map((criterionId) => ({
-          criterionId,
-          procedureRef: "procedure.offline-open",
-          expectedEvidenceKinds: ["screenshot"],
-        })),
-        requiredEvidenceKinds: ["screenshot"],
-        independence: "independent",
-        failureClassifications: ["offline_open_failed"],
+        criterionBindings: requirement.acceptanceCriteria.map((criterion, index) => {
+          const draftCriterion = goal.goalRequirementDraft.requirements[0]!.acceptanceCriteria[index]!;
+          return {
+            criterionContract: { ...criterion },
+            artifactContractRef: "artifact.offline-html",
+            artifactContractVersionRef: "artifact.offline-html@1",
+            evaluatorProfileRef: "evaluator.offline-html",
+            evaluatorProfileVersionRef: "evaluator.offline-html@1",
+            verificationMode: draftCriterion.requiredAssurance[0]!,
+            procedureRef: "procedure.offline-open",
+            expectedEvidenceKinds: [...draftCriterion.evidenceIntent],
+            independence: "independent" as const,
+            failureClassifications: ["offline_open_failed"],
+          };
+        }),
       }],
       gaps: [],
       ready: true,
     }
     : {
-      schemaVersion: "southstar.goal_validation_resolution.v1",
+      schemaVersion: "southstar.goal_validation_resolution.v2",
       goalContractHash: goal.goalContractHash,
       requirementDraftHash: goal.goalRequirementDraftHash,
       previews: [{
@@ -4134,7 +4554,7 @@ function validationResolution(
         evaluatorCandidates: [],
         missingKinds: ["artifact", "evaluator"],
         criterionIds,
-        acceptanceCriteria: [...requirement.acceptanceCriteria],
+        acceptanceCriteria: requirement.acceptanceCriteria.map((criterion) => criterion.observableClaim),
       }],
       bindings: [],
       gaps: [{
@@ -4252,16 +4672,17 @@ function packageRevision(revision: number, parentRevision?: number) {
 }
 
 function invalidInspectOnlyPlan(goalContract: GoalContractV1): WorkflowCompositionPlan {
+  const base = deterministicFixtureComposition(goalContract);
   return {
-    schemaVersion: "southstar.workflow_composition_plan.v1",
+    ...base,
     title: "Invalid Inspect Plan",
-    selectedWorkflowTemplateRef: "template.software-feature",
     rationale: "invalid profile for explorer task",
-    tasks: inspectPlanTasks(goalContract, "profile.software-maker-pi"),
-    rejectedCandidates: [],
-    generatedComponentProposals: [],
+    tasks: base.tasks.map((task, index) => index === 0
+      ? { ...task, agentProfileRef: "profile.invalid-explorer" }
+      : task),
   };
 }
+
 
 function graphMetadataOnlyPlan(goalContract: GoalContractV1): WorkflowCompositionPlan {
   const requirementIds = goalContract.requirements.map((requirement) => requirement.id);
@@ -4285,8 +4706,8 @@ function graphMetadataOnlyPlan(goalContract: GoalContractV1): WorkflowCompositio
       mcpGrantRefs: [],
       vaultLeasePolicyRefs: [],
       inputArtifactRefs: [],
-      outputArtifactRefs: ["artifact.vocab_feature"],
-      evaluatorProfileRef: "evaluator.vocab-quality",
+      outputArtifactRefs: ["artifact.implementation_report"],
+      evaluatorProfileRef: "evaluator.software-feature-quality",
       recoveryStrategyRefs: [],
       rationale: "A frontend developer with UI skill and workspace access can implement the requested feature.",
     }, {
@@ -4303,9 +4724,9 @@ function graphMetadataOnlyPlan(goalContract: GoalContractV1): WorkflowCompositio
       toolGrantRefs: ["tool.workspace-write"],
       mcpGrantRefs: [],
       vaultLeasePolicyRefs: [],
-      inputArtifactRefs: ["artifact.vocab_feature"],
+      inputArtifactRefs: ["artifact.implementation_report"],
       outputArtifactRefs: [],
-      evaluatorProfileRef: "evaluator.vocab-quality",
+      evaluatorProfileRef: "evaluator.software-feature-quality",
       recoveryStrategyRefs: [],
       rationale: "Use a distinct downstream task to evaluate the produced feature artifact.",
     }],

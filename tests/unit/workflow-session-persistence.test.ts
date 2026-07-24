@@ -33,7 +33,7 @@ test("workflow UI messages round-trip through the Pi custom-message payload", ()
       goalRequirementDraftHash: "hash-1",
       confirmable: true,
       draft: {
-        schemaVersion: "southstar.goal_requirement_draft.v1",
+        schemaVersion: "southstar.goal_requirement_draft.v2",
         revision: 1,
         originalPrompt: "Build a vocabulary trainer",
         workspace: { cwd: "/tmp/southstar-workflow-session-test" },
@@ -79,7 +79,7 @@ test("workflow UI replay keeps only the latest Goal Requirements projection", as
       goalRequirementDraftHash: hash,
       confirmable: false,
       draft: {
-        schemaVersion: "southstar.goal_requirement_draft.v1",
+        schemaVersion: "southstar.goal_requirement_draft.v2",
         revision: 1,
         originalPrompt: "Build a vocabulary trainer",
         workspace: { cwd: "/tmp/southstar" },

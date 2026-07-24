@@ -62,7 +62,11 @@ export function GoalContractInspector({ draftId, runId, refreshKey = 0 }: { draf
             <article key={requirement.id}>
               <strong>{requirement.statement}</strong>
               {requirement.semanticTags && requirement.semanticTags.length > 0 ? <small>Semantic tags: {requirement.semanticTags.join(" · ")}</small> : null}
-              <ul>{requirement.acceptanceCriteria.map((criterion) => <li key={criterion}>{criterion}</li>)}</ul>
+              <ul>{requirement.acceptanceCriteria.map((criterion) => (
+                <li key={`${criterion.id}:${criterion.version}`}>
+                  {criterion.observableClaim} · {criterion.blocking ? "required" : "advisory"} · assurance {criterion.requiredAssurance.join(" + ")} · {criterion.verificationIntent.join(" · ")}
+                </li>
+              ))}</ul>
             </article>
           ))}
         </div>
@@ -98,6 +102,9 @@ export function GoalContractInspector({ draftId, runId, refreshKey = 0 }: { draf
           ))}
         </div>
       </InspectorSection>
+      {state.model.lineage?.chain ? <InspectorSection title="Unified completion lineage">
+        <LineageChainSummary chain={state.model.lineage.chain} />
+      </InspectorSection> : null}
       <InspectorSection title="Provenance / hashes">
         <StringList values={[
           `revision ${mission.provenance.revision}`,
@@ -109,6 +116,26 @@ export function GoalContractInspector({ draftId, runId, refreshKey = 0 }: { draf
       </InspectorSection>
     </div>
   );
+}
+
+function LineageChainSummary({ chain }: { chain: NonNullable<WorkflowLineageReadModel["chain"]> }) {
+  const stages = [
+    ["Goal", chain.goal.status, chain.goal.title ?? chain.goal.id],
+    ["Requirements", `${chain.requirements.length}`, chain.requirements.filter((item) => item.status !== "missing").map((item) => item.id).join(", ") || "none"],
+    ["Criteria", `${chain.criteria.length}`, chain.criteria.filter((item) => item.status === "passed").map((item) => item.id).join(", ") || "pending"],
+    ["Checks", `${chain.checks.filter((item) => item.status === "passed").length}/${chain.checks.length}`, chain.checks.filter((item) => item.status !== "passed").map((item) => `${item.id} (${item.status})`).join(", ") || "all passed"],
+    ["Bindings", `${chain.bindings.length}`, chain.bindings.map((item) => item.id).join(", ") || "none"],
+    ["Slices", `${chain.slices.length}`, chain.slices.map((item) => item.outcome).join(" · ") || "none"],
+    ["DAG / Tasks", `${chain.tasks.length}`, chain.dag ? `${chain.dag.id} · ${chain.dag.status}` : "not composed"],
+    ["Producer / Artifact", `${chain.producers.length}/${chain.artifacts.length}`, chain.artifacts.map((item) => item.ref).join(", ") || "none"],
+    ["Evidence / Evaluator", `${chain.evidence.length}/${chain.evaluators.length}`, chain.evidence.map((item) => item.ref).join(", ") || "awaiting evidence"],
+    ["Completion", chain.completion.status, chain.completion.blockers.join(", ") || `${chain.completion.passedChecks}/${chain.completion.blockingChecks} blocking checks passed`],
+  ] as const;
+  return <div data-testid="goal-completion-lineage" style={{ display: "grid", gap: 6, marginTop: 8 }}>
+    {stages.map(([label, status, detail]) => <div key={label} style={{ display: "grid", gridTemplateColumns: "145px 105px minmax(0, 1fr)", gap: 8, alignItems: "baseline", padding: "5px 0", borderBottom: "1px solid var(--border)" }}>
+      <strong>{label}</strong><span style={{ color: status === "blocked" || status === "failed" ? "var(--danger, #b42318)" : "var(--text-muted)" }}>{status}</span><span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{detail}</span>
+    </div>)}
+  </div>;
 }
 
 function workflowUiUrl(draftId?: string, runId?: string): string | null {
@@ -173,7 +200,7 @@ function CoverageMatrix({ mission, lineage }: { mission: GoalMissionReadModel; l
               return <tr key={row.entry.requirementId} data-testid={`goal-contract-coverage-row-${row.entry.requirementId}`}>
                 <CoverageCell>
                   <strong>{row.requirement?.statement ?? row.entry.requirementId}</strong>
-                  <span>{row.requirement?.acceptanceCriteria.join(" · ") || "Acceptance criteria not recorded"}</span>
+                  <span>{row.requirement?.acceptanceCriteria.map((criterion) => criterion.observableClaim).join(" · ") || "Acceptance criteria not recorded"}</span>
                   <small>{row.entry.requirementId}</small>
                 </CoverageCell>
                 <CoverageCell values={requirementLineage.sliceIds} />
@@ -269,7 +296,7 @@ function buildCoverageGraph(rows: CoverageRow[], mission: GoalMissionReadModel, 
     const acceptanceKey = `ac:${row.entry.requirementId}`;
     const requirementTitle = row.requirement?.statement ?? row.entry.requirementId;
     const acceptanceTitle = row.requirement?.acceptanceCriteria.length
-      ? `AC · ${row.requirement.acceptanceCriteria[0]}${row.requirement.acceptanceCriteria.length > 1 ? ` (+${row.requirement.acceptanceCriteria.length - 1})` : ""}`
+      ? `AC · ${row.requirement.acceptanceCriteria[0]!.observableClaim}${row.requirement.acceptanceCriteria.length > 1 ? ` (+${row.requirement.acceptanceCriteria.length - 1})` : ""}`
       : "Acceptance criteria missing";
     addNode(requirementKey, requirementTitle, "domain_taxonomy", row.status === "complete" ? "approved" : row.status === "failed" ? "blocked" : "draft");
     addNode(acceptanceKey, acceptanceTitle, "acceptance_criteria", row.status === "complete" ? "approved" : "draft");

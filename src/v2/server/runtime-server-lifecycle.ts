@@ -19,6 +19,7 @@ import { TorkClient } from "../executor/tork-client.ts";
 import { TorkExecutorProvider } from "../executor/tork-provider.ts";
 import { createTorkHandProvider } from "../hands/tork-hand-provider.ts";
 import { LlmWorkflowComposer, loadWorkflowComposerSopPg } from "../orchestration/llm-composer.ts";
+import { runtimeBindingCapabilitiesFromEnv } from "../orchestration/runtime-binding-capabilities.ts";
 import {
   createHttpPiPlannerClient,
   createPiSdkPlannerClient,
@@ -405,6 +406,7 @@ async function createRuntime(
     model: process.env.SOUTHSTAR_WORKFLOW_COMPOSER_MODEL ?? "southstar-runtime-workflow-composer",
     composerSop: () => loadWorkflowComposerSopPg(db),
     runtimeProfileBinding: resolvePiDefaultRuntimeProfileBinding,
+    runtimeBindingCapabilities: runtimeBindingCapabilitiesFromEnv(),
     client: {
       generateText: (input) => workflowPlannerClientForInput(input.cwd).generate(input.prompt),
       generateTextStream: plannerClient.generateStream

@@ -140,7 +140,13 @@ test("Pi SDK planner client applies configured model before prompting", async ()
   const listeners: Array<(event: unknown) => void> = [];
   const commands: unknown[] = [];
   const prompts: string[] = [];
+  const idleTimeouts: number[] = [];
   const session: PiSdkPlannerSession = {
+    settingsManager: {
+      setHttpIdleTimeoutMs(timeoutMs: number) {
+        idleTimeouts.push(timeoutMs);
+      },
+    },
     async send(command: unknown) {
       commands.push(command);
     },
@@ -162,6 +168,7 @@ test("Pi SDK planner client applies configured model before prompting", async ()
   });
 
   assert.equal(await client.generate("plan this"), "ok");
+  assert.deepEqual(idleTimeouts, [1_000]);
   assert.deepEqual(commands, [{ type: "set_model", provider: "github-copilot", modelId: "gpt-5.3-codex" }]);
   assert.deepEqual(prompts, ["plan this"]);
 });
@@ -219,7 +226,7 @@ test("Pi SDK planner client marks sessions as workflow", async () => {
   assert.equal(await client.generate("plan this"), "ok");
   assert.deepEqual(customEntries, [{
     customType: "southstar.session.kind",
-    data: { kind: "workflow" },
+    data: { kind: "workflow", visibility: "internal" },
   }]);
 });
 
@@ -252,6 +259,6 @@ test("Pi SDK planner client can mark library-owned sessions", async () => {
   assert.equal(await client.generate("import ontology candidates"), "ok");
   assert.deepEqual(customEntries, [{
     customType: "southstar.session.kind",
-    data: { kind: "library" },
+    data: { kind: "library", visibility: "internal" },
   }]);
 });

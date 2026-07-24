@@ -22,7 +22,9 @@ export function GoalContractCard({
 }) {
   const contract = mission.goalContract;
   const libraryDetails = useLibraryObjectDetails(contract.expectedArtifactRefs);
-  const acceptanceCriteria = contract.requirements.flatMap((requirement) => requirement.acceptanceCriteria).slice(0, 3);
+  const acceptanceCriteria = contract.requirements
+    .flatMap((requirement) => requirement.acceptanceCriteria.map((criterion) => criterion.observableClaim))
+    .slice(0, 3);
   const needsInput = contract.blockingInputs.length > 0
     && mission.status.execution !== "completed"
     && mission.approval?.status !== "approved";

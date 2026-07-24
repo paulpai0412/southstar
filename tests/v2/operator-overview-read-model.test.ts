@@ -8,7 +8,7 @@ import { createSouthstarRuntimeServer } from "../../src/v2/server/http-server.ts
 import { createWorkflowRunPg, createWorkflowTaskPg, upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../../src/v2/ui-api/postgres-run-api.ts";
 import { DeterministicFixtureComposer, seedDeterministicWorkflowGraph } from "./fixtures/deterministic-workflow-composer.ts";
-import { fixedGoalInterpreter } from "./fixtures/goal-contract.ts";
+import { deterministicCriterion, fixedGoalInterpreter } from "./fixtures/goal-contract.ts";
 import { canonicalGoalDesignPackageFixture } from "./fixtures/goal-design.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 
@@ -24,8 +24,8 @@ test("operator overview exposes mission axes and attention for goal approvals un
         workType: "software_feature",
         summary: "Ship an offline article",
         requirements: [
-          { statement: "The offline article renders", acceptanceCriteria: ["The article opens without network access"], blocking: true, source: "explicit" },
-          { statement: "A print stylesheet is available", acceptanceCriteria: ["Printing uses a readable layout"], blocking: false, source: "explicit" },
+          { statement: "The offline article renders", acceptanceCriteria: [deterministicCriterion("The article opens without network access")], blocking: true, source: "explicit" },
+          { statement: "A print stylesheet is available", acceptanceCriteria: [{ ...deterministicCriterion("Printing uses a readable layout"), blocking: false }], blocking: false, source: "explicit" },
         ],
         expectedArtifactRefs: ["artifact.implementation_report", "artifact.verification_report"],
         requiredCapabilities: ["capability.repo-read", "capability.repo-write", "capability.test-execution"],
@@ -120,7 +120,7 @@ test("operator overview mission query count stays bounded as run count grows", a
         intent: "implement_feature",
         workType: "software_feature",
         summary: "Build bounded mission projections",
-        requirements: [{ statement: "Mission projections remain bounded", acceptanceCriteria: ["Twenty runs do not add per-run queries"], blocking: true, source: "explicit" }],
+        requirements: [{ statement: "Mission projections remain bounded", acceptanceCriteria: [deterministicCriterion("Twenty runs do not add per-run queries")], blocking: true, source: "explicit" }],
         expectedArtifactRefs: ["artifact.implementation_report", "artifact.verification_report"],
         requiredCapabilities: ["capability.repo-read", "capability.repo-write", "capability.test-execution"],
         nonGoals: [], assumptions: [], blockingInputs: [], riskTags: [], requestedSideEffects: [],

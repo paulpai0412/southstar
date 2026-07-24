@@ -8,11 +8,35 @@ import type {
   GoalRequirementDraftRevisionOperation,
   GoalRequirementDraftRevisionPatchV1,
 } from "../orchestration/goal-requirement-draft.ts";
+import { CRITERION_ASSURANCE_CLASSES } from "../orchestration/goal-requirement-draft.ts";
 import type { GoalSlicePatchV1 } from "../orchestration/goal-design-draft-service.ts";
 import type {
   UiInteractionContractInputV1,
   UiInteractionContractRevisionOperation,
 } from "../orchestration/ui-interaction-contract.ts";
+
+export type AssuranceRiskAcceptanceInput = {
+  criterionId: string;
+  criterionVersion: number;
+  omittedAssurance: Array<(typeof CRITERION_ASSURANCE_CLASSES)[number]>;
+  reason: string;
+  approvedBy: string;
+};
+
+export function parseAssuranceRiskAcceptanceInput(value: unknown): AssuranceRiskAcceptanceInput {
+  if (!isRecord(value)) throw new Error("acceptance must be an object");
+  assertAllowedFields(value, ["criterionId", "criterionVersion", "omittedAssurance", "reason", "approvedBy"], "acceptance");
+  if (typeof value.criterionVersion !== "number" || !Number.isInteger(value.criterionVersion) || value.criterionVersion < 1) {
+    throw new Error("acceptance.criterionVersion must be a positive integer");
+  }
+  return {
+    criterionId: requiredString(value.criterionId, "acceptance.criterionId"),
+    criterionVersion: value.criterionVersion,
+    omittedAssurance: parseRequiredAssurance(value.omittedAssurance, "acceptance.omittedAssurance"),
+    reason: requiredString(value.reason, "acceptance.reason"),
+    approvedBy: requiredString(value.approvedBy, "acceptance.approvedBy"),
+  };
+}
 
 export function optionalOrchestrationMode(value: unknown): "llm-constrained" | undefined {
   if (value === undefined) return undefined;
@@ -167,7 +191,10 @@ export function parseGoalRequirementPatch(value: unknown): GoalRequirementDraftR
     }
     patch.acceptanceCriteria = value.acceptanceCriteria.map((criterion, index) => ({
       ...(criterion.id === undefined ? {} : { id: requiredString(criterion.id, `patch.acceptanceCriteria.${index}.id`) }),
-      statement: requiredString(criterion.statement, `patch.acceptanceCriteria.${index}.statement`),
+      observableClaim: requiredString(criterion.observableClaim, `patch.acceptanceCriteria.${index}.observableClaim`),
+      blocking: requiredBoolean(criterion.blocking, `patch.acceptanceCriteria.${index}.blocking`),
+      verificationIntent: parseRequiredStringArray(criterion.verificationIntent, `patch.acceptanceCriteria.${index}.verificationIntent`),
+      requiredAssurance: parseRequiredAssurance(criterion.requiredAssurance, `patch.acceptanceCriteria.${index}.requiredAssurance`),
       evidenceIntent: parseRequiredEvidenceKinds(criterion.evidenceIntent, `patch.acceptanceCriteria.${index}.evidenceIntent`),
     }));
   }
@@ -225,6 +252,23 @@ function parseRequiredEvidenceKinds(value: unknown, field: string): EvidenceKind
     throw new Error(`${field} contains unsupported evidence kinds: ${unsupported.join(", ")}; allowed values: ${EVIDENCE_KINDS.join(", ")}`);
   }
   return values as EvidenceKind[];
+}
+
+function parseRequiredAssurance(
+  value: unknown,
+  field: string,
+): Array<(typeof CRITERION_ASSURANCE_CLASSES)[number]> {
+  const values = parseRequiredStringArray(value, field);
+  const allowed = new Set<string>(CRITERION_ASSURANCE_CLASSES);
+  if (values.length === 0 || values.some((item) => !allowed.has(item)) || new Set(values).size !== values.length) {
+    throw new Error(`${field} must contain unique supported assurance classes`);
+  }
+  return values as Array<(typeof CRITERION_ASSURANCE_CLASSES)[number]>;
+}
+
+function requiredBoolean(value: unknown, field: string): boolean {
+  if (typeof value !== "boolean") throw new Error(`${field} must be boolean`);
+  return value;
 }
 
 function requiredString(value: unknown, field: string): string {

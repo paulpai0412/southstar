@@ -550,7 +550,17 @@ const SOFTWARE_OBJECTS: readonly SeedObject[] = [
   {
     objectKey: "artifact.implementation_report",
     objectKind: "artifact_contract",
-    state: { artifactType: "implementation_report" },
+    state: {
+      title: "Implementation report",
+      artifactType: "implementation_report",
+      requiredFields: ["summary"],
+      evidenceFields: ["testResults"],
+      mediaTypes: ["application/json"],
+      validationRules: ["implementation-complete"],
+      evidenceKinds: ["test-result"],
+      schemaRef: "schema.implementation-report.v1",
+      provenanceRequirements: ["workspace-artifact"],
+    },
   },
   {
     objectKey: "artifact.verification_report",
@@ -570,7 +580,24 @@ const SOFTWARE_OBJECTS: readonly SeedObject[] = [
   {
     objectKey: "evaluator.software-feature-quality",
     objectKind: "evaluator_profile",
-    state: { stage: "implement", requiredArtifact: "artifact.implementation_report" },
+    state: {
+      title: "Software feature quality evaluator",
+      stage: "implement",
+      requiredArtifact: "artifact.implementation_report",
+      validatesArtifactRefs: ["artifact.implementation_report"],
+      requiredInputs: ["accepted-artifact"],
+      verificationModes: ["deterministic"],
+      verificationProcedures: [{
+        id: "procedure.software-feature-quality.deterministic",
+        checkKind: "deterministic",
+        instruction: "Run the required checks and bind their evidence to the Criterion.",
+        allowedEvidenceKinds: ["test-result"],
+      }],
+      evidenceKinds: ["test-result"],
+      resultSchemaRef: "southstar.requirement_evaluator_result.v2",
+      independencePolicy: "independent",
+      failureClassifications: ["implementation_gap"],
+    },
   },
   {
     objectKey: "evaluator.software-verification-quality",

@@ -9,13 +9,14 @@ import {
 const workflowUi = {
   mission: {
     goalContract: {
-      schemaVersion: "southstar.goal_contract.v1" as const,
+      schemaVersion: "southstar.goal_contract.v2" as const,
       originalPrompt: "Ship feature",
       promptHash: "prompt-hash",
       revision: 1,
       workspace: { cwd: "/tmp/demo" },
       domain: "software",
       intent: "ship",
+      workType: "software_change" as const,
       summary: "Ship feature",
       requirements: [],
       expectedArtifactRefs: [],

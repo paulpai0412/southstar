@@ -582,7 +582,7 @@ function BlockView({ block, toolResults, isStreaming, streamingDuration, toolCal
     const override = goalRequirementContentOverride?.draftId === requirementsBlock.draftId ? goalRequirementContentOverride : requirementsBlock;
     return (
       <>
-        <GoalRequirementListBlock block={override} onRequirementSelect={onGoalRequirementSelect} onGoalRequirements={onGoalRequirements} onConfirmRequirements={onConfirmRequirements} onLibraryGraphNodeSelect={onLibraryGraphNodeSelect} />
+        <GoalRequirementListBlock block={override} onRequirementSelect={onGoalRequirementSelect} onGoalRequirements={onGoalRequirements} onGoalValidationResume={onGoalValidationResume} onConfirmRequirements={onConfirmRequirements} onLibraryGraphNodeSelect={onLibraryGraphNodeSelect} />
         {override.libraryImportDraftId && goalLibraryImportCandidatesOverride?.draftId === override.libraryImportDraftId ? (
           <div style={{ marginTop: 8 }}>
             <ChatLibraryCandidateBlock

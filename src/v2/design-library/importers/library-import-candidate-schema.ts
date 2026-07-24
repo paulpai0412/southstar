@@ -1,4 +1,10 @@
-import type { LibraryImportCandidate, LibraryImportCandidateKind } from "./library-candidate-extractor.ts";
+import type {
+  LibraryImportCandidate,
+  LibraryImportCandidateKind,
+  LibraryVerificationProcedure,
+  VerificationParameterSpec,
+  VerificationParameterType,
+} from "./library-candidate-extractor.ts";
 import { EVIDENCE_KINDS } from "../../artifacts/types.ts";
 import { unsupportedPiRuntimeToolNames } from "../../harness/pi-runtime-tools.ts";
 
@@ -178,7 +184,10 @@ function normalizeVerificationProcedures(
       throw new Error(`candidates.${objectKey}.verificationProcedures.${index} must be an object`);
     }
     const procedure = item as Record<string, unknown>;
-    const unsupported = Object.keys(procedure).filter((key) => !["id", "checkKind", "instruction", "allowedEvidenceKinds"].includes(key));
+    const unsupported = Object.keys(procedure).filter((key) => ![
+      "id", "procedureVersionRef", "checkKind", "instruction", "allowedEvidenceKinds",
+      "oracleRef", "oracleVersionRef", "parameterSchema",
+    ].includes(key));
     if (unsupported.length > 0) {
       throw new Error(`candidates.${objectKey}.verificationProcedures.${index} contains unsupported fields: ${unsupported.join(", ")}`);
     }
@@ -197,13 +206,71 @@ function normalizeVerificationProcedures(
     if (allowedEvidenceKinds.some((kind) => !evaluatorEvidenceKinds.includes(kind))) {
       throw new Error(`library import evaluator ${objectKey} procedure ${id} contains evidence not declared by the evaluator`);
     }
+    const procedureVersionRef = optionalNonEmptyString(
+      procedure.procedureVersionRef,
+      `candidates.${objectKey}.verificationProcedures.${index}.procedureVersionRef`,
+    );
+    const oracleRef = optionalNonEmptyString(
+      procedure.oracleRef,
+      `candidates.${objectKey}.verificationProcedures.${index}.oracleRef`,
+    );
+    const oracleVersionRef = optionalNonEmptyString(
+      procedure.oracleVersionRef,
+      `candidates.${objectKey}.verificationProcedures.${index}.oracleVersionRef`,
+    );
+    if ((oracleRef === undefined) !== (oracleVersionRef === undefined)) {
+      throw new Error(`candidates.${objectKey}.verificationProcedures.${index} must provide oracleRef and oracleVersionRef together`);
+    }
+    const parameterSchema = normalizeVerificationParameterSchema(
+      procedure.parameterSchema,
+      `candidates.${objectKey}.verificationProcedures.${index}.parameterSchema`,
+    );
     return {
       id,
       checkKind: checkKind as NonNullable<LibraryImportCandidate["verificationProcedures"]>[number]["checkKind"],
       instruction,
       allowedEvidenceKinds,
-    };
+      ...(procedureVersionRef ? { procedureVersionRef } : {}),
+      ...(oracleRef ? { oracleRef, oracleVersionRef: oracleVersionRef! } : {}),
+      ...(parameterSchema ? { parameterSchema } : {}),
+    } satisfies LibraryVerificationProcedure;
   });
+}
+
+function normalizeVerificationParameterSchema(
+  value: unknown,
+  label: string,
+): Record<string, VerificationParameterSpec> | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+  const result: Record<string, VerificationParameterSpec> = {};
+  for (const [name, rawSpec] of Object.entries(value as Record<string, unknown>)) {
+    if (!name.trim()) throw new Error(`${label} contains an empty parameter name`);
+    if (!rawSpec || typeof rawSpec !== "object" || Array.isArray(rawSpec)) {
+      throw new Error(`${label}.${name} must be an object`);
+    }
+    const spec = rawSpec as Record<string, unknown>;
+    const unsupported = Object.keys(spec).filter((key) => !["type", "required"].includes(key));
+    if (unsupported.length > 0) throw new Error(`${label}.${name} contains unsupported fields: ${unsupported.join(", ")}`);
+    const type = spec.type;
+    if (!isVerificationParameterType(type)) throw new Error(`${label}.${name}.type is unsupported`);
+    if (spec.required !== undefined && typeof spec.required !== "boolean") {
+      throw new Error(`${label}.${name}.required must be a boolean`);
+    }
+    result[name] = {
+      type,
+      ...(spec.required === undefined ? {} : { required: spec.required }),
+    };
+  }
+  if (Object.keys(result).length === 0) throw new Error(`${label} must contain at least one parameter`);
+  return result;
+}
+
+function isVerificationParameterType(value: unknown): value is VerificationParameterType {
+  return value === "string" || value === "number" || value === "boolean"
+    || value === "string[]" || value === "object";
 }
 
 function requiredNonEmptyString(value: unknown, label: string): string {

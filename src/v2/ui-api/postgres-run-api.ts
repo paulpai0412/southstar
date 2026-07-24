@@ -23,12 +23,13 @@ import { parseWorkflowCompositionPlanFromText } from "../orchestration/llm-compo
 import {
   goalContractHash,
   requirementSpecFromGoalContract,
+  storedGoalContract,
   type GoalContractInterpreter,
   type GoalContractVocabularyGapV1,
   type GoalContractV1,
 } from "../orchestration/goal-contract.ts";
 import {
-  goalDesignPackageV2FromUnknown,
+  goalDesignPackageV3FromUnknown,
   type GoalDesignPackage,
 } from "../orchestration/goal-design.ts";
 import { loadCanonicalGoalDesignPackagePg } from "../orchestration/canonical-goal-design-draft.ts";
@@ -1270,7 +1271,7 @@ export async function getPostgresPlannerDraftOrchestration(
         payload.goalDesignPackage === undefined
           ? CANONICAL_DIAGNOSTIC_CODES.goalDesignPackageRequired
           : CANONICAL_DIAGNOSTIC_CODES.goalDesignPackageInvalid,
-        `planner draft ${input.draftId} does not contain a valid southstar.goal_design_package.v2`,
+        `planner draft ${input.draftId} does not contain a valid southstar.goal_design_package.v3`,
       )
       : storedGoalDesignPackageHash !== goalDesignPackage.packageHash
         ? canonicalDiagnostic(
@@ -1465,7 +1466,10 @@ async function refreshPlannerDraftCompilation(
       goalContract: contract,
       candidatePacket,
       composition: applyWorkflowTaskSelectionsToComposition(composition, input.workflow),
-      goalDesignPackage: storedGoalDesignPackage(input.payload.goalDesignPackage),
+      goalDesignPackage: requiredStoredGoalDesignPackage(
+        input.payload.goalDesignPackage,
+        `planner draft refresh ${input.draftId}`,
+      ),
       scope: contract.domain,
       manifestDomain: contract.domain,
     });
@@ -1604,11 +1608,7 @@ function goalContractSummary(contract: GoalContractV1, contractHash: string): Re
 }
 
 function goalContractFromStored(value: unknown): GoalContractV1 | undefined {
-  const contract = asRecord(value);
-  if (contract.schemaVersion !== "southstar.goal_contract.v1") return undefined;
-  if (typeof contract.originalPrompt !== "string" || typeof contract.domain !== "string") return undefined;
-  if (!Array.isArray(contract.requirements) || !Array.isArray(contract.blockingInputs)) return undefined;
-  return contract as GoalContractV1;
+  return storedGoalContract(value);
 }
 
 function requiredStoredGoalContract(value: unknown, draftId: string): GoalContractV1 {
@@ -1618,7 +1618,7 @@ function requiredStoredGoalContract(value: unknown, draftId: string): GoalContra
 }
 
 function storedGoalDesignPackage(value: unknown): GoalDesignPackage | undefined {
-  return goalDesignPackageV2FromUnknown(value);
+  return goalDesignPackageV3FromUnknown(value);
 }
 
 function requiredStoredGoalDesignPackage(value: unknown, subject: string): GoalDesignPackage {
@@ -1628,7 +1628,7 @@ function requiredStoredGoalDesignPackage(value: unknown, subject: string): GoalD
     value === undefined
       ? CANONICAL_DIAGNOSTIC_CODES.goalDesignPackageRequired
       : CANONICAL_DIAGNOSTIC_CODES.goalDesignPackageInvalid,
-    `${subject} must contain a valid southstar.goal_design_package.v2`,
+    `${subject} must contain a valid southstar.goal_design_package.v3`,
   );
 }
 

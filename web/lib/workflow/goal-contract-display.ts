@@ -3,7 +3,7 @@ import { readLibraryObjectDetail } from "../library/api";
 import type { LibraryObjectDetail } from "../library/types";
 
 type ContractRequirementShape = {
-  acceptanceCriteria?: readonly string[];
+  acceptanceCriteria?: ReadonlyArray<unknown>;
   blocking?: boolean;
 };
 

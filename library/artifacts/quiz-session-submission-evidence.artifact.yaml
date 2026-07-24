@@ -1,0 +1,34 @@
+schemaVersion: southstar.library.artifact_contract_file.v1
+id: artifact.quiz-session-submission-evidence
+title: "Quiz Session Submission Evidence"
+scope: "software"
+status: approved
+semanticTags:
+  - "quiz"
+  - "assessment"
+  - "learning-flow"
+artifactType: "quiz_session_submission_record"
+mediaTypes:
+  - "application/json"
+  - "image/png"
+evidenceKinds:
+  - "screenshot"
+  - "url"
+validationRules:
+  - "must include evidence that a quiz session starts when at least one question source exists"
+  - "must include at least one answerable question captured in session state"
+  - "must include submission transition evidence and resulting result-page visibility"
+schemaRef: "southstar.artifact.quiz_session_submission_record.v1"
+requiredFields:
+  - "questionSetSnapshot"
+  - "sessionStart"
+  - "answerSubmission"
+  - "resultView"
+  - "evidence"
+provenanceRequirements:
+  - "derived-from-browser-interaction"
+  - "captures-session-start-and-submit-states"
+  - "includes-reachable-url-evidence"
+importDraftId: "library-import-goal-db33926089a81a581304cec756cb3ca2"
+importCandidateKey: "artifact.quiz-session-submission-evidence"
+importSourcePath: "Confirmed-Goal-validation-gaps.md"

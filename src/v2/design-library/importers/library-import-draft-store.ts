@@ -1425,8 +1425,21 @@ function yamlVerificationProcedures(
   const lines = ["verificationProcedures:"];
   for (const procedure of procedures) {
     lines.push(`  - id: ${yamlScalar(procedure.id)}`);
+    if (procedure.procedureVersionRef) lines.push(`    procedureVersionRef: ${yamlScalar(procedure.procedureVersionRef)}`);
     lines.push(`    checkKind: ${yamlScalar(procedure.checkKind)}`);
     lines.push(`    instruction: ${yamlScalar(procedure.instruction)}`);
+    if (procedure.oracleRef) {
+      lines.push(`    oracleRef: ${yamlScalar(procedure.oracleRef)}`);
+      lines.push(`    oracleVersionRef: ${yamlScalar(procedure.oracleVersionRef!)}`);
+    }
+    if (procedure.parameterSchema && Object.keys(procedure.parameterSchema).length > 0) {
+      lines.push("    parameterSchema:");
+      for (const [name, spec] of Object.entries(procedure.parameterSchema)) {
+        lines.push(`      ${yamlScalar(name)}:`);
+        lines.push(`        type: ${yamlScalar(spec.type)}`);
+        if (spec.required !== undefined) lines.push(`        required: ${spec.required ? "true" : "false"}`);
+      }
+    }
     lines.push("    allowedEvidenceKinds:");
     for (const evidenceKind of procedure.allowedEvidenceKinds) {
       lines.push(`      - ${yamlScalar(evidenceKind)}`);

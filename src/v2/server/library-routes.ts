@@ -1075,7 +1075,9 @@ function libraryImportInstallEventStream(
           draftId: input.draftId,
           selectedCandidateCount: input.selectedCandidateIds.length,
         });
-        await assertGoalValidationImportCurrentPg(context.db, input.draftId);
+          await assertGoalValidationImportCurrentPg(context.db, input.draftId, {
+            allowInstalledContractReconciliation: true,
+          });
         const existingDraft = await loadLibraryImportCandidateDraft(context.db, input.draftId, { allowInstalled: true });
         if (existingDraft.status === "installed") {
           // A browser reload can restore the persisted candidate message after

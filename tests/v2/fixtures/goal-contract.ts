@@ -1,5 +1,18 @@
-import type { GoalContractInterpreter, GoalContractV1 } from "../../../src/v2/orchestration/goal-contract.ts";
+import type {
+  GoalContractInterpreter,
+  GoalContractV1,
+  GoalCriterionInterpretationV1,
+} from "../../../src/v2/orchestration/goal-contract.ts";
 import { finalizeGoalContract } from "../../../src/v2/orchestration/goal-contract.ts";
+
+export function deterministicCriterion(observableClaim: string): GoalCriterionInterpretationV1 {
+  return {
+    observableClaim,
+    blocking: true,
+    verificationIntent: ["Verify the observable claim against the accepted artifact."],
+    requiredAssurance: ["deterministic"],
+  };
+}
 
 export function fixedGoalInterpreter(contract: GoalContractV1): GoalContractInterpreter {
   return { interpret: async () => structuredClone(contract) };
@@ -16,7 +29,7 @@ export function softwareGoalContract(goalPrompt = "implement calc sum"): GoalCon
       summary: goalPrompt,
       requirements: [{
         statement: goalPrompt,
-        acceptanceCriteria: [goalPrompt],
+        acceptanceCriteria: [deterministicCriterion(goalPrompt)],
         blocking: true,
         source: "explicit",
       }],
@@ -42,7 +55,10 @@ export function articleGoalContract(): GoalContractV1 {
       summary: "Build and publish a browser-verifiable article",
       requirements: [{
         statement: "The article is complete, readable, and available at a URL",
-        acceptanceCriteria: ["The rendered article passes browser quality review"],
+        acceptanceCriteria: [{
+          ...deterministicCriterion("The rendered article passes browser quality review"),
+          requiredAssurance: ["browser_interaction"],
+        }],
         blocking: true,
         source: "explicit",
       }],
@@ -70,10 +86,10 @@ export function subscriptionGoalContract(
       workType: "software_feature",
       summary: "Deliver a production-ready local membership subscription flow",
       requirements: [
-        { statement: "Authorized members can access subscription-only features", acceptanceCriteria: ["Unauthorized users are denied and authorized members are allowed"], blocking: true, source: "explicit" },
-        { statement: "Members can purchase a subscription and payment state is persisted", acceptanceCriteria: ["A successful fake payment activates exactly one subscription"], blocking: true, source: "explicit" },
-        { statement: "Members can cancel and receive the configured refund behavior", acceptanceCriteria: ["Cancellation and fake refund state are observable and idempotent"], blocking: true, source: "explicit" },
-        { statement: "Operators can inspect subscription and audit events", acceptanceCriteria: ["Administrative reporting shows the recorded lifecycle events"], blocking: true, source: "explicit" },
+        { statement: "Authorized members can access subscription-only features", acceptanceCriteria: [deterministicCriterion("Unauthorized users are denied and authorized members are allowed")], blocking: true, source: "explicit" },
+        { statement: "Members can purchase a subscription and payment state is persisted", acceptanceCriteria: [deterministicCriterion("A successful fake payment activates exactly one subscription")], blocking: true, source: "explicit" },
+        { statement: "Members can cancel and receive the configured refund behavior", acceptanceCriteria: [deterministicCriterion("Cancellation and fake refund state are observable and idempotent")], blocking: true, source: "explicit" },
+        { statement: "Operators can inspect subscription and audit events", acceptanceCriteria: [deterministicCriterion("Administrative reporting shows the recorded lifecycle events")], blocking: true, source: "explicit" },
       ],
       expectedArtifactRefs: ["artifact.implementation_report", "artifact.verification_report"],
       requiredCapabilities: ["capability.repo-read", "capability.repo-write", "capability.test-execution"],

@@ -1519,6 +1519,33 @@ test("retry-same-task-new-attempt supersedes current hand execution and releases
   }
 });
 
+test("retry-same-task-new-attempt reopens a terminal run for scheduler", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const fixture = await createReprovisionDecisionFixture(db, { runId: "run-apply-retry-terminal-run" });
+    await db.query(
+      "update southstar.workflow_runs set status = 'completed', completed_at = $1 where id = $2",
+      ["2026-06-21T15:05:00.000Z", fixture.runId],
+    );
+    await patchDecisionPayload(db, fixture.decision.resourceKey, { path: "retry-same-task-new-attempt" });
+
+    const result = await createRecoveryDecisionApplier({ db }).applyDecision({
+      decisionResourceKey: fixture.decision.resourceKey,
+      now: "2026-06-21T15:10:00.000Z",
+    });
+
+    assert.equal(result.status, "applied");
+    const run = await db.one<{ status: string; completed_at: Date | null }>(
+      "select status, completed_at from southstar.workflow_runs where id = $1",
+      [fixture.runId],
+    );
+    assert.equal(run.status, "scheduling");
+    assert.equal(run.completed_at, null);
+  } finally {
+    await db.close();
+  }
+});
+
 test("repair-artifact preserves rejected evidence and releases task without superseding hand", async () => {
   const db = await createTestPostgresDb();
   try {

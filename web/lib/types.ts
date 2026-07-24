@@ -75,7 +75,11 @@ export type GoalDesignPhase =
 
 export interface GoalAcceptanceCriterionView {
   id: string;
-  statement: string;
+  version: number;
+  observableClaim: string;
+  blocking: boolean;
+  verificationIntent: string[];
+  requiredAssurance: Array<"deterministic" | "browser_interaction" | "semantic_review" | "human_approval">;
   evidenceIntent: string[];
 }
 
@@ -99,7 +103,7 @@ export interface GoalRequirementView {
 }
 
 export interface GoalRequirementDraftView {
-  schemaVersion: "southstar.goal_requirement_draft.v1";
+  schemaVersion: "southstar.goal_requirement_draft.v2";
   revision: number;
   parentRevision?: number;
   originalPrompt: string;
@@ -150,7 +154,7 @@ export type UiInteractionElementType =
   | "list" | "card" | "form" | "table" | "image" | "link" | "status";
 
 export interface UiInteractionContractView {
-  schemaVersion: "southstar.ui_interaction_contract.v1";
+  schemaVersion: "southstar.ui_interaction_contract.v2";
   id: string;
   revision: number;
   parentRevision?: number;
@@ -168,7 +172,7 @@ export interface UiInteractionContractView {
     accessibilityRules: string[];
   }>;
   flows: Array<{ id: string; steps: string[]; successOutcome: string }>;
-  criterionBindings: Array<{ criterionId: string; screenIds: string[]; elementIds: string[]; actionIds: string[] }>;
+  criterionBindings: Array<{ criterionId: string; criterionVersion: number; screenIds: string[]; elementIds: string[]; actionIds: string[] }>;
   contractHash: string;
 }
 

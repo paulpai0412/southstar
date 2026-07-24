@@ -1,5 +1,6 @@
 import type { WorkflowComposer } from "../orchestration/composer.ts";
 import { LlmWorkflowComposer, loadWorkflowComposerSopPg } from "../orchestration/llm-composer.ts";
+import { runtimeBindingCapabilitiesFromEnv } from "../orchestration/runtime-binding-capabilities.ts";
 import { createLlmGoalSliceDesigner } from "../orchestration/goal-design.ts";
 import {
   createLlmGoalRequirementDraftInterpreter,
@@ -30,6 +31,7 @@ import {
   reviseGoalDesignFromChatPg,
   reviseGoalSlicePg,
   reviseGoalTemplatePolicyPg,
+  acceptAssuranceRiskPg,
   createStagedGoalSliceRevisionPg,
   confirmGoalRequirementsPg,
   designAndPersistGoalSlicesPg,
@@ -45,6 +47,7 @@ import {
   optionalWorkflowTemplatePolicy,
   parseGoalRequirementPatch,
   parseGoalSlicePatch,
+  parseAssuranceRiskAcceptanceInput,
   parseUiInteractionContractInput,
   parseUiInteractionContractPatch,
 } from "./planner-route-inputs.ts";
@@ -269,6 +272,21 @@ export async function handlePlannerRoute(
       return json("goal-design-slice-revision", await createStagedGoalSliceRevisionPg(context.db, {
         draftId: decodeURIComponent(goalDesignSliceRevisionMatch[1]!),
         expectedPackageHash: requiredString(body.expectedPackageHash, "expectedPackageHash"),
+      }));
+    } catch (error) {
+      return goalDesignRevisionErrorResponse(error);
+    }
+  }
+
+  const assuranceRiskAcceptanceMatch = url.pathname.match(/^\/api\/v2\/planner\/drafts\/([^/]+)\/goal-design\/assurance-risk-acceptances$/);
+  if (request.method === "POST" && assuranceRiskAcceptanceMatch) {
+    const body = await readJsonBody<{ expectedPackageHash?: unknown; acceptance?: unknown }>(request);
+    try {
+      const acceptance = parseAssuranceRiskAcceptanceInput(body.acceptance);
+      return json("goal-design-package", await acceptAssuranceRiskPg(context.db, {
+        draftId: decodeURIComponent(assuranceRiskAcceptanceMatch[1]!),
+        expectedPackageHash: requiredString(body.expectedPackageHash, "expectedPackageHash"),
+        ...acceptance,
       }));
     } catch (error) {
       return goalDesignRevisionErrorResponse(error);
@@ -1040,6 +1058,7 @@ function resolvePlannerWorkflowComposer(
     model: process.env.SOUTHSTAR_WORKFLOW_COMPOSER_MODEL ?? "southstar-runtime-workflow-composer",
     composerSop: () => loadWorkflowComposerSopPg(context.db),
     runtimeProfileBinding: resolvePiDefaultRuntimeProfileBinding,
+    runtimeBindingCapabilities: runtimeBindingCapabilitiesFromEnv(),
     client: {
       async generateText(input) {
         return await context.plannerClient.generate(input.prompt);

@@ -10,18 +10,18 @@ import {
   upsertRuntimeResourcePg,
 } from "../stores/postgres-runtime-store.ts";
 import {
-  goalDesignPackageV2FromUnknown,
-  type GoalDesignPackageV2,
+  goalDesignPackageV3FromUnknown,
+  type GoalDesignPackageV3,
 } from "./goal-design.ts";
 
 export async function loadCanonicalGoalDesignPackagePg(
   db: SouthstarDb,
   draftId: string,
-): Promise<GoalDesignPackageV2> {
+): Promise<GoalDesignPackageV3> {
   const draft = await getResourceByKeyPg(db, "planner_draft", draftId);
   if (!draft) throw new Error(`planner draft not found: ${draftId}`);
   const payload = asRecord(draft.payload);
-  const goalDesignPackage = goalDesignPackageV2FromUnknown(payload.goalDesignPackage);
+  const goalDesignPackage = goalDesignPackageV3FromUnknown(payload.goalDesignPackage);
   if (goalDesignPackage) {
     if (nonEmptyString(payload.goalDesignPackageHash) === goalDesignPackage.packageHash) return goalDesignPackage;
     return await rejectIncompatibleGoalDesignDraftPg(db, {
@@ -59,7 +59,7 @@ export async function persistIncompatibleGoalDesignDraftPg(
     ? CANONICAL_DIAGNOSTIC_CODES.goalDesignPackageRequired
     : CANONICAL_DIAGNOSTIC_CODES.goalDesignPackageInvalid);
   const detail = input.detail
-    ?? `planner draft ${input.draftId} does not contain a valid southstar.goal_design_package.v2`;
+    ?? `planner draft ${input.draftId} does not contain a valid southstar.goal_design_package.v3`;
   const diagnostic = canonicalDiagnostic(code, detail);
   const validationIssues = [
     ...validationIssueRecords(summary.validationIssues ?? payload.validationIssues)

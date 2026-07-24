@@ -906,6 +906,21 @@ async function applySimpleRecoveryMutation(
         "update southstar.workflow_tasks set status = 'pending', completed_at = null, updated_at = now() where run_id = $1 and id = $2",
         [decision.payload.runId, taskId],
       );
+      const previousRunStatus = await reopenTerminalRunForTaskRecoveryPg(tx, {
+        runId: decision.payload.runId,
+        decisionId: decision.decisionId,
+        path,
+        now,
+      });
+      if (previousRunStatus) {
+        evidence.stateChanges.push({
+          resourceType: "workflow_run",
+          resourceKey: decision.payload.runId,
+          fromStatus: previousRunStatus,
+          toStatus: "scheduling",
+          reason: path,
+        });
+      }
     } else if (path === "block-for-operator") {
       await tx.query(
         "update southstar.workflow_tasks set status = 'blocked', completed_at = null, updated_at = now() where run_id = $1 and id = $2",
@@ -965,6 +980,43 @@ async function applySimpleRecoveryMutation(
     });
     return terminalDecisionApplyResult(blockedDecision, input.executionResourceKey);
   });
+}
+
+async function reopenTerminalRunForTaskRecoveryPg(
+  db: SouthstarDb,
+  input: { runId: string; decisionId: string; path: RecoveryPath; now: string },
+): Promise<string | undefined> {
+  const result = await db.query<{ previous_status: string }>(
+    `with target as (
+       select id, status as previous_status
+         from southstar.workflow_runs
+        where id = $1
+          and status in ('completed', 'failed')
+        for update
+     )
+     update southstar.workflow_runs as run
+        set status = 'scheduling', completed_at = null, updated_at = $2
+       from target
+      where run.id = target.id
+      returning target.previous_status`,
+    [input.runId, input.now],
+  );
+  const previousStatus = result.rows[0]?.previous_status;
+  if (!previousStatus) return undefined;
+
+  await appendHistoryEventPg(db, {
+    runId: input.runId,
+    eventType: "run.scheduling_started",
+    actorType: "orchestrator",
+    idempotencyKey: `recovery:${input.decisionId}:run.scheduling_started`,
+    payload: {
+      previousStatus,
+      recoveryDecisionId: input.decisionId,
+      recoveryPath: input.path,
+      reason: `${input.path} applied`,
+    },
+  });
+  return previousStatus;
 }
 
 async function applyWakeNewBrainMutation(

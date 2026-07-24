@@ -52,7 +52,7 @@ export type CompileWorkflowCompositionInput = {
   goalContract: GoalContractV1;
   candidatePacket: CandidatePacket;
   composition: WorkflowCompositionPlan;
-  goalDesignPackage?: GoalDesignPackage;
+  goalDesignPackage: GoalDesignPackage;
   targetRequirementIds?: string[];
   scope?: string;
   manifestDomain?: string;
@@ -87,6 +87,9 @@ export async function compileWorkflowComposition(
   db: SouthstarDb,
   input: CompileWorkflowCompositionInput,
 ): Promise<CompiledWorkflowComposition> {
+  if (!input.goalDesignPackage || input.goalDesignPackage.schemaVersion !== "southstar.goal_design_package.v3") {
+    throw new Error("Workflow composition requires southstar.goal_design_package.v3");
+  }
   const goalDomain = nonEmptyString(input.goalContract.domain)
     ?? nonEmptyString(input.goalDesignPackage?.goalContract.domain);
   const explicitScope = nonEmptyString(input.scope);
@@ -111,11 +114,11 @@ export async function compileWorkflowComposition(
   const { byProfileRef: profilesByRef, byProfileId: resolvedProfiles } = await resolveRuntimeProfiles(db, input.composition);
   const artifactContracts = mergeById(
     await resolveRuntimeArtifactContracts(db, input.composition),
-    input.goalDesignPackage ? await compileGoalDesignArtifactContracts(db, input.goalDesignPackage) : [],
+    await compileGoalDesignArtifactContracts(db, input.goalDesignPackage),
   );
   const evaluatorPipelines = mergeById(
     await resolveRuntimeEvaluatorPipelines(db, input.composition),
-    input.goalDesignPackage ? await compileGoalDesignEvaluatorPipelines(db, input.goalDesignPackage) : [],
+    await compileGoalDesignEvaluatorPipelines(db, input.goalDesignPackage),
   );
   const planHash = contentHashForPayload(input.composition);
   const profileRuntimeRefs = [...resolvedProfiles.values()].flatMap((profile) => [
@@ -132,15 +135,21 @@ export async function compileWorkflowComposition(
     ...(profile.systemPromptRef ? [profile.systemPromptRef] : []),
   ]).filter(isLibraryBackedRef);
   const bindingVersionRefs = goalDesignBindingVersionRefs(input.goalDesignPackage);
+  const artifactContractVersionRefs = artifactContracts.flatMap((contract) => (
+    contract.libraryObjectRef && contract.libraryVersionRef
+      ? [{ objectKey: contract.libraryObjectRef, versionRef: contract.libraryVersionRef }]
+      : []
+  ));
   const selectedLibraryRefs = uniqueSorted([
     ...collectSelectedRefs(input.candidatePacket, input.composition, profileRuntimeRefs),
     ...bindingVersionRefs.map((pair) => pair.objectKey),
+    ...artifactContractVersionRefs.map((pair) => pair.objectKey),
   ]);
   const selectedLibraryRefSet = new Set(selectedLibraryRefs);
   const profileLibraryRefs = profileRuntimeRefs.filter((ref) => selectedLibraryRefSet.has(ref));
   const libraryObjectVersionRefs = mergeLibraryObjectVersionRefs(
     collectSelectedObjectVersionRefs(input.candidatePacket, input.composition, profileLibraryRefs),
-    bindingVersionRefs,
+    [...bindingVersionRefs, ...artifactContractVersionRefs],
   );
   const libraryVersionRefs = [...new Set(libraryObjectVersionRefs.map((pair) => pair.versionRef))].sort();
   const selectedTemplateRef = input.composition.selectedWorkflowTemplateRef;
@@ -327,7 +336,9 @@ function nodePromptSpecForTask(
       : {
           ...task.nodePromptSpec,
           requirements: linkedRequirements.map((requirement) => requirement.statement),
-          acceptanceCriteria: linkedRequirements.flatMap((requirement) => requirement.acceptanceCriteria),
+          acceptanceCriteria: linkedRequirements.flatMap((requirement) => (
+            requirement.acceptanceCriteria.map((criterion) => criterion.observableClaim)
+          )),
         };
   }
   const nodeType = classifyWorkflowCompositionTask(task);
@@ -343,7 +354,9 @@ function nodePromptSpecForTask(
     expectedOutputs: [...task.outputArtifactRefs],
     testCases: [],
     acceptanceCriteria: linkedRequirements.length > 0
-      ? linkedRequirements.flatMap((requirement) => requirement.acceptanceCriteria)
+      ? linkedRequirements.flatMap((requirement) => (
+          requirement.acceptanceCriteria.map((criterion) => criterion.observableClaim)
+        ))
       : task.outputArtifactRefs.length > 0
         ? task.outputArtifactRefs.map((artifactRef) => `Produce ${artifactRef} with clear evidence.`)
         : [`Complete ${task.id} and report evidence.`],
@@ -450,12 +463,20 @@ async function resolveRuntimeArtifactContracts(
   const contracts = new Map<string, ArtifactContract>();
   for (const artifactRef of uniqueSorted(plan.tasks.flatMap((task) => [...task.inputArtifactRefs, ...task.outputArtifactRefs]))) {
     const object = await findLibraryObjectByKey(db, artifactRef);
-    const state = object?.state ?? {};
+    if (!object) throw new Error(`missing Library artifact contract: ${artifactRef}`);
+    if (object.objectKind !== "artifact_contract") {
+      throw new Error(`Library artifact contract kind mismatch for ${artifactRef}: got ${object.objectKind}`);
+    }
+    if (object.status !== "approved") throw new Error(`Library artifact contract is not approved: ${artifactRef}`);
+    const libraryVersionRef = required(object.headVersionId, `missing immutable version for ${artifactRef}`);
+    const state = object.state;
     const contract: ArtifactContract = {
       id: normalizeArtifactRef(artifactRef),
       artifactType: optionalStringAt(state.artifactType) ?? normalizeArtifactRef(artifactRef),
       requiredFields: optionalStringArrayAt(state.requiredFields) ?? ["summary"],
       evidenceFields: optionalStringArrayAt(state.evidenceFields) ?? ["summary"],
+      libraryObjectRef: object.objectKey,
+      libraryVersionRef,
     };
     contracts.set(contract.id, contract);
   }
@@ -486,11 +507,9 @@ export async function compileGoalDesignArtifactContracts(
 ): Promise<ArtifactContract[]> {
   const contracts = new Map<string, ArtifactContract>();
   for (const binding of packageValue.validationBindings) {
-    for (const [index, artifactRef] of binding.artifactContractRefs.entries()) {
-      const versionRef = required(
-        binding.artifactContractVersionRefs[index],
-        `missing frozen artifact version for ${artifactRef}`,
-      );
+    for (const criterionBinding of binding.criterionBindings) {
+      const artifactRef = criterionBinding.artifactContractRef;
+      const versionRef = criterionBinding.artifactContractVersionRef;
       const object = await requireApprovedPinnedLibraryObject(db, artifactRef, versionRef, "artifact_contract");
       const state = object.state;
       contracts.set(normalizeArtifactRef(artifactRef), {
@@ -517,71 +536,75 @@ export async function compileGoalDesignEvaluatorPipelines(
 ): Promise<EvaluatorPipelineDefinition[]> {
   const pipelines = new Map<string, EvaluatorPipelineDefinition>();
   for (const binding of packageValue.validationBindings) {
+    for (const criterionBinding of binding.criterionBindings) {
       const object = await requireApprovedPinnedLibraryObject(
         db,
-        binding.evaluatorProfileRef,
-        binding.evaluatorProfileVersionRef,
+        criterionBinding.evaluatorProfileRef,
+        criterionBinding.evaluatorProfileVersionRef,
         "evaluator_profile",
       );
       const state = object.state;
-      const procedures = evaluatorProcedures(state.verificationProcedures, binding.evaluatorProfileRef);
-      const acceptanceCriteriaById = new Map(
-        binding.criterionIds.map((criterionId, index) => [criterionId, binding.acceptanceCriteria[index]]),
-      );
-      const pipelineId = normalizeEvaluatorRef(binding.evaluatorProfileRef);
+      const procedures = evaluatorProcedures(state.verificationProcedures, criterionBinding.evaluatorProfileRef);
+      const pipelineId = normalizeEvaluatorRef(criterionBinding.evaluatorProfileRef);
       const existing = pipelines.get(pipelineId);
-      const steps = binding.criterionChecks.map((check): EvaluatorStepDefinition => {
-        const procedure = required(
-          procedures.get(check.procedureRef),
-          `missing frozen verification procedure ${check.procedureRef} in ${binding.evaluatorProfileRef}`,
-        );
-        if (procedure.checkKind !== binding.verificationMode) {
-          throw new Error(`verification mode mismatch for ${check.procedureRef}: expected ${binding.verificationMode}, got ${procedure.checkKind}`);
+      if (existing && existing.libraryVersionRef !== criterionBinding.evaluatorProfileVersionRef) {
+        throw new Error(`conflicting frozen evaluator versions for ${criterionBinding.evaluatorProfileRef}`);
+      }
+      const procedure = required(
+        procedures.get(criterionBinding.procedureRef),
+        `missing frozen verification procedure ${criterionBinding.procedureRef} in ${criterionBinding.evaluatorProfileRef}`,
+      );
+      if (procedure.checkKind !== criterionBinding.verificationMode) {
+        throw new Error(`verification mode mismatch for ${criterionBinding.procedureRef}: expected ${criterionBinding.verificationMode}, got ${procedure.checkKind}`);
+      }
+      for (const evidenceKind of criterionBinding.expectedEvidenceKinds) {
+        if (!procedure.allowedEvidenceKinds.includes(evidenceKind)) {
+          throw new Error(`unsupported evidence kind ${evidenceKind} for ${criterionBinding.procedureRef}`);
         }
-        for (const evidenceKind of check.expectedEvidenceKinds) {
-          if (!procedure.allowedEvidenceKinds.includes(evidenceKind)) {
-            throw new Error(`unsupported evidence kind ${evidenceKind} for ${check.procedureRef}`);
-          }
-        }
-        return {
-          id: `${pipelineId}-${normalizeRuntimeId(check.criterionId)}`,
-          kind: evaluatorStepKind(binding.verificationMode),
-          required: true,
-          config: {
-            validationBindingId: binding.id,
-            requirementId: binding.requirementId,
-            criterionId: check.criterionId,
-            acceptanceCriterion: required(
-              acceptanceCriteriaById.get(check.criterionId),
-              `missing acceptance criterion for ${check.criterionId}`,
-            ),
-            procedureRef: check.procedureRef,
-            instruction: procedure.instruction,
-            verificationMode: binding.verificationMode,
-            expectedEvidenceKinds: check.expectedEvidenceKinds,
-            allowedEvidenceKinds: procedure.allowedEvidenceKinds,
-            requiredInputs: stringArrayAt(state.requiredInputs, `${binding.evaluatorProfileRef}.requiredInputs`),
-            resultSchemaRef: stringAt(state.resultSchemaRef, `${binding.evaluatorProfileRef}.resultSchemaRef`),
-            independence: binding.independence,
-            artifactContractRefs: binding.artifactContractRefs,
-            artifactContractVersionRefs: binding.artifactContractVersionRefs,
-            failureClassifications: binding.failureClassifications,
-          },
-        };
-      });
+      }
+      const step: EvaluatorStepDefinition = {
+        id: `${pipelineId}-${normalizeRuntimeId(criterionBinding.criterionContract.id)}-${criterionBinding.verificationMode}`,
+        kind: evaluatorStepKind(criterionBinding.verificationMode),
+        required: criterionBinding.criterionContract.blocking,
+        config: {
+          validationBindingId: binding.id,
+          requirementId: binding.requirementId,
+          criterionId: criterionBinding.criterionContract.id,
+          acceptanceCriterion: criterionBinding.criterionContract.observableClaim,
+          procedureRef: criterionBinding.procedureRef,
+          procedureVersionRef: criterionBinding.procedureVersionRef ?? criterionBinding.evaluatorProfileVersionRef,
+          ...(criterionBinding.oracleRef ? {
+            oracleRef: criterionBinding.oracleRef,
+            oracleVersionRef: criterionBinding.oracleVersionRef,
+          } : {}),
+          ...(criterionBinding.typedParameters ? { typedParameters: criterionBinding.typedParameters } : {}),
+          ...(criterionBinding.parameterSchema ? { parameterSchema: criterionBinding.parameterSchema } : {}),
+          instruction: procedure.instruction,
+          verificationMode: criterionBinding.verificationMode,
+          expectedEvidenceKinds: criterionBinding.expectedEvidenceKinds,
+          allowedEvidenceKinds: procedure.allowedEvidenceKinds,
+          requiredInputs: stringArrayAt(state.requiredInputs, `${criterionBinding.evaluatorProfileRef}.requiredInputs`),
+          resultSchemaRef: stringAt(state.resultSchemaRef, `${criterionBinding.evaluatorProfileRef}.resultSchemaRef`),
+          independence: criterionBinding.independence,
+          artifactContractRefs: [criterionBinding.artifactContractRef],
+          artifactContractVersionRefs: [criterionBinding.artifactContractVersionRef],
+          failureClassifications: criterionBinding.failureClassifications,
+        },
+      };
       pipelines.set(pipelineId, {
         id: pipelineId,
-        evaluators: [...(existing?.evaluators ?? []), ...steps],
-        libraryObjectRef: binding.evaluatorProfileRef,
-        libraryVersionRef: binding.evaluatorProfileVersionRef,
-        resultSchemaRef: stringAt(state.resultSchemaRef, `${binding.evaluatorProfileRef}.resultSchemaRef`),
+        evaluators: [...(existing?.evaluators ?? []), step],
+        libraryObjectRef: criterionBinding.evaluatorProfileRef,
+        libraryVersionRef: criterionBinding.evaluatorProfileVersionRef,
+        resultSchemaRef: stringAt(state.resultSchemaRef, `${criterionBinding.evaluatorProfileRef}.resultSchemaRef`),
         artifactContractRefs: uniqueSorted([
           ...(existing?.artifactContractRefs ?? []),
-          ...binding.artifactContractRefs.map(normalizeArtifactRef),
+          normalizeArtifactRef(criterionBinding.artifactContractRef),
         ]),
         validationBindingIds: uniqueSorted([...(existing?.validationBindingIds ?? []), binding.id]),
         onFailure: { defaultStrategy: "request-workflow-revision" },
       });
+    }
   }
   return [...pipelines.values()].sort((left, right) => left.id.localeCompare(right.id));
 }
@@ -608,19 +631,44 @@ function evaluatorProcedures(value: unknown, evaluatorRef: string): Map<string, 
   checkKind: string;
   instruction: string;
   allowedEvidenceKinds: string[];
+  procedureVersionRef?: string;
+  oracleRef?: string;
+  oracleVersionRef?: string;
+  parameterSchema?: Record<string, unknown>;
 }> {
   if (!Array.isArray(value) || value.length === 0) {
     throw new Error(`missing executable verification procedures for ${evaluatorRef}`);
   }
-  const result = new Map<string, { checkKind: string; instruction: string; allowedEvidenceKinds: string[] }>();
+  const result = new Map<string, {
+    checkKind: string;
+    instruction: string;
+    allowedEvidenceKinds: string[];
+    procedureVersionRef?: string;
+    oracleRef?: string;
+    oracleVersionRef?: string;
+    parameterSchema?: Record<string, unknown>;
+  }>();
   for (const [index, raw] of value.entries()) {
     const procedure = required(isRecord(raw) ? raw : null, `invalid verification procedure ${evaluatorRef}.${index}`);
     const id = stringAt(procedure.id, `${evaluatorRef}.verificationProcedures.${index}.id`);
     if (result.has(id)) throw new Error(`duplicate verification procedure ${id} in ${evaluatorRef}`);
+    const procedureVersionRef = typeof procedure.procedureVersionRef === "string" && procedure.procedureVersionRef.trim().length > 0
+      ? procedure.procedureVersionRef.trim()
+      : undefined;
+    const oracleRef = typeof procedure.oracleRef === "string" && procedure.oracleRef.trim().length > 0
+      ? procedure.oracleRef.trim()
+      : undefined;
+    const oracleVersionRef = typeof procedure.oracleVersionRef === "string" && procedure.oracleVersionRef.trim().length > 0
+      ? procedure.oracleVersionRef.trim()
+      : undefined;
     result.set(id, {
       checkKind: stringAt(procedure.checkKind, `${evaluatorRef}.verificationProcedures.${index}.checkKind`),
       instruction: stringAt(procedure.instruction, `${evaluatorRef}.verificationProcedures.${index}.instruction`),
       allowedEvidenceKinds: stringArrayAt(procedure.allowedEvidenceKinds, `${evaluatorRef}.verificationProcedures.${index}.allowedEvidenceKinds`),
+      ...(procedureVersionRef ? { procedureVersionRef } : {}),
+      ...(oracleRef ? { oracleRef } : {}),
+      ...(oracleVersionRef ? { oracleVersionRef } : {}),
+      ...(isRecord(procedure.parameterSchema) ? { parameterSchema: procedure.parameterSchema } : {}),
     });
   }
   return result;
@@ -640,15 +688,17 @@ function mergeById<T extends { id: string }>(fallback: T[], preferred: T[]): T[]
   return [...valuesById.values()].sort((left, right) => left.id.localeCompare(right.id));
 }
 
-function goalDesignBindingVersionRefs(packageValue: GoalDesignPackage | undefined): LibraryObjectVersionRef[] {
-  if (packageValue?.schemaVersion !== "southstar.goal_design_package.v2") return [];
+function goalDesignBindingVersionRefs(packageValue: GoalDesignPackage): LibraryObjectVersionRef[] {
   const pairs: LibraryObjectVersionRef[] = [];
   for (const binding of packageValue.validationBindings) {
-    pairs.push({ objectKey: binding.evaluatorProfileRef, versionRef: binding.evaluatorProfileVersionRef });
-    for (const [index, objectKey] of binding.artifactContractRefs.entries()) {
+    for (const criterionBinding of binding.criterionBindings) {
       pairs.push({
-        objectKey,
-        versionRef: required(binding.artifactContractVersionRefs[index], `missing frozen artifact version for ${objectKey}`),
+        objectKey: criterionBinding.evaluatorProfileRef,
+        versionRef: criterionBinding.evaluatorProfileVersionRef,
+      });
+      pairs.push({
+        objectKey: criterionBinding.artifactContractRef,
+        versionRef: criterionBinding.artifactContractVersionRef,
       });
     }
   }

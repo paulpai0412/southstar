@@ -34,6 +34,17 @@ test("UI contract rejects unknown elements, states, actions and criteria", () =>
   assert.ok(issues.some((entry) => entry.code === "unknown_flow_action"));
 });
 
+test("UI contract freezes the bound Criterion version and rejects stale bindings", () => {
+  const draft = knownRequirementDraft();
+  const contract = finalizeUiInteractionContract(knownContractInput(draft), draft);
+  assert.equal(contract.criterionBindings[0]!.criterionVersion, 1);
+
+  const revisedDraft = structuredClone(draft);
+  revisedDraft.requirements[0]!.acceptanceCriteria[0]!.version = 2;
+  const issues = validateUiInteractionContract(contract, revisedDraft);
+  assert.ok(issues.some((entry) => entry.code === "stale_criterion_binding"));
+});
+
 test("UI contract revisions preserve identity and lineage and confirmation is hashed", () => {
   const draft = knownRequirementDraft();
   const initial = finalizeUiInteractionContract(knownContractInput(draft), draft);
@@ -84,7 +95,10 @@ function knownRequirementDraft() {
       userVisibleBehaviors: ["The answer is hidden until requested."],
       businessRules: [],
       acceptanceCriteria: [{
-        statement: "Activating reveal changes the question state to the answer state.",
+        observableClaim: "Activating reveal changes the question state to the answer state.",
+        blocking: true,
+        verificationIntent: ["Exercise reveal and inspect the resulting answer state."],
+        requiredAssurance: ["browser_interaction"],
         evidenceIntent: ["screenshot", "url"],
       }],
       expectedOutcomeArtifacts: [{ description: "Review interaction" }],

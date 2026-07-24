@@ -10,7 +10,7 @@ import {
 } from "../../src/v2/ui-api/planner-draft-lineage.ts";
 
 const goalContract = {
-  schemaVersion: "southstar.goal_contract.v1",
+  schemaVersion: "southstar.goal_contract.v2",
   originalPrompt: "Create an article",
   workspace: { cwd: "/workspace/article" },
   domain: "software",

@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { createRuntimeServerClient } from "../../src/v2/server/client.ts";
 import { handleRuntimeRoute } from "../../src/v2/server/routes.ts";
 import { goalContractHash, type GoalContractV1 } from "../../src/v2/orchestration/goal-contract.ts";
@@ -81,7 +82,7 @@ test("runtime route patches planner draft task profile override", async () => {
   try {
     const draftId = "draft-profile-override-route";
     const goalContract: GoalContractV1 = {
-      schemaVersion: "southstar.goal_contract.v1",
+      schemaVersion: "southstar.goal_contract.v2",
       originalPrompt: "profile override route",
       promptHash: "",
       revision: 1,
@@ -93,7 +94,14 @@ test("runtime route patches planner draft task profile override", async () => {
       requirements: [{
         id: "req-profile-override-route",
         statement: "The route persists an explicit profile override.",
-        acceptanceCriteria: ["The override is returned by the route."],
+        acceptanceCriteria: [{
+          id: "criterion-profile-override-route",
+          version: 1,
+          observableClaim: "The override is returned by the route.",
+          blocking: true,
+          verificationIntent: ["Read the route response and compare the persisted override."],
+          requiredAssurance: ["deterministic"],
+        }],
         blocking: true,
         source: "explicit",
         expectedArtifacts: [],
@@ -106,7 +114,7 @@ test("runtime route patches planner draft task profile override", async () => {
       riskTags: [],
       requestedSideEffects: [],
     };
-    goalContract.promptHash = goalContractHash(goalContract);
+    goalContract.promptHash = createHash("sha256").update(goalContract.originalPrompt).digest("hex");
     const goalDesignPackage = canonicalGoalDesignPackageFixture(goalContract);
     await upsertRuntimeResourcePg(db, {
       resourceType: "planner_draft",

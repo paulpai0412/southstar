@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { handleRuntimeRoute } from "../../src/v2/server/routes.ts";
 import { startRunSchedulingPg } from "../../src/v2/server/run-execution-controller.ts";
-import { createWorkflowRunPg, listHistoryForRunPg, listResourcesPg } from "../../src/v2/stores/postgres-runtime-store.ts";
+import { createWorkflowRunPg, createWorkflowTaskPg, listHistoryForRunPg, listResourcesPg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 
 test("startRunSchedulingPg moves a created run to scheduling without executor side effects", async () => {
@@ -54,6 +54,41 @@ test("startRunSchedulingPg is idempotent for an already scheduling run", async (
     });
     const events = await listHistoryForRunPg(db, "run-thin-execute-idempotent");
     assert.equal(events.filter((event) => event.eventType === "run.scheduling_started").length, 1);
+  } finally {
+    await db.close();
+  }
+});
+
+test("startRunSchedulingPg reopens an unsatisfied terminal run with a pending recovery task", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedRun(db, { id: "run-thin-execute-recovery", status: "completed" });
+    await db.query(
+      "update southstar.workflow_runs set completed_at = $1 where id = $2",
+      ["2026-06-21T15:05:00.000Z", "run-thin-execute-recovery"],
+    );
+    await createWorkflowTaskPg(db, {
+      id: "task-recovery",
+      runId: "run-thin-execute-recovery",
+      taskKey: "task-recovery",
+      status: "pending",
+      sortOrder: 0,
+      dependsOn: [],
+    });
+
+    const result = await startRunSchedulingPg(db, { runId: "run-thin-execute-recovery" });
+
+    assert.deepEqual(result, {
+      runId: "run-thin-execute-recovery",
+      status: "scheduling",
+      schedulerWakeRequested: true,
+    });
+    const run = await db.one<{ status: string; completed_at: Date | null }>(
+      "select status, completed_at from southstar.workflow_runs where id = $1",
+      ["run-thin-execute-recovery"],
+    );
+    assert.equal(run.status, "scheduling");
+    assert.equal(run.completed_at, null);
   } finally {
     await db.close();
   }

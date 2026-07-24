@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { SouthstarDb } from "../db/postgres.ts";
 import { contentHashForPayload } from "../design-library/canonical-json.ts";
 import {
@@ -5,13 +6,13 @@ import {
   insertRuntimeResourceIfAbsentPg,
 } from "../stores/postgres-runtime-store.ts";
 import {
-  finalizeGoalDesignPackageV2,
-  goalDesignPackageV2FromUnknown,
+  finalizeGoalDesignPackageV3,
+  goalDesignPackageV3FromUnknown,
   loadGoalDesignSkillPg,
-  validateGoalDesignPackageV2,
+  validateGoalDesignPackageV3,
   type GoalDesignPackage,
   type GoalDesignMode,
-  type GoalDesignPackageV2,
+  type GoalDesignPackageV3,
   type GoalSliceDesigner,
   type GoalSliceV1,
   type WorkflowTemplatePolicyV1,
@@ -53,7 +54,11 @@ import {
 } from "./ui-interaction-contract.ts";
 import type { SubmitGoalContext } from "./run-goal-service.ts";
 import { discoverGoalWorkspace } from "./goal-workspace-discovery.ts";
-import type { GoalValidationResolutionV1 } from "../design-library/types.ts";
+import type {
+  AssuranceRiskAcceptanceV1,
+  GoalValidationResolutionV2,
+  RequirementValidationMode,
+} from "../design-library/types.ts";
 import type {
   PlannerDraftPersistence,
   PlannerDraftProgressListener,
@@ -129,6 +134,8 @@ export type GoalRequirementReviewResult = {
     validationBindings: boolean;
     slicePlan: boolean;
     dagDraft: boolean;
+    evidence: boolean;
+    evaluation: boolean;
   };
   validationGaps?: unknown[];
 };
@@ -341,7 +348,7 @@ export async function createStagedGoalSliceRevisionPg(
 function stagedGoalSliceRevisionResult(input: {
   draftId: string;
   parentDraftId: string;
-  packageValue: GoalDesignPackageV2;
+  packageValue: GoalDesignPackageV3;
   requirementDraft: GoalRequirementDraftV1;
   goalContract: GoalContractV1;
   goalContractHash: string;
@@ -393,7 +400,7 @@ export type GoalDesignChatRevisionResult =
   | {
       kind: "revision";
       draftStatus: "ready_for_review";
-      package: GoalDesignPackageV2;
+      package: GoalDesignPackageV3;
       summary: string;
       changedSliceIds: string[];
     }
@@ -758,10 +765,9 @@ export async function reviseGoalRequirementPg(
       throw new Error(`goal_requirement_draft_stale: ${input.draftId}`);
     }
     const phase = goalDesignPhaseFromPayload(payload) ?? "requirements_review";
-    if (phase === "composing" || phase === "dag_validated") {
+    if (phase === "composing") {
       throw new Error(`goal_requirements_frozen: ${input.draftId}:${phase}`);
     }
-    await assertNoMaterializedGoalRequirementRunTx(tx, input.draftId);
     const operation = toRequirementRevisionOperation(input);
     const next = reviseGoalRequirementDraft(current, operation);
     await persistGoalRequirementDraftRevisionPg(tx, { draftId: input.draftId, draft: next, actor: input.actor });
@@ -917,13 +923,16 @@ export async function confirmGoalRequirementsPg(
     if (!readiness.confirmable) throw new Error(`goal_requirement_not_confirmable: ${JSON.stringify(readiness.validationIssues)}`);
   }
   const preflightContract = storedGoalContract(preflightPayload.goalContract);
+  const preflightContractNeedsReconfirmation = preflightContract
+    && ["validation_resolving", "library_review", "validation_ready"].includes(preflightPhase)
+    && !goalContractMatchesRequirementDraft(preflightContract, preflightDraft);
   if (!preflightContract || !["validation_resolving", "library_review", "validation_ready"].includes(preflightPhase)) {
     if (preflightPhase !== "requirements_review" && preflightPhase !== "requirements_confirmed") {
       throw new Error(`goal requirements cannot be confirmed in phase ${preflightPhase}: ${input.draftId}`);
     }
   }
   const preflightMetadata = preflightContract && ["validation_resolving", "library_review", "validation_ready"].includes(preflightPhase)
-    ? undefined
+    ? (preflightContractNeedsReconfirmation ? contractMetadata(preflightContract) : undefined)
     : await resolveGoalRequirementContractMetadata(db, preflightDraft, { ...input, draftId: input.draftId });
 
   return await db.tx(async (tx) => {
@@ -945,7 +954,10 @@ export async function confirmGoalRequirementsPg(
     const phase = goalDesignPhaseFromPayload(payload) ?? "requirements_review";
     const uiInteractionContracts = uiInteractionContractsFromStored(payload.uiInteractionContracts, current);
     const existingContract = storedGoalContract(payload.goalContract);
-    if (existingContract && ["validation_resolving", "library_review", "validation_ready"].includes(phase)) {
+    const existingContractNeedsReconfirmation = existingContract
+      && ["validation_resolving", "library_review", "validation_ready"].includes(phase)
+      && !goalContractMatchesRequirementDraft(existingContract, current);
+    if (existingContract && ["validation_resolving", "library_review", "validation_ready"].includes(phase) && !existingContractNeedsReconfirmation) {
       return {
         draftId: input.draftId,
         goalRequirementDraftId: input.draftId,
@@ -962,7 +974,8 @@ export async function confirmGoalRequirementsPg(
         ...(Array.isArray(payload.validationGaps) ? { validationGaps: payload.validationGaps } : {}),
       };
     }
-    if (phase !== "requirements_review" && phase !== "requirements_confirmed") {
+    if (phase !== "requirements_review" && phase !== "requirements_confirmed"
+      && !(existingContractNeedsReconfirmation && ["validation_resolving", "library_review", "validation_ready"].includes(phase))) {
       throw new Error(`goal requirements cannot be confirmed in phase ${phase}: ${input.draftId}`);
     }
     if (phase === "requirements_review") {
@@ -975,8 +988,30 @@ export async function confirmGoalRequirementsPg(
       throw new Error(`goal requirements confirmation metadata was superseded: ${input.draftId}`);
     }
     const metadata = preflightMetadata;
-    const contract = confirmGoalRequirementDraft(current, metadata);
+    const previousConfirmation = await tx.maybeOne<{ payload_json: unknown }>(
+      `select payload_json
+         from southstar.runtime_resources
+        where resource_type = 'goal_contract_confirmation' and resource_key = $1
+        for update`,
+      [input.draftId],
+    );
+    const previousContract = storedGoalContract(asRecord(previousConfirmation?.payload_json).goalContract);
+    const contract = confirmGoalRequirementDraft(current, metadata, previousContract);
     const contractHash = goalContractHash(contract);
+    const criterionAssignments = current.requirements.flatMap((requirement) => {
+      const confirmedRequirement = contract.requirements.find((entry) => entry.id === requirement.id);
+      if (!confirmedRequirement) throw new Error(`confirmed requirement identity missing: ${requirement.id}`);
+      return requirement.acceptanceCriteria.map((criterion) => {
+        const confirmedCriterion = confirmedRequirement.acceptanceCriteria.find((entry) => entry.id === criterion.id);
+        if (!confirmedCriterion) throw new Error(`confirmed Criterion identity missing: ${criterion.id}`);
+        return {
+          requirementId: requirement.id,
+          proposedCriterionId: criterion.id,
+          criterionId: confirmedCriterion.id,
+          criterionVersion: confirmedCriterion.version,
+        };
+      });
+    });
     const readiness = goalRequirementReviewReadiness(current, "validation_resolving", uiInteractionContracts);
     await upsertRuntimeResourcePg(tx, {
       resourceType: "goal_contract_confirmation",
@@ -993,6 +1028,7 @@ export async function confirmGoalRequirementsPg(
         validationIssues: readiness.validationIssues,
         goalContract: contract,
         goalContractHash: contractHash,
+        criterionAssignments,
         goalDesignPhase: "validation_resolving" satisfies GoalDesignPhase,
       },
       summary: {
@@ -1017,6 +1053,7 @@ export async function confirmGoalRequirementsPg(
         actor: input.actor ?? "user",
         confirmedAt: new Date().toISOString(),
         draftHash: current.draftHash,
+        criterionAssignments,
       },
     };
     const updatedSummary = {
@@ -1178,9 +1215,9 @@ export async function designAndPersistGoalSlicesPg(
 
 export async function persistGoalDesignPackageRevisionPg(
   db: SouthstarDb,
-  input: { draftId: string; package: GoalDesignPackageV2 },
+  input: { draftId: string; package: GoalDesignPackageV3 },
 ): Promise<void> {
-  if (input.package.schemaVersion !== "southstar.goal_design_package.v2") {
+  if (input.package.schemaVersion !== "southstar.goal_design_package.v3") {
     throw new Error(`unsupported Goal Design package schema: ${String(input.package.schemaVersion)}`);
   }
   const resourceKey = `${input.draftId}:revision:${input.package.revision}`;
@@ -1195,7 +1232,7 @@ export async function persistGoalDesignPackageRevisionPg(
     }
     return;
   }
-  const issues = validateGoalDesignPackageV2(input.package);
+  const issues = validateGoalDesignPackageV3(input.package);
   if (issues.length > 0) {
     throw new Error(`invalid Goal Design package: ${issues.map((issue) => `${issue.code} at ${issue.path}`).join("; ")}`);
   }
@@ -1226,15 +1263,15 @@ export async function persistGoalDesignPackageRevisionPg(
 export async function loadCurrentGoalDesignPackagePg(
   db: SouthstarDb,
   draftId: string,
-): Promise<GoalDesignPackageV2> {
+): Promise<GoalDesignPackageV3> {
   return await loadCanonicalGoalDesignPackagePg(db, draftId);
 }
 
 async function loadGoalDesignPackageForChatRevisionPg(
   db: SouthstarDb,
   draftId: string,
-): Promise<GoalDesignPackageV2> {
-  const transactionResult: CanonicalDraftTransactionResult<GoalDesignPackageV2> = await db.tx(async (tx) => {
+): Promise<GoalDesignPackageV3> {
+  const transactionResult: CanonicalDraftTransactionResult<GoalDesignPackageV3> = await db.tx(async (tx) => {
     const draft = await tx.one<{ payload_json: Record<string, unknown> }>(
       `select payload_json
          from southstar.runtime_resources
@@ -1271,7 +1308,7 @@ export async function hasCanonicalGoalDesignPackagePg(
 export async function reviseGoalSlicePg(
   db: SouthstarDb,
   input: { draftId: string; sliceId: string; expectedPackageHash: string; patch: GoalSlicePatchV1 },
-): Promise<GoalDesignPackageV2> {
+): Promise<GoalDesignPackageV3> {
   return await persistValidatedGoalDesignRevisionPg(db, {
     draftId: input.draftId,
     expectedPackageHash: input.expectedPackageHash,
@@ -1282,13 +1319,14 @@ export async function reviseGoalSlicePg(
       const slices = current.slicePlan.slices.map((slice, index) => (
         index === sliceIndex ? { ...slice, ...input.patch } : slice
       ));
-      return finalizeGoalDesignPackageV2({
-        schemaVersion: "southstar.goal_design_package.v2",
+      return finalizeGoalDesignPackageV3({
+        schemaVersion: "southstar.goal_design_package.v3",
         revision: nextRevision,
         parentRevision: current.revision,
         goalContract: current.goalContract,
         requirementDraftHash: current.requirementDraftHash,
         validationBindings: current.validationBindings,
+        ...(current.assuranceRiskAcceptances ? { assuranceRiskAcceptances: current.assuranceRiskAcceptances } : {}),
         slicePlan: { ...current.slicePlan, revision: nextRevision, slices },
         compositionStrategy: current.compositionStrategy,
         templatePolicy: current.templatePolicy,
@@ -1304,19 +1342,20 @@ export async function reviseGoalSlicePg(
 export async function reviseGoalTemplatePolicyPg(
   db: SouthstarDb,
   input: { draftId: string; expectedPackageHash: string; templatePolicy: WorkflowTemplatePolicyV1 },
-): Promise<GoalDesignPackageV2> {
+): Promise<GoalDesignPackageV3> {
   return await persistValidatedGoalDesignRevisionPg(db, {
     draftId: input.draftId,
     expectedPackageHash: input.expectedPackageHash,
     buildNext(current) {
       const nextRevision = current.revision + 1;
-      return finalizeGoalDesignPackageV2({
-        schemaVersion: "southstar.goal_design_package.v2",
+      return finalizeGoalDesignPackageV3({
+        schemaVersion: "southstar.goal_design_package.v3",
         revision: nextRevision,
         parentRevision: current.revision,
         goalContract: current.goalContract,
         requirementDraftHash: current.requirementDraftHash,
         validationBindings: current.validationBindings,
+        ...(current.assuranceRiskAcceptances ? { assuranceRiskAcceptances: current.assuranceRiskAcceptances } : {}),
         slicePlan: { ...current.slicePlan, revision: nextRevision },
         compositionStrategy: current.compositionStrategy,
         templatePolicy: input.templatePolicy,
@@ -1325,6 +1364,103 @@ export async function reviseGoalTemplatePolicyPg(
         workspaceDiscoveryHash: current.workspaceDiscoveryHash,
         mode: current.mode,
       });
+    },
+  });
+}
+
+export async function acceptAssuranceRiskPg(
+  db: SouthstarDb,
+  input: {
+    draftId: string;
+    expectedPackageHash: string;
+    criterionId: string;
+    criterionVersion: number;
+    omittedAssurance: RequirementValidationMode[];
+    reason: string;
+    approvedBy: string;
+  },
+): Promise<GoalDesignPackageV3> {
+  const approvalId = `assurance-approval-${randomUUID()}`;
+  const auditEventRef = `assurance-risk-acceptance-audit-${randomUUID()}`;
+  const acceptance: AssuranceRiskAcceptanceV1 = {
+    schemaVersion: "southstar.assurance_risk_acceptance.v1",
+    id: `assurance-risk-acceptance-${randomUUID()}`,
+    criterionId: input.criterionId,
+    criterionVersion: input.criterionVersion,
+    omittedAssurance: [...input.omittedAssurance],
+    reason: input.reason,
+    approvalId,
+    approvedBy: input.approvedBy,
+    approvedAt: new Date().toISOString(),
+    auditEventRef,
+  };
+  return await persistValidatedGoalDesignRevisionPg(db, {
+    draftId: input.draftId,
+    expectedPackageHash: input.expectedPackageHash,
+    buildNext(current) {
+      const criterion = current.goalContract.requirements
+        .flatMap((requirement) => requirement.acceptanceCriteria)
+        .find((candidate) => candidate.id === input.criterionId && candidate.version === input.criterionVersion);
+      if (!criterion) throw new Error(`assurance_risk_criterion_not_found: ${input.criterionId}@${input.criterionVersion}`);
+      if (input.omittedAssurance.length !== 1 || new Set(input.omittedAssurance).size !== input.omittedAssurance.length) {
+        throw new Error("assurance_risk_omitted_assurance must contain exactly one assurance class");
+      }
+      if (criterion.requiredAssurance.length !== 1 || criterion.requiredAssurance[0] !== input.omittedAssurance[0]) {
+        throw new Error(`assurance_risk_omitted_assurance is not required by Criterion ${input.criterionId}`);
+      }
+      const existing = current.assuranceRiskAcceptances ?? [];
+      if (existing.some((candidate) => candidate.criterionId === input.criterionId
+        && candidate.criterionVersion === input.criterionVersion
+        && candidate.omittedAssurance.some((mode) => input.omittedAssurance.includes(mode)))) {
+        throw new Error(`assurance_risk_acceptance_already_exists: ${input.criterionId}`);
+      }
+      const validationBindings = current.validationBindings
+        .map((binding) => ({
+          ...binding,
+          criterionBindings: binding.criterionBindings.filter((child) => !(
+            child.criterionContract.id === input.criterionId
+            && child.criterionContract.version === input.criterionVersion
+            && input.omittedAssurance.includes(child.verificationMode)
+          )),
+        }))
+        .filter((binding) => binding.criterionBindings.length > 0);
+      return finalizeGoalDesignPackageV3({
+        schemaVersion: "southstar.goal_design_package.v3",
+        revision: current.revision + 1,
+        parentRevision: current.revision,
+        goalContract: current.goalContract,
+        requirementDraftHash: current.requirementDraftHash,
+        validationBindings,
+        assuranceRiskAcceptances: [...existing, acceptance],
+        slicePlan: { ...current.slicePlan, revision: current.revision + 1 },
+        compositionStrategy: current.compositionStrategy,
+        templatePolicy: current.templatePolicy,
+        goalDesignSkillRef: current.goalDesignSkillRef,
+        goalDesignSkillVersionRef: current.goalDesignSkillVersionRef,
+        workspaceDiscoveryHash: current.workspaceDiscoveryHash,
+        mode: current.mode,
+      });
+    },
+    persistAudit(tx, _current, next) {
+      return upsertRuntimeResourcePg(tx, {
+        id: auditEventRef,
+        resourceType: "assurance_risk_acceptance_audit",
+        resourceKey: auditEventRef,
+        scope: "goal-design",
+        status: "approved",
+        title: `Assurance risk acceptance for ${input.criterionId}`,
+        payload: {
+          acceptance,
+          previousPackageHash: input.expectedPackageHash,
+          packageHash: next.packageHash,
+        },
+        summary: {
+          criterionId: input.criterionId,
+          omittedAssurance: input.omittedAssurance,
+          approvedBy: input.approvedBy,
+          approvalId,
+        },
+      }).then(() => undefined);
     },
   });
 }
@@ -1343,10 +1479,10 @@ export async function reviseGoalDesignFromChatPg(
   if (current.packageHash !== input.expectedPackageHash) {
     throw new Error(`goal_design_package_stale: ${input.draftId}`);
   }
-  return await reviseGoalDesignPackageV2FromChatPg(context, input, current);
+  return await reviseGoalDesignPackageV3FromChatPg(context, input, current);
 }
 
-async function reviseGoalDesignPackageV2FromChatPg(
+async function reviseGoalDesignPackageV3FromChatPg(
   context: SubmitGoalContext,
   input: {
     draftId: string;
@@ -1355,10 +1491,10 @@ async function reviseGoalDesignPackageV2FromChatPg(
     selectedSliceId?: string;
     onDelta?: (text: string) => void;
   },
-  current: GoalDesignPackageV2,
+  current: GoalDesignPackageV3,
 ): Promise<GoalDesignChatRevisionResult> {
   const designer = context.goalSliceDesigner;
-  if (!designer) throw new Error("Goal Design chat revision for Package V2 requires the staged Slice designer");
+  if (!designer) throw new Error("Goal Design chat revision for Package V3 requires the staged Slice designer");
   const row = await context.db.maybeOne<PlannerDraftResourceRow>(
     `select id, resource_key, run_id, task_id, session_id, scope, status, title,
             payload_json, summary_json, metrics_json, expires_at
@@ -1393,17 +1529,18 @@ async function reviseGoalDesignPackageV2FromChatPg(
     draftId: input.draftId,
     expectedPackageHash: input.expectedPackageHash,
     buildNext(lockedCurrent) {
-      if (lockedCurrent.schemaVersion !== "southstar.goal_design_package.v2") {
+      if (lockedCurrent.schemaVersion !== "southstar.goal_design_package.v3") {
         throw new Error(`goal_design_package_stale: ${input.draftId}`);
       }
       const nextRevision = lockedCurrent.revision + 1;
-      return finalizeGoalDesignPackageV2({
-        schemaVersion: "southstar.goal_design_package.v2",
+      return finalizeGoalDesignPackageV3({
+        schemaVersion: "southstar.goal_design_package.v3",
         revision: nextRevision,
         parentRevision: lockedCurrent.revision,
         goalContract: lockedCurrent.goalContract,
         requirementDraftHash: lockedCurrent.requirementDraftHash,
         validationBindings: lockedCurrent.validationBindings,
+        ...(lockedCurrent.assuranceRiskAcceptances ? { assuranceRiskAcceptances: lockedCurrent.assuranceRiskAcceptances } : {}),
         slicePlan: {
           schemaVersion: "southstar.goal_slice_plan.v1",
           goalContractHash: "host-filled",
@@ -1434,6 +1571,7 @@ async function persistValidatedGoalDesignRevisionPg(
     draftId: string;
     expectedPackageHash: string;
     buildNext: (current: GoalDesignPackage) => GoalDesignPackage;
+    persistAudit?: (db: SouthstarDb, current: GoalDesignPackage, next: GoalDesignPackage) => Promise<void>;
   },
 ): Promise<GoalDesignPackage> {
   const transactionResult: CanonicalDraftTransactionResult<GoalDesignPackage> = await db.tx(async (tx) => {
@@ -1465,11 +1603,12 @@ async function persistValidatedGoalDesignRevisionPg(
     }
     await assertNoMaterializedGoalDesignRunTx(tx, input.draftId, current.packageHash);
     const next = input.buildNext(current);
-    const issues = validateGoalDesignPackageV2(next);
+    const issues = validateGoalDesignPackageV3(next);
     if (issues.length > 0) {
       throw new Error(`invalid Goal Design package: ${issues.map((issue) => `${issue.code} at ${issue.path}`).join("; ")}`);
     }
     await persistGoalDesignPackageRevisionPg(tx, { draftId: input.draftId, package: next });
+    if (input.persistAudit) await input.persistAudit(tx, current, next);
     await markPriorGoalDesignResourcesStaleTx(tx, {
       draftId: input.draftId,
       oldPackageHash: current.packageHash,
@@ -1666,15 +1805,29 @@ function isRequirementRevisionOperation(
 
 function withoutGoalRequirementDerived(payload: Record<string, unknown>): Record<string, unknown> {
   const {
+    candidatePacket: _candidatePacket,
+    composition: _composition,
+    compositionPlan: _compositionPlan,
     goalContract: _goalContract,
     goalContractHash: _goalContractHash,
     goalDesignPackage: _goalDesignPackage,
     goalDesignPackageHash: _goalDesignPackageHash,
+    goalExecutionSet: _goalExecutionSet,
     validationBindings: _validationBindings,
     goalRequirementCoverage: _goalRequirementCoverage,
+    goalRequirementCoverageHash: _goalRequirementCoverageHash,
     requirementValidationBindings: _requirementValidationBindings,
     goalValidationResolution: _goalValidationResolution,
     validationGaps: _validationGaps,
+    orchestrationSnapshot: _orchestrationSnapshot,
+    plannerTrace: _plannerTrace,
+    repairAttempts: _repairAttempts,
+    requirementSpec: _requirementSpec,
+    slicePlan: _slicePlan,
+    workflow: _workflow,
+    workflowManifest: _workflowManifest,
+    workflowManifestHash: _workflowManifestHash,
+    executionProjection: _executionProjection,
     libraryImportDraftId: _libraryImportDraftId,
     uiInteractionContracts: _uiInteractionContracts,
     uiInteractionContractHashes: _uiInteractionContractHashes,
@@ -1743,14 +1896,10 @@ function rebaseUiInteractionContractForDraft(
   const criteria = requirements.flatMap((requirement) => requirement?.acceptanceCriteria ?? []);
   if (criteria.length !== contract.criterionBindings.length) return undefined;
   const currentCriterionIds = new Set(criteria.map((criterion) => criterion.id));
-  const criterionBindings = contract.criterionBindings.map((binding, index) => (
-    currentCriterionIds.has(binding.criterionId)
-      ? binding
-      : { ...binding, criterionId: criteria[index]!.id }
-  ));
+  if (contract.criterionBindings.some((binding) => !currentCriterionIds.has(binding.criterionId))) return undefined;
+  const criterionBindings = contract.criterionBindings.map(({ criterionVersion: _criterionVersion, ...binding }) => binding);
   const boundCriterionIds = new Set(criterionBindings.map((binding) => binding.criterionId));
   if (boundCriterionIds.size !== criteria.length || criteria.some((criterion) => !boundCriterionIds.has(criterion.id))) return undefined;
-  // ponytail: criterion ids are rebound by stable binding order; count mismatch fails closed instead of guessing.
   try {
     return finalizeUiInteractionContract({
       requirementIds: contract.requirementIds,
@@ -1783,7 +1932,7 @@ async function assertNoMaterializedGoalRequirementRunTx(db: SouthstarDb, draftId
 async function markRequirementDerivedResourcesStaleTx(
   db: SouthstarDb,
   input: { draftId: string; oldDraftHash: string; nextDraftHash: string },
-): Promise<{ validationBindings: boolean; slicePlan: boolean; dagDraft: boolean }> {
+): Promise<{ validationBindings: boolean; slicePlan: boolean; dagDraft: boolean; evidence: boolean; evaluation: boolean }> {
   const stalePayload = JSON.stringify({
     staleReason: "goal_requirements_revised",
     supersededByDraftHash: input.nextDraftHash,
@@ -1793,7 +1942,7 @@ async function markRequirementDerivedResourcesStaleTx(
     `update southstar.runtime_resources
         set status = 'stale', payload_json = payload_json || $2::jsonb,
             summary_json = summary_json || $2::jsonb, updated_at = now()
-      where resource_type in ('goal_contract_confirmation', 'goal_validation_resolution', 'goal_validation_resolution_revision', 'goal_requirement_validation_binding', 'ui_interaction_contract_revision')
+      where resource_type in ('goal_contract_confirmation', 'goal_validation_resolution', 'goal_validation_resolution_revision', 'goal_requirement_validation_binding', 'goal_requirement_coverage', 'ui_interaction_contract_revision')
         and (
           resource_key = $1
           or payload_json->>'draftId' = $1
@@ -1836,12 +1985,43 @@ async function markRequirementDerivedResourcesStaleTx(
           or pd.payload_json->>'goalDesignPackageHash' is not null
              and pd.payload_json->'plannerRequest'->>'draftId' = $1
         )
-        and pd.status <> 'stale'
-        and not exists (
-          select 1 from southstar.workflow_runs wr
-           where wr.runtime_context_json->>'draftId' = pd.resource_key
-              or wr.runtime_context_json->>'goalRequirementDraftId' = pd.payload_json->>'goalRequirementDraftId'
-        )`,
+        and pd.status <> 'stale'`,
+    [input.draftId, stalePayload, input.oldDraftHash],
+  );
+  const evidence = await db.query(
+    `update southstar.runtime_resources
+        set status = 'stale', summary_json = summary_json || $2::jsonb, updated_at = now()
+      where resource_type = 'evidence_packet'
+        and (
+          payload_json->>'draftId' = $1
+          or payload_json->>'goalRequirementDraftId' = $1
+          or payload_json->>'goalRequirementDraftHash' = $3
+          or run_id in (
+            select wr.id from southstar.workflow_runs wr
+             where wr.runtime_context_json->>'draftId' = $1
+                or wr.runtime_context_json->>'goalRequirementDraftId' = $1
+                or wr.runtime_context_json->>'goalRequirementDraftHash' = $3
+          )
+        )
+        and status <> 'stale'`,
+    [input.draftId, stalePayload, input.oldDraftHash],
+  );
+  const evaluation = await db.query(
+    `update southstar.runtime_resources
+        set status = 'stale', summary_json = summary_json || $2::jsonb, updated_at = now()
+      where resource_type in ('goal_outcome', 'requirement_evaluator_result', 'evaluator_result', 'validator_result')
+        and (
+          payload_json->>'draftId' = $1
+          or payload_json->>'goalRequirementDraftId' = $1
+          or payload_json->>'goalRequirementDraftHash' = $3
+          or run_id in (
+            select wr.id from southstar.workflow_runs wr
+             where wr.runtime_context_json->>'draftId' = $1
+                or wr.runtime_context_json->>'goalRequirementDraftId' = $1
+                or wr.runtime_context_json->>'goalRequirementDraftHash' = $3
+          )
+        )
+        and status <> 'stale'`,
     [input.draftId, stalePayload, input.oldDraftHash],
   );
   await db.query(
@@ -1858,6 +2038,8 @@ async function markRequirementDerivedResourcesStaleTx(
     validationBindings: (bindings.rowCount ?? 0) > 0,
     slicePlan: (slices.rowCount ?? 0) > 0,
     dagDraft: (dagDrafts.rowCount ?? 0) > 0,
+    evidence: (evidence.rowCount ?? 0) > 0,
+    evaluation: (evaluation.rowCount ?? 0) > 0,
   };
 }
 
@@ -1940,6 +2122,53 @@ function contractMetadata(contract: GoalContractV1): GoalRequirementContractMeta
   };
 }
 
+function goalContractMatchesRequirementDraft(
+  contract: GoalContractV1,
+  draft: GoalRequirementDraftV1,
+): boolean {
+  if (contract.workspace.cwd !== draft.workspace.cwd) return false;
+  const activeDraftRequirements = draft.requirements.filter((requirement) => requirement.status !== "superseded");
+  const draftById = new Map(activeDraftRequirements.map((requirement) => [requirement.id, requirement]));
+  if (draftById.size !== contract.requirements.length) return false;
+  return contract.requirements.every((requirement) => {
+    const draftRequirement = draftById.get(requirement.id);
+    const draftProjection = draftRequirement
+      ? {
+          statement: draftRequirement.statement,
+          acceptanceCriteria: draftRequirement.acceptanceCriteria.map((criterion) => ({
+            id: criterion.id,
+            version: criterion.version,
+            observableClaim: criterion.observableClaim,
+            blocking: criterion.blocking,
+            verificationIntent: [...criterion.verificationIntent],
+            requiredAssurance: [...criterion.requiredAssurance],
+          })),
+          ...(draftRequirement.semanticTags !== undefined ? { semanticTags: [...draftRequirement.semanticTags] } : {}),
+          blocking: draftRequirement.blocking,
+          source: draftRequirement.source,
+          expectedArtifacts: draftRequirement.expectedOutcomeArtifacts.map((artifact) => ({ ...artifact })),
+        }
+      : undefined;
+    const contractProjection = {
+      statement: requirement.statement,
+      acceptanceCriteria: requirement.acceptanceCriteria.map((criterion) => ({
+        id: criterion.id,
+        version: criterion.version,
+        observableClaim: criterion.observableClaim,
+        blocking: criterion.blocking,
+        verificationIntent: [...criterion.verificationIntent],
+        requiredAssurance: [...criterion.requiredAssurance],
+      })),
+      ...(requirement.semanticTags !== undefined ? { semanticTags: [...requirement.semanticTags] } : {}),
+      blocking: requirement.blocking,
+      source: requirement.source,
+      expectedArtifacts: requirement.expectedArtifacts.map((artifact) => ({ ...artifact })),
+    };
+    return draftProjection !== undefined
+      && contentHashForPayload(draftProjection) === contentHashForPayload(contractProjection);
+  });
+}
+
 const GOAL_DESIGN_PHASES = new Set<GoalDesignPhase>([
   "requirements_review",
   "requirements_confirmed",
@@ -2001,8 +2230,8 @@ function asRecord(value: unknown): Record<string, unknown> {
     : {};
 }
 
-function goalDesignPackageFromStored(value: unknown): GoalDesignPackageV2 | undefined {
-  return goalDesignPackageV2FromUnknown(value);
+function goalDesignPackageFromStored(value: unknown): GoalDesignPackageV3 | undefined {
+  return goalDesignPackageV3FromUnknown(value);
 }
 
 type SliceDesignSource = {
@@ -2010,7 +2239,7 @@ type SliceDesignSource = {
   requirementDraft: GoalRequirementDraftV1;
   goalContract: GoalContractV1;
   goalContractHash: string;
-  resolution: GoalValidationResolutionV1;
+  resolution: GoalValidationResolutionV2;
 };
 
 function sliceDesignSourceFromPlannerRow(
@@ -2046,7 +2275,7 @@ function sliceDesignSourceFromPlannerRow(
 
 function sliceDesignRevisionSourceFromPlannerRow(
   row: PlannerDraftResourceRow,
-  pkg: GoalDesignPackageV2,
+  pkg: GoalDesignPackageV3,
 ): SliceDesignSource {
   const payload = asRecord(row.payload_json);
   const phase = goalDesignPhaseFromPayload(payload);
@@ -2075,10 +2304,10 @@ function sliceDesignRevisionSourceFromPlannerRow(
   return { payload, requirementDraft, goalContract, goalContractHash: contractHash, resolution };
 }
 
-function storedGoalValidationResolution(value: unknown): GoalValidationResolutionV1 | undefined {
+function storedGoalValidationResolution(value: unknown): GoalValidationResolutionV2 | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const resolution = value as GoalValidationResolutionV1;
-  if (resolution.schemaVersion !== "southstar.goal_validation_resolution.v1"
+  const resolution = value as GoalValidationResolutionV2;
+  if (resolution.schemaVersion !== "southstar.goal_validation_resolution.v2"
     || !Array.isArray(resolution.bindings)
     || !Array.isArray(resolution.gaps)
     || !nonEmptyResolutionHash(resolution.resolutionHash)) return undefined;

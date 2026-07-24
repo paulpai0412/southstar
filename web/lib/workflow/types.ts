@@ -101,7 +101,7 @@ export interface WorkflowDag {
 }
 
 export type GoalContractV1 = {
-  schemaVersion: "southstar.goal_contract.v1";
+  schemaVersion: "southstar.goal_contract.v2";
   originalPrompt: string;
   promptHash: string;
   revision: number;
@@ -112,7 +112,14 @@ export type GoalContractV1 = {
   requirements: Array<{
     id: string;
     statement: string;
-    acceptanceCriteria: string[];
+    acceptanceCriteria: Array<{
+      id: string;
+      version: number;
+      observableClaim: string;
+      blocking: boolean;
+      verificationIntent: string[];
+      requiredAssurance: Array<"deterministic" | "browser_interaction" | "semantic_review" | "human_approval">;
+    }>;
     semanticTags?: string[];
     expectedArtifacts?: Array<{ description: string; path?: string; mediaType?: string }>;
     blocking: boolean;
@@ -171,6 +178,21 @@ export type GoalMissionReadModel = {
 };
 
 export type WorkflowLineageReadModel = {
+  chain?: {
+    goal: { id: string; contractHash?: string; title?: string; status: string };
+    requirements: Array<{ id: string; statement: string; blocking: boolean; status: string }>;
+    criteria: Array<{ id: string; version: number; requirementId: string; observableClaim: string; blocking: boolean; status: string }>;
+    checks: Array<{ id: string; criterionId: string; requirementId: string; verificationMode: string; status: string; evidenceKinds: string[] }>;
+    bindings: Array<{ id: string; requirementId: string; checkIds: string[]; status: string }>;
+    slices: Array<{ id: string; requirementIds: string[]; outcome: string; status: string }>;
+    dag: { id: string; mode: "draft" | "runtime"; status: string } | null;
+    tasks: Array<{ id: string; requirementIds: string[]; sliceId?: string; status: string; roleRef?: string }>;
+    producers: Array<{ taskId: string; artifactRefs: string[]; status: string }>;
+    artifacts: Array<{ ref: string; contractRefs: string[]; producerTaskIds: string[]; status: string }>;
+    evidence: Array<{ ref: string; checkIds: string[]; status: string }>;
+    evaluators: Array<{ taskId: string; profileRefs: string[]; checkIds: string[]; status: string }>;
+    completion: { status: string; passedChecks: number; blockingChecks: number; blockers: string[] };
+  };
   slicePlan: {
     revision: number;
     goalContractHash: string;

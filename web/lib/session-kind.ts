@@ -5,9 +5,8 @@ export type SessionKind = "chat" | "workflow" | "library";
 export type SessionVisibility = "user" | "internal";
 export type SessionMetadata = { kind: SessionKind; visibility?: SessionVisibility };
 
-export function filterSessionsByKind<T extends { kind?: SessionKind }>(sessions: T[], kind: SessionKind | null): T[] {
-  if (!kind) return sessions;
-  return sessions.filter((session) => (session.kind ?? "chat") === kind);
+export function filterSessionsByKind<T extends { kind?: SessionKind; visibility?: "user" | "internal" }>(sessions: T[], kind: SessionKind | null): T[] {
+  return sessions.filter((session) => session.visibility !== "internal" && (!kind || (session.kind ?? "chat") === kind));
 }
 
 export function classifySessionKindFromEntries(entries: SessionEntry[]): SessionKind {

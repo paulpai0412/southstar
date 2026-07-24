@@ -8,6 +8,7 @@ export function evaluateRuntimeInspectionGates(input: {
   const completed = input.counts.tasks.completed;
   const accepted = input.counts.resources.acceptedArtifacts;
   const acceptedArtifactRefs = input.counts.resources.acceptedArtifactRefs;
+  const evidenceRequiredArtifactRefs = input.counts.resources.evidenceRequiredArtifactRefs;
   const completeEvidence = input.counts.resources.completeEvidencePackets;
   const blockingFailures = input.counts.resources.blockingValidatorFailures;
   const blockingToolProxyViolations = input.counts.resources.blockingToolProxyViolations;
@@ -29,9 +30,9 @@ export function evaluateRuntimeInspectionGates(input: {
       expected: "accepted artifact_ref resources == completed tasks",
     },
     completeEvidenceEqualAcceptedArtifacts: {
-      verdict: completeEvidence === acceptedArtifactRefs ? "passed" : "failed",
-      actual: { completeEvidencePackets: completeEvidence, acceptedArtifactRefs },
-      expected: "complete evidence packets == accepted artifact_ref resources",
+      verdict: completeEvidence === evidenceRequiredArtifactRefs ? "passed" : "failed",
+      actual: { completeEvidencePackets: completeEvidence, evidenceRequiredArtifactRefs, acceptedArtifactRefs },
+      expected: "complete evidence packets == accepted artifact_ref resources that require evaluator evidence",
     },
     blockingValidatorFailuresZero: {
       verdict: blockingFailures === 0 ? "passed" : "failed",

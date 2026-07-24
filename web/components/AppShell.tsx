@@ -284,6 +284,7 @@ export function AppShell() {
   const [goalLibraryImportCandidatesOverride, setGoalLibraryImportCandidatesOverride] = useState<LibraryImportCandidatesContent | null>(null);
   const goalRequirementRevisionAnchorRef = useRef<GoalRequirementSelection | null>(null);
   const goalRequirementContentOverrideRef = useRef<GoalRequirementsContent | null>(null);
+  const goalDesignContentOverrideRef = useRef<GoalDesignContent | null>(null);
 
   useEffect(() => {
     setGoalDesignRevisionAnchor(null);
@@ -293,6 +294,7 @@ export function AppShell() {
     setGoalLibraryImportCandidatesOverride(null);
     goalRequirementRevisionAnchorRef.current = null;
     goalRequirementContentOverrideRef.current = null;
+    goalDesignContentOverrideRef.current = null;
   }, [selectedSession?.id, workflowSelectedSession?.id, newSessionCwd, workflowNewSessionCwd]);
 
   const handleAtMention = useCallback((relativePath: string) => {
@@ -783,6 +785,7 @@ export function AppShell() {
   const handleGoalSlicePackageChange = useCallback((selection: GoalSliceSelection) => {
     const nextContent = goalDesignContentFromSelection(selection);
     setGoalDesignRevisionAnchor(selection);
+    goalDesignContentOverrideRef.current = nextContent;
     setGoalDesignContentOverride(nextContent);
     // Persist the complete current snapshot. A partial workflow-state block
     // would become the latest transcript block after reload and hide the
@@ -853,6 +856,7 @@ export function AppShell() {
     };
     setChatWorkspaceSurface("workflow");
     setGoalDesignRevisionAnchor(nextSelection);
+    goalDesignContentOverrideRef.current = nextContent;
     setGoalDesignContentOverride(nextContent);
     persistGoalWorkflowState([nextContent]);
     openSidecarTab({
@@ -868,9 +872,20 @@ export function AppShell() {
   const handleGoalRequirementSelect = useCallback((selection: GoalRequirementSelection) => {
     setChatWorkspaceSurface("workflow");
     goalRequirementRevisionAnchorRef.current = selection;
-    goalRequirementContentOverrideRef.current = goalRequirementContentFromSelection(selection);
     setGoalRequirementRevisionAnchor(selection);
-    setGoalRequirementContentOverride(goalRequirementContentFromSelection(selection));
+    // Selecting another Requirement opens its editor, but must not replace a
+    // newer host readiness projection (for example, after confirming a visual
+    // contract). The list item carries the draft content needed by the
+    // sidecar, while confirmable/validationIssues belong to the whole draft.
+    const selectedContent = goalRequirementContentFromSelection(selection);
+    const currentContent = goalRequirementContentOverrideRef.current;
+    const content = currentContent
+      && currentContent.draftId === selection.draftId
+      && currentContent.goalRequirementDraftHash === selection.expectedDraftHash
+      ? currentContent
+      : selectedContent;
+    goalRequirementContentOverrideRef.current = content;
+    setGoalRequirementContentOverride(content);
     openSidecarTab({
       id: `goal-requirement:${selection.draftId}:${selection.requirementId}`,
       label: `Requirement ${selection.requirementId}`,
@@ -934,6 +949,7 @@ export function AppShell() {
     if (!goalRequirementsContentShouldReplace(currentOverride, content)) return;
     goalRequirementContentOverrideRef.current = content;
     setGoalRequirementContentOverride(content);
+    if (goalDesignContentOverrideRef.current?.draftId === content.draftId) goalDesignContentOverrideRef.current = null;
     setGoalDesignContentOverride((current) => current?.draftId === content.draftId ? null : current);
     setGoalLibraryImportCandidatesOverride((current) => current?.draftId === content.libraryImportDraftId ? current : null);
     persistGoalWorkflowState([content]);
@@ -991,10 +1007,25 @@ export function AppShell() {
 
   const handleUiContractReviewChange = useCallback((value: unknown) => {
     const content = goalRequirementsContentFromUnknown(value);
-    if (content) {
-      handleGoalRequirementsContent(content);
-    }
-  }, [handleGoalRequirementsContent, persistGoalWorkflowState]);
+    if (content) handleGoalRequirementsContent(content);
+    const draftId = content?.draftId ?? goalRequirementRevisionAnchorRef.current?.draftId;
+    if (!draftId) return;
+    // The PATCH response is a valid mutation receipt, but Chat may still have
+    // replayed Requirement blocks whose projections were fetched before the
+    // mutation committed. Reconcile the same draft through the authoritative
+    // UI read model after the visible contract action succeeds.
+    void fetch(`/api/workflow/planner-drafts/${encodeURIComponent(draftId)}/orchestration`, { cache: "no-store" })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => undefined) as unknown;
+        if (!response.ok) throw new Error(`Goal Requirements reconciliation failed with HTTP ${response.status}`);
+        return payload;
+      })
+      .then((fresh) => {
+        const reconciled = goalRequirementsContentFromUnknown(fresh);
+        if (reconciled) handleGoalRequirementsContent(reconciled);
+      })
+      .catch(() => undefined);
+  }, [goalRequirementRevisionAnchorRef, handleGoalRequirementsContent]);
 
   const handleConfirmRequirements = useCallback(async (confirmation: GoalRequirementsConfirmation): Promise<GoalRequirementsConfirmationResult | void> => {
     let completed: Record<string, unknown> | undefined;
@@ -1017,6 +1048,7 @@ export function AppShell() {
     });
     if (!result) throw new Error("Requirement confirmation response did not include a valid Goal lifecycle result.");
     if (result.type === "goalDesign") {
+      goalDesignContentOverrideRef.current = result;
       setGoalDesignContentOverride(result);
       setGoalLibraryImportCandidatesOverride(null);
       persistGoalWorkflowState([result]);
@@ -1041,6 +1073,11 @@ export function AppShell() {
     const requirements = goalRequirementContentOverrideRef.current;
     if (continuation) {
       if (requirements && continuation.draftId !== requirements.draftId) return;
+      if (
+        goalDesignContentOverrideRef.current?.draftId === continuation.draftId
+        && goalDesignContentOverrideRef.current.goalDesignPackageHash === continuation.goalDesignPackageHash
+      ) return;
+      goalDesignContentOverrideRef.current = continuation;
       setGoalDesignContentOverride(continuation);
       setGoalLibraryImportCandidatesOverride(null);
       persistGoalWorkflowState([continuation]);

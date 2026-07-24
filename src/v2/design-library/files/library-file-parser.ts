@@ -324,7 +324,35 @@ function nextContentLine(lines: string[], currentIndex: number): string | undefi
 }
 
 function parseKeyValue(line: string): { key: string; value: string } | undefined {
-  const separatorIndex = line.indexOf(":");
+  let quote: '"' | "'" | null = null;
+  let escaped = false;
+  let separatorIndex = -1;
+  for (let index = 0; index < line.length; index++) {
+    const character = line[index]!;
+    if (quote === '"') {
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\") {
+        escaped = true;
+      } else if (character === '"') {
+        quote = null;
+      }
+      continue;
+    }
+    if (quote === "'") {
+      if (character === "'") {
+        if (line[index + 1] === "'") index++;
+        else quote = null;
+      }
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+    } else if (character === ":") {
+      separatorIndex = index;
+      break;
+    }
+  }
   if (separatorIndex === -1) return undefined;
   const key = line.slice(0, separatorIndex).trim();
   if (!key) return undefined;

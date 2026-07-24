@@ -252,7 +252,7 @@ export async function ingestTaskRunResultPg(
       : accepted !== result.ok
         ? "requirement_evidence_failed"
         : undefined;
-    const contractRefs = await artifactContractRefsForTaskPg(tx, effectiveResult.runId, effectiveResult.taskId);
+    const artifactContractLineage = await artifactContractRefsForTaskPg(tx, effectiveResult.runId, effectiveResult.taskId);
 
     const artifactRef = await acceptOrRejectArtifactRefPg(tx, {
       runId: effectiveResult.runId,
@@ -264,7 +264,8 @@ export async function ingestTaskRunResultPg(
       artifactType: artifactType(effectiveResult.artifact),
       status: accepted ? "accepted" : "rejected",
       content: effectiveResult.artifact,
-      contractRefs,
+      contractRefs: artifactContractLineage.contractRefs,
+      contractVersionRefs: artifactContractLineage.contractVersionRefs,
       summary: `Callback artifact ${effectiveResult.taskId}`,
       failedArtifactRefs: failedArtifactRefIds(effectiveResult.artifact),
       evidenceRefs: requirementEvaluation.evidenceRefs,
@@ -842,19 +843,40 @@ function normalizedAttemptId(result: PostgresTaskRunCallbackResult): string {
   return result.attemptId ?? `attempt-${result.attempts}`;
 }
 
-async function artifactContractRefsForTaskPg(db: SouthstarDb, runId: string, taskId: string): Promise<string[]> {
+async function artifactContractRefsForTaskPg(
+  db: SouthstarDb,
+  runId: string,
+  taskId: string,
+): Promise<{ contractRefs: string[]; contractVersionRefs: string[] }> {
   const run = await db.one<{ workflow_manifest_json: unknown }>(
     "select workflow_manifest_json from southstar.workflow_runs where id = $1",
     [runId],
   );
-  const tasks = asRecord(run.workflow_manifest_json).tasks;
+  const manifest = asRecord(run.workflow_manifest_json);
+  const tasks = manifest.tasks;
   const task = Array.isArray(tasks)
     ? tasks.map(asRecord).find((candidate) => candidate.id === taskId)
     : undefined;
-  return [...new Set([
+  const contractRefs = [...new Set([
     ...stringArray(task?.requiredArtifactRefs),
     `task:${taskId}:completion`,
   ])].sort();
+  const artifactContracts = Array.isArray(manifest.artifactContracts)
+    ? manifest.artifactContracts.map(asRecord)
+    : [];
+  const contractVersionRefs = contractRefs.flatMap((contractRef) => {
+    const normalized = normalizeArtifactContractRef(contractRef);
+    const contract = artifactContracts.find((candidate) => (
+      normalizeArtifactContractRef(nonEmptyString(candidate.id) ?? "") === normalized
+    ));
+    const versionRef = nonEmptyString(contract?.libraryVersionRef);
+    return versionRef ? [versionRef] : [];
+  }).sort();
+  return { contractRefs, contractVersionRefs };
+}
+
+function normalizeArtifactContractRef(value: string): string {
+  return value.replace(/^artifact[.:]/, "");
 }
 
 function artifactType(artifact: unknown): string {

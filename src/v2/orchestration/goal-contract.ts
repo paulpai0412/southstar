@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import { canonicalJson as stableStringify } from "../design-library/canonical-json.ts";
-import type { RequirementSpecV2 } from "../design-library/types.ts";
+import type {
+  CriterionVerificationContractV1,
+  RequirementSpecV2,
+  RequirementValidationMode,
+} from "../design-library/types.ts";
 import type { ResolvedGoalDesignSkillV1 } from "./goal-design.ts";
 import type { WorkspaceGoalDiscoveryV1 } from "./goal-workspace-discovery.ts";
 import type { LlmTextClient } from "./llm-composer.ts";
@@ -11,10 +15,17 @@ export type GoalExpectedArtifactV1 = {
   mediaType?: string;
 };
 
+export type GoalCriterionV1 = CriterionVerificationContractV1;
+
+export type GoalCriterionInterpretationV1 = Omit<GoalCriterionV1, "id" | "version"> & {
+  id?: string;
+  version?: number;
+};
+
 export type GoalRequirementV1 = {
   id: string;
   statement: string;
-  acceptanceCriteria: string[];
+  acceptanceCriteria: GoalCriterionV1[];
   /** LLM/user-confirmed outcome vocabulary; never host-hardcoded. */
   semanticTags?: string[];
   blocking: boolean;
@@ -23,7 +34,7 @@ export type GoalRequirementV1 = {
 };
 
 export type GoalContractV1 = {
-  schemaVersion: "southstar.goal_contract.v1";
+  schemaVersion: "southstar.goal_contract.v2";
   originalPrompt: string;
   promptHash: string;
   revision: number;
@@ -82,7 +93,8 @@ export class GoalContractVocabularyGapError extends Error {
 }
 
 /** Semantic requirement payload accepted by host finalization. It contains no lineage fields. */
-export type GoalRequirementSemanticV1 = Omit<GoalRequirementV1, "id" | "expectedArtifacts"> & {
+export type GoalRequirementSemanticV1 = Omit<GoalRequirementV1, "id" | "acceptanceCriteria" | "expectedArtifacts"> & {
+  acceptanceCriteria: GoalCriterionInterpretationV1[];
   expectedArtifacts?: GoalExpectedArtifactV1[];
 };
 
@@ -169,6 +181,14 @@ const REQUIREMENT_KEYS_WITH_SEMANTIC_TAGS = [...REQUIREMENT_KEYS, "semanticTags"
 const LEGACY_REQUIREMENT_KEYS = ["statement", "acceptanceCriteria", "blocking", "source"] as const;
 const REQUIREMENT_KEYS_WITH_ID = ["id", ...REQUIREMENT_KEYS] as const;
 const LEGACY_REQUIREMENT_KEYS_WITH_ID = ["id", ...LEGACY_REQUIREMENT_KEYS] as const;
+const CRITERION_KEYS = ["observableClaim", "blocking", "verificationIntent", "requiredAssurance"] as const;
+const CRITERION_KEYS_WITH_ID = ["id", "version", ...CRITERION_KEYS] as const;
+const ASSURANCE_CLASSES = new Set<RequirementValidationMode>([
+  "deterministic",
+  "browser_interaction",
+  "semantic_review",
+  "human_approval",
+]);
 const WORK_TYPES = new Set<RequirementSpecV2["workType"]>([
   "software_feature",
   "bugfix",
@@ -235,6 +255,9 @@ export function reviseGoalContract(input: ReviseGoalContractInputV1): GoalContra
     return {
       ...requirement,
       id: previous?.id ?? requirementId(requirement.statement),
+      acceptanceCriteria: previous
+        ? materializeRevisedCriteria(requirement.acceptanceCriteria, previous.acceptanceCriteria)
+        : requirement.acceptanceCriteria,
       source: previous?.source === "explicit" ? "explicit" as const : requirement.source,
     };
   });
@@ -258,11 +281,12 @@ export function goalContractHash(contract: GoalContractV1): string {
 export function storedGoalContract(value: unknown): GoalContractV1 | undefined {
   const contract = asRecord(value);
   const workspace = asRecord(contract.workspace);
-  if (contract.schemaVersion !== "southstar.goal_contract.v1") return undefined;
+  if (contract.schemaVersion !== "southstar.goal_contract.v2") return undefined;
   if (
     !nonEmptyString(contract.originalPrompt)
-    || !nonEmptyString(contract.promptHash)
+    || contract.promptHash !== createHash("sha256").update(contract.originalPrompt as string).digest("hex")
     || !Number.isInteger(contract.revision)
+    || Number(contract.revision) < 1
     || !nonEmptyString(workspace.cwd)
     || !nonEmptyString(contract.domain)
     || !nonEmptyString(contract.intent)
@@ -286,14 +310,22 @@ export function storedGoalContract(value: unknown): GoalContractV1 | undefined {
     return Boolean(
       nonEmptyString(requirement.id)
       && nonEmptyString(requirement.statement)
-      && isStringArray(requirement.acceptanceCriteria)
-      && (requirement.acceptanceCriteria as string[]).length > 0
+      && Array.isArray(requirement.acceptanceCriteria)
+      && requirement.acceptanceCriteria.length > 0
+      && requirement.acceptanceCriteria.every((criterion) => validStoredCriterion(criterion))
       && (requirement.semanticTags === undefined || isStringArray(requirement.semanticTags))
       && typeof requirement.blocking === "boolean"
       && (requirement.source === "explicit" || requirement.source === "inferred")
-      && Array.isArray(requirement.expectedArtifacts),
+      && validStoredExpectedArtifacts(requirement.expectedArtifacts),
     );
   })) return undefined;
+  const requirementIds = contract.requirements.map((value) => asRecord(value).id);
+  const criterionIds = contract.requirements.flatMap((value) => (
+    (asRecord(value).acceptanceCriteria as unknown[]).map((criterion) => asRecord(criterion).id)
+  ));
+  if (new Set(requirementIds).size !== requirementIds.length || new Set(criterionIds).size !== criterionIds.length) {
+    return undefined;
+  }
   return contract as GoalContractV1;
 }
 
@@ -303,7 +335,9 @@ export function requirementSpecFromGoalContract(contract: GoalContractV1): Requi
     workType: contract.workType,
     requiredCapabilities: [...contract.requiredCapabilities],
     expectedArtifacts: [...contract.expectedArtifactRefs],
-    acceptanceCriteria: contract.requirements.flatMap((requirement) => requirement.acceptanceCriteria),
+    acceptanceCriteria: contract.requirements.flatMap((requirement) => (
+      requirement.acceptanceCriteria.map((criterion) => criterion.observableClaim)
+    )),
     nonGoals: [...contract.nonGoals],
     riskNotes: [...contract.riskTags],
     workspaceAssumptions: [...contract.assumptions],
@@ -318,7 +352,7 @@ function materializeContract(
 ): GoalContractV1 {
   const requirements = materializedRequirements(interpretation.requirements);
   return {
-    schemaVersion: "southstar.goal_contract.v1",
+    schemaVersion: "southstar.goal_contract.v2",
     originalPrompt: input.goalPrompt,
     promptHash: createHash("sha256").update(input.goalPrompt).digest("hex"),
     revision,
@@ -345,21 +379,84 @@ function requirementId(statement: string): string {
   return `req-${createHash("sha256").update(statement.trim()).digest("hex").slice(0, 12)}`;
 }
 
+function criterionId(requirementIdValue: string, criterion: GoalCriterionInterpretationV1): string {
+  const { id: _id, version: _version, ...semantic } = criterion;
+  return `criterion-${createHash("sha256")
+    .update(stableStringify({ requirementId: requirementIdValue, ...semantic }))
+    .digest("hex")
+    .slice(0, 12)}`;
+}
+
+function materializeRevisedCriteria(
+  criteria: GoalCriterionInterpretationV1[],
+  previousCriteria: GoalCriterionV1[],
+): GoalCriterionInterpretationV1[] {
+  const usedIds = new Set<string>();
+  return criteria.map((criterion) => {
+    const explicit = criterion.id === undefined
+      ? undefined
+      : previousCriteria.find((previous) => previous.id === criterion.id);
+    if (criterion.id !== undefined && !explicit) throw new Error(`unknown criterion id: ${criterion.id}`);
+    const exactMeaning = previousCriteria.find((previous) => (
+      !usedIds.has(previous.id) && stableStringify(criterionMeaning(previous)) === stableStringify(criterionMeaning(criterion))
+    ));
+    const sameClaim = previousCriteria.find((previous) => (
+      !usedIds.has(previous.id)
+      && normalizeStatement(previous.observableClaim) === normalizeStatement(criterion.observableClaim)
+    ));
+    const previous = explicit ?? exactMeaning ?? sameClaim;
+    if (!previous) {
+      const { id: _id, version: _version, ...semantic } = criterion;
+      return semantic;
+    }
+    usedIds.add(previous.id);
+    const changed = stableStringify(criterionMeaning(previous)) !== stableStringify(criterionMeaning(criterion));
+    return {
+      ...criterionMeaning(criterion),
+      id: previous.id,
+      version: previous.version + (changed ? 1 : 0),
+    };
+  });
+}
+
+function criterionMeaning(criterion: GoalCriterionInterpretationV1): Omit<GoalCriterionV1, "id" | "version"> {
+  return {
+    observableClaim: criterion.observableClaim,
+    blocking: criterion.blocking,
+    verificationIntent: [...criterion.verificationIntent],
+    requiredAssurance: [...criterion.requiredAssurance],
+  };
+}
+
 function materializedRequirements(
   requirements: Array<GoalRequirementInterpretationV1 | GoalRequirementV1>,
 ): GoalRequirementV1[] {
-  const materialized = requirements.map((requirement) => ({
-    ...requirement,
-    id: typeof requirement.id === "string" && requirement.id.length > 0
+  const materialized = requirements.map((requirement) => {
+    const id = typeof requirement.id === "string" && requirement.id.length > 0
       ? requirement.id
-      : requirementId(requirement.statement),
-    acceptanceCriteria: [...requirement.acceptanceCriteria],
-    expectedArtifacts: [...(requirement.expectedArtifacts ?? [])],
-  }));
+      : requirementId(requirement.statement);
+    return {
+      ...requirement,
+      id,
+      acceptanceCriteria: requirement.acceptanceCriteria.map((criterion) => ({
+        ...criterion,
+        id: criterion.id ?? criterionId(id, criterion),
+        version: criterion.version ?? 1,
+        verificationIntent: [...criterion.verificationIntent],
+        requiredAssurance: [...criterion.requiredAssurance],
+      })),
+      expectedArtifacts: [...(requirement.expectedArtifacts ?? [])],
+    };
+  });
   const ids = new Set<string>();
+  const criterionIds = new Set<string>();
   for (const requirement of materialized) {
     if (ids.has(requirement.id)) throw new Error(`duplicate requirement id: ${requirement.id}`);
     ids.add(requirement.id);
+    for (const criterion of requirement.acceptanceCriteria) {
+      if (criterionIds.has(criterion.id)) throw new Error(`duplicate criterion id: ${criterion.id}`);
+      criterionIds.add(criterion.id);
+    }
   }
   return materialized;
 }
@@ -381,7 +478,7 @@ function goalContractInterpretationSchemaPrompt(): string {
     "  summary: string,",
     "  requirements: [{",
     "    statement: string,",
-    "    acceptanceCriteria: string[],",
+    "    acceptanceCriteria: [{ observableClaim: string, blocking: boolean, verificationIntent: string[], requiredAssurance: [exactly one of \"deterministic\" | \"browser_interaction\" | \"semantic_review\" | \"human_approval\"] }],",
     "    blocking: boolean,",
     "    source: \"explicit\" | \"inferred\",",
     "    semanticTags: string[] (short lower-case outcome/domain tags supplied by semantic interpretation),",
@@ -407,7 +504,7 @@ function renderInterpreterPrompt(input: InterpretGoalContractWithLlmInput): stri
     INTERPRETER_INSTRUCTION,
     goalContractInterpretationSchemaPrompt(),
     "Return JSON only. Include exactly these fields: domain, intent, workType, summary, requirements, expectedArtifactRefs, requiredCapabilities, nonGoals, assumptions, blockingInputs, riskTags, requestedSideEffects.",
-    "Each requirement must contain statement, acceptanceCriteria, semanticTags, blocking, source, and expectedArtifacts. semanticTags must be short lower-case or kebab-case concepts describing the product outcome and verification subject; do not use technical ids. Every requirement needs at least one observable acceptance criterion. source must be explicit or inferred.",
+    "Each requirement must contain statement, acceptanceCriteria, semanticTags, blocking, source, and expectedArtifacts. Every acceptance criterion is one atomic observable claim with its own blocking state, verification intent, and exactly one required assurance class. If a claim needs multiple independent assurance classes, split it into separate atomic Criteria; all resulting blocking Criteria must pass. Independent failure reasons, artifact owners, or repair responsibilities must be separate criteria. source must be explicit or inferred.",
     "workType must be one of software_feature, bugfix, research, data_analysis, migration, ops_recovery, or general.",
     "expectedArtifacts are descriptions with optional relative paths and media types, not Library object refs.",
     "Set blocking=true for every requirement needed to satisfy the requested outcome; use blocking=false only when the user explicitly marks that requirement optional.",
@@ -530,7 +627,11 @@ function validateRequirement(
       : (hasId ? REQUIREMENT_KEYS_WITH_ID : REQUIREMENT_KEYS))
     : (hasId ? LEGACY_REQUIREMENT_KEYS_WITH_ID : LEGACY_REQUIREMENT_KEYS);
   exactKeys(object, allowedKeys, path);
-  const acceptanceCriteria = stringArray(object.acceptanceCriteria, `${path}.acceptanceCriteria`);
+  const acceptanceCriteria = criterionArray(
+    object.acceptanceCriteria,
+    `${path}.acceptanceCriteria`,
+    options.allowRequirementIds === true,
+  );
   if (acceptanceCriteria.length === 0) {
     throw new Error(`${path}.acceptanceCriteria must contain at least one criterion`);
   }
@@ -547,6 +648,35 @@ function validateRequirement(
     source: object.source,
     expectedArtifacts: expectedArtifactsArray(object.expectedArtifacts, `${path}.expectedArtifacts`),
   };
+}
+
+function criterionArray(value: unknown, path: string, allowIds: boolean): GoalCriterionInterpretationV1[] {
+  return requiredArray(value, path).map((entry, index) => {
+    const criterionPath = `${path}.${index}`;
+    const object = requiredObject(entry, criterionPath);
+    const hasId = allowIds && "id" in object;
+    exactKeys(object, hasId ? CRITERION_KEYS_WITH_ID : CRITERION_KEYS, criterionPath);
+    const requiredAssurance = stringArray(object.requiredAssurance, `${criterionPath}.requiredAssurance`);
+    if (requiredAssurance.length !== 1 || requiredAssurance.some((value) => !ASSURANCE_CLASSES.has(value as RequirementValidationMode))) {
+      throw new Error(`${criterionPath}.requiredAssurance must contain exactly one supported assurance class`);
+    }
+    if (new Set(requiredAssurance).size !== requiredAssurance.length) {
+      throw new Error(`${criterionPath}.requiredAssurance must not contain duplicates`);
+    }
+    const verificationIntent = stringArray(object.verificationIntent, `${criterionPath}.verificationIntent`);
+    if (verificationIntent.length === 0) throw new Error(`${criterionPath}.verificationIntent must not be empty`);
+    if (typeof object.blocking !== "boolean") throw new Error(`${criterionPath}.blocking must be a boolean`);
+    return {
+      ...(hasId ? {
+        id: requiredString(object.id, `${criterionPath}.id`),
+        version: requiredPositiveInteger(object.version, `${criterionPath}.version`),
+      } : {}),
+      observableClaim: requiredString(object.observableClaim, `${criterionPath}.observableClaim`),
+      blocking: object.blocking,
+      verificationIntent,
+      requiredAssurance: requiredAssurance as RequirementValidationMode[],
+    };
+  });
 }
 
 function validateHostInput(input: Pick<FinalizeGoalContractInputV1, "goalPrompt" | "cwd" | "projectRef">): void {
@@ -568,6 +698,11 @@ function requiredArray(value: unknown, path: string): unknown[] {
 function requiredString(value: unknown, path: string): string {
   if (typeof value !== "string" || value.trim().length === 0) throw new Error(`${path} must be a non-empty string`);
   return value;
+}
+
+function requiredPositiveInteger(value: unknown, path: string): number {
+  if (!Number.isInteger(value) || Number(value) < 1) throw new Error(`${path} must be a positive integer`);
+  return Number(value);
 }
 
 function stringArray(value: unknown, path: string): string[] {
@@ -642,4 +777,34 @@ function nonEmptyString(value: unknown): string | undefined {
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((entry) => typeof entry === "string" && entry.length > 0);
+}
+
+function validStoredCriterion(value: unknown): boolean {
+  const criterion = asRecord(value);
+  return Boolean(
+    nonEmptyString(criterion.id)
+    && Number.isInteger(criterion.version)
+    && Number(criterion.version) >= 1
+    && nonEmptyString(criterion.observableClaim)
+    && typeof criterion.blocking === "boolean"
+    && isStringArray(criterion.verificationIntent)
+    && criterion.verificationIntent.length > 0
+    && isStringArray(criterion.requiredAssurance)
+    && criterion.requiredAssurance.length === 1
+    && criterion.requiredAssurance.every((item) => ASSURANCE_CLASSES.has(item as RequirementValidationMode))
+  );
+}
+
+function validStoredExpectedArtifacts(value: unknown): boolean {
+  if (!Array.isArray(value)) return false;
+  try {
+    expectedArtifactsArray(value, "requirements.expectedArtifacts");
+  } catch {
+    return false;
+  }
+  return value.every((entry) => {
+    const object = asRecord(entry);
+    if (Object.keys(object).some((key) => !["description", "path", "mediaType"].includes(key))) return false;
+    return object.path === undefined || optionalSafeRelativePath(object.path) === object.path;
+  });
 }

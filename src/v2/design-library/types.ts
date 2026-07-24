@@ -1,4 +1,5 @@
 import type { WorkspaceMutationSpec } from "../workspace/types.ts";
+import type { VerificationParameterType } from "./importers/library-candidate-extractor.ts";
 
 export type LibraryDefinitionKind =
   | "agent_spec"
@@ -259,6 +260,34 @@ export type RequirementValidationMode =
   | "semantic_review"
   | "human_approval";
 
+/** The complete user-confirmed meaning and immutable identity of one Criterion. */
+export type CriterionVerificationContractV1 = {
+  id: string;
+  version: number;
+  observableClaim: string;
+  blocking: boolean;
+  verificationIntent: string[];
+  requiredAssurance: RequirementValidationMode[];
+};
+
+/**
+ * Explicit, auditable exception for a deliberately omitted assurance check.
+ * This is never inferred by the resolver: an omitted check without this
+ * record remains a blocking validation gap.
+ */
+export type AssuranceRiskAcceptanceV1 = {
+  schemaVersion: "southstar.assurance_risk_acceptance.v1";
+  id: string;
+  criterionId: string;
+  criterionVersion: number;
+  omittedAssurance: RequirementValidationMode[];
+  reason: string;
+  approvalId: string;
+  approvedBy: string;
+  approvedAt: string;
+  auditEventRef: string;
+};
+
 export type RequirementCoverageCandidateV1 = {
   ref: string;
   versionRef: string;
@@ -277,31 +306,47 @@ export type RequirementCoveragePreviewV1 = {
   acceptanceCriteria: string[];
 };
 
-export type RequirementValidationBindingV1 = {
-  schemaVersion: "southstar.requirement_validation_binding.v1";
-  id: string;
-  requirementId: string;
-  criterionIds: string[];
-  acceptanceCriteria: string[];
-  artifactContractRefs: string[];
-  artifactContractVersionRefs: string[];
+export type CriterionValidationBindingV1 = {
+  criterionContract: CriterionVerificationContractV1;
+  artifactContractRef: string;
+  artifactContractVersionRef: string;
   evaluatorProfileRef: string;
   evaluatorProfileVersionRef: string;
   verificationMode: RequirementValidationMode;
-  criterionChecks: Array<{
-    criterionId: string;
-    procedureRef: string;
-    expectedEvidenceKinds: string[];
-  }>;
-  requiredEvidenceKinds: string[];
+  procedureRef: string;
+  /** Immutable procedure version; evaluator version remains the enclosing fallback only for legacy Library state. */
+  procedureVersionRef?: string;
+  /** Approved Library oracle selected by the procedure, when the procedure declares one. */
+  oracleRef?: string;
+  oracleVersionRef?: string;
+  /** Host-validated values for the procedure's declared typed parameters. */
+  typedParameters?: Record<string, unknown>;
+  /** Copy of the approved procedure schema used to validate typedParameters. */
+  parameterSchema?: Record<string, { type: VerificationParameterType; required?: boolean }>;
+  expectedEvidenceKinds: string[];
   independence: "independent";
   failureClassifications: string[];
-  semanticCoverage?: {
-    requiredTags: string[];
-    artifactTags: string[];
-    evaluatorTags: string[];
-    matchedTags: string[];
-  };
+};
+
+/**
+ * Stable host-owned identity for one Criterion assurance check.
+ *
+ * A Criterion may require more than one assurance class.  The immutable
+ * Criterion id alone is therefore not sufficient to identify the check that
+ * produced evidence; the assurance mode is part of that check's identity.
+ */
+export function criterionValidationCheckKey(
+  criterionId: string,
+  verificationMode: RequirementValidationMode,
+): string {
+  return `${criterionId}::${verificationMode}`;
+}
+
+export type RequirementValidationBindingV3 = {
+  schemaVersion: "southstar.requirement_validation_binding.v3";
+  id: string;
+  requirementId: string;
+  criterionBindings: CriterionValidationBindingV1[];
 };
 
 export type GoalValidationGapKind =
@@ -313,6 +358,7 @@ export type GoalValidationGapKind =
   | "version"
   | "edge"
   | "procedure"
+  | "oracle"
   | "evidence"
   | "semantic"
   | "independence"
@@ -329,12 +375,12 @@ export type GoalValidationGapV1 = {
   candidateRefs: string[];
 };
 
-export type GoalValidationResolutionV1 = {
-  schemaVersion: "southstar.goal_validation_resolution.v1";
+export type GoalValidationResolutionV2 = {
+  schemaVersion: "southstar.goal_validation_resolution.v2";
   goalContractHash: string;
   requirementDraftHash: string;
   previews: RequirementCoveragePreviewV1[];
-  bindings: RequirementValidationBindingV1[];
+  bindings: RequirementValidationBindingV3[];
   gaps: GoalValidationGapV1[];
   /** True only when no blocking requirement has an unresolved gap. */
   ready?: boolean;

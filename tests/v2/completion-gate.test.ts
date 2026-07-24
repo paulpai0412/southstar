@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { acceptOrRejectArtifactRefPg } from "../../src/v2/artifacts/artifact-ref-store.ts";
 import type { SouthstarDb } from "../../src/v2/db/postgres.ts";
 import { evaluateRunCompletionGatePg } from "../../src/v2/evaluators/completion-gate.ts";
+import { criterionValidationCheckKey } from "../../src/v2/design-library/types.ts";
 import { recordRuntimeExceptionPg } from "../../src/v2/exceptions/postgres-runtime-exceptions.ts";
 import { goalContractHash, type GoalContractV1 } from "../../src/v2/orchestration/goal-contract.ts";
 import {
@@ -37,6 +39,45 @@ test("completion reports satisfied separately from degraded operational health",
     const outcome = await goalOutcome(db, runId);
     assert.equal(outcome.status, "satisfied");
     assert.deepEqual(outcome.payload_json.coveredRequirementIds, ["req-blocking"]);
+  } finally {
+    await db.close();
+  }
+});
+
+test("completion gate persists a passed result for every declared stop condition", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const { runId } = await seedCoveredGoalRun(db, "run-stop-condition-persisted");
+    await db.query(
+      `update southstar.workflow_runs
+          set workflow_manifest_json = workflow_manifest_json || $2::jsonb
+        where id = $1`,
+      [runId, JSON.stringify({
+        stopConditions: [{ id: "stop.generated", type: "artifact-accepted", evaluatorRefs: ["independent"] }],
+      })],
+    );
+
+    const result = await evaluateRunCompletionGatePg(db, { runId });
+
+    assert.equal(result.outcomeStatus, "satisfied");
+    const stopCondition = await db.one<{
+      status: string;
+      payload_json: { conditionId: string; conditionType: string; outcomeStatus: string; evaluatorRefs: string[] };
+    }>(
+      `select status, payload_json
+         from southstar.runtime_resources
+        where run_id = $1 and resource_type = 'stop_condition_result' and resource_key = $2`,
+      [runId, `stop-condition:${runId}:stop.generated`],
+    );
+    assert.equal(stopCondition.status, "passed");
+    assert.deepEqual(stopCondition.payload_json, {
+      schemaVersion: "southstar.stop_condition_result.v1",
+      conditionId: "stop.generated",
+      conditionType: "artifact-accepted",
+      evaluatorRefs: ["independent"],
+      outcomeStatus: "satisfied",
+      passed: true,
+    });
   } finally {
     await db.close();
   }
@@ -116,6 +157,58 @@ test("optional requirements do not block a satisfied goal outcome", async () => 
 
     assert.equal(result.outcomeStatus, "satisfied");
     assert.deepEqual((await goalOutcome(db, runId)).payload_json.failedRequirementIds, []);
+  } finally {
+    await db.close();
+  }
+});
+
+test("a blocking Criterion remains completion authority when its parent Requirement is advisory", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const { runId } = await seedCoveredGoalRun(db, "run-blocking-criterion-advisory-requirement", {
+      evaluatorVerdict: "failed",
+      requirementBlocking: false,
+      criterionBlocking: true,
+    });
+
+    const result = await evaluateRunCompletionGatePg(db, { runId });
+
+    assert.equal(result.outcomeStatus, "unsatisfied");
+    assert.deepEqual((await goalOutcome(db, runId)).payload_json.failedRequirementIds, ["req-blocking"]);
+  } finally {
+    await db.close();
+  }
+});
+
+test("an advisory Criterion failure does not block completion when its parent Requirement is blocking", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const { runId } = await seedCoveredGoalRun(db, "run-advisory-criterion-blocking-requirement", {
+      evaluatorVerdict: "failed",
+      requirementBlocking: true,
+      criterionBlocking: false,
+    });
+
+    const result = await evaluateRunCompletionGatePg(db, { runId });
+
+    assert.equal(result.outcomeStatus, "satisfied");
+    assert.deepEqual((await goalOutcome(db, runId)).payload_json.failedRequirementIds, []);
+  } finally {
+    await db.close();
+  }
+});
+
+test("completion aggregates independently pinned evaluator results for atomic Criteria", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const { runId } = await seedCoveredGoalRun(db, "run-two-atomic-evaluators", {
+      secondCriterion: true,
+    });
+
+    const result = await evaluateRunCompletionGatePg(db, { runId });
+
+    assert.equal(result.outcomeStatus, "satisfied");
+    assert.deepEqual((await goalOutcome(db, runId)).payload_json.coveredRequirementIds, ["req-blocking"]);
   } finally {
     await db.close();
   }
@@ -225,7 +318,10 @@ test("completion blocks V1 evaluator lineage without frozen criteria", async () 
     const result = await evaluateRunCompletionGatePg(db, { runId });
 
     assert.equal(result.outcomeStatus, "blocked");
-    assert.equal(result.findings[0], "canonical_criterion_coverage_required: requirement req-blocking has no frozen criterion coverage");
+    assert.equal(
+      result.findings[0],
+      `canonical_goal_requirement_coverage_invalid: run ${runId} frozen Goal Requirement Coverage is incompatible with canonical Goal Design lineage`,
+    );
     assert.match(
       result.findings[1] ?? "",
       /^canonical_requirement_evaluator_result_incompatible: requirement evaluator result .* uses southstar\.requirement_evaluator_result\.v1; expected southstar\.requirement_evaluator_result\.v2$/,
@@ -531,13 +627,29 @@ async function evaluatorResult(db: SouthstarDb, runId: string): Promise<{
 async function seedLegacyCoveredGoalRun(
   db: SouthstarDb,
   runId: string,
-  options: { evaluatorVerdict?: "passed" | "failed"; includeOptionalRequirement?: boolean; useAliases?: boolean } = {},
+  options: {
+    evaluatorVerdict?: "passed" | "failed";
+    includeOptionalRequirement?: boolean;
+    useAliases?: boolean;
+    requirementBlocking?: boolean;
+    criterionBlocking?: boolean;
+    secondCriterion?: boolean;
+  } = {},
 ): Promise<{ runId: string }> {
   const requirements: GoalContractV1["requirements"] = [{
     id: "req-blocking",
     statement: "The blocking outcome works",
-    acceptanceCriteria: ["The produced artifact is independently verified"],
-    blocking: true,
+    acceptanceCriteria: [
+      criterion(
+        "criterion-blocking",
+        "The produced artifact is independently verified",
+        options.criterionBlocking ?? true,
+      ),
+      ...(options.secondCriterion
+        ? [criterion("criterion-secondary", "The produced artifact passes a second independent check", true)]
+        : []),
+    ],
+    blocking: options.requirementBlocking ?? true,
     source: "explicit",
     expectedArtifacts: [],
   }];
@@ -545,16 +657,16 @@ async function seedLegacyCoveredGoalRun(
     requirements.push({
       id: "req-optional",
       statement: "Optional polish exists",
-      acceptanceCriteria: ["Optional polish may be deferred"],
+      acceptanceCriteria: [criterion("criterion-optional", "Optional polish may be deferred", false)],
       blocking: false,
       source: "inferred",
       expectedArtifacts: [],
     });
   }
   const goalContract: GoalContractV1 = {
-    schemaVersion: "southstar.goal_contract.v1",
+    schemaVersion: "southstar.goal_contract.v2",
     originalPrompt: "Ship a covered outcome",
-    promptHash: "prompt-hash",
+    promptHash: createHash("sha256").update("Ship a covered outcome").digest("hex"),
     revision: 1,
     workspace: { cwd: "/tmp/southstar" },
     domain: "software",
@@ -594,10 +706,18 @@ async function seedLegacyCoveredGoalRun(
     workflowManifestJson: JSON.stringify({
       schemaVersion: "southstar.v2",
       workflowId: runId,
-      artifactContracts: [{ id: "artifact.output", artifactType: "implementation_report" }],
+      artifactContracts: [{
+        id: "artifact.output",
+        artifactType: "implementation_report",
+        libraryObjectRef: "artifact.output",
+        libraryVersionRef: "artifact.output@1",
+      }],
       tasks: [
         { id: "task-producer", requiredArtifactRefs: ["artifact.output"] },
         { id: "task-evaluator", evaluatorPipelineRef: "evaluator.independent" },
+        ...(options.secondCriterion
+          ? [{ id: "task-evaluator-secondary", evaluatorPipelineRef: "evaluator.secondary" }]
+          : []),
       ],
     }),
     executionProjectionJson: JSON.stringify({ executor: "tork" }),
@@ -611,6 +731,7 @@ async function seedLegacyCoveredGoalRun(
   });
   await seedTask(db, runId, "task-producer", "completed", 0);
   await seedTask(db, runId, "task-evaluator", "completed", 1);
+  if (options.secondCriterion) await seedTask(db, runId, "task-evaluator-secondary", "completed", 2);
   const artifact = await acceptOrRejectArtifactRefPg(db, {
     runId,
     taskId: "task-producer",
@@ -622,6 +743,7 @@ async function seedLegacyCoveredGoalRun(
     status: "accepted",
     content: { ok: true },
     contractRefs: [options.useAliases ? "implementation_report" : "artifact.output"],
+    contractVersionRefs: ["artifact.output@1"],
     summary: "Produced output",
     producedAt: "2026-07-11T00:00:00.000Z",
   });
@@ -681,6 +803,54 @@ async function seedLegacyCoveredGoalRun(
   return { runId };
 }
 
+function criterion(id: string, observableClaim: string, blocking: boolean): GoalContractV1["requirements"][number]["acceptanceCriteria"][number] {
+  return {
+    id,
+    version: 1,
+    observableClaim,
+    blocking,
+    verificationIntent: ["Verify the observable claim against the accepted artifact."],
+    requiredAssurance: ["deterministic"],
+  };
+}
+
+function criterionEvidenceLineage(input: {
+  requirementId: string;
+  validationBindingId: string;
+  criterion: {
+    criterionId: string;
+    criterionVersion: number;
+    artifactContractRef: string;
+    artifactContractVersionRef: string;
+    evaluatorProfileRef: string;
+    evaluatorProfileVersionRef: string;
+    verificationMode: "deterministic" | "browser_interaction" | "semantic_review" | "human_approval";
+    procedureRef: string;
+  };
+  artifactRef: string;
+  evaluatorTaskId: string;
+  evaluatorAttemptId: string;
+  evaluatorArtifactRef: string;
+}): Record<string, unknown> {
+  return {
+    checkKey: criterionValidationCheckKey(input.criterion.criterionId, input.criterion.verificationMode),
+    requirementId: input.requirementId,
+    validationBindingId: input.validationBindingId,
+    criterionId: input.criterion.criterionId,
+    criterionVersion: input.criterion.criterionVersion,
+    verificationMode: input.criterion.verificationMode,
+    artifactContractRef: input.criterion.artifactContractRef,
+    artifactContractVersionRef: input.criterion.artifactContractVersionRef,
+    artifactInstanceRefs: [input.artifactRef],
+    procedureRef: input.criterion.procedureRef,
+    evaluatorTaskId: input.evaluatorTaskId,
+    evaluatorAttemptId: input.evaluatorAttemptId,
+    evaluatorArtifactRef: input.evaluatorArtifactRef,
+    evaluatorProfileRef: input.criterion.evaluatorProfileRef,
+    evaluatorProfileVersionRef: input.criterion.evaluatorProfileVersionRef,
+  };
+}
+
 async function seedCoveredGoalRun(
   db: SouthstarDb,
   runId: string,
@@ -689,6 +859,9 @@ async function seedCoveredGoalRun(
     includeOptionalRequirement?: boolean;
     useAliases?: boolean;
     omitCriterion?: boolean;
+    requirementBlocking?: boolean;
+    criterionBlocking?: boolean;
+    secondCriterion?: boolean;
   } = {},
 ): Promise<{ runId: string }> {
   await seedLegacyCoveredGoalRun(db, runId, options);
@@ -700,6 +873,39 @@ async function seedCoveredGoalRun(
       limit 1`,
     [runId],
   );
+  const goalContractHashValue = (await db.one<{ runtime_context_json: { goalContractHash: string } }>(
+    "select runtime_context_json from southstar.workflow_runs where id = $1",
+    [runId],
+  )).runtime_context_json.goalContractHash;
+  await db.query(
+    `update southstar.runtime_resources
+        set payload_json = jsonb_set(payload_json, '{contractVersionRefs}', '["artifact.output@1"]'::jsonb)
+      where run_id = $1 and resource_type = 'artifact_ref' and resource_key = $2`,
+    [runId, artifact.resource_key],
+  );
+  const criterionBindings = [{
+    criterionId: "criterion-blocking",
+    criterionVersion: 1,
+    blocking: options.criterionBlocking ?? true,
+    artifactContractRef: "artifact.output",
+    artifactContractVersionRef: "artifact.output@1",
+    evaluatorProfileRef: options.useAliases ? "evaluator:independent" : "evaluator.independent",
+    evaluatorProfileVersionRef: "evaluator.independent@2",
+    verificationMode: "deterministic" as const,
+    procedureRef: "procedure:criterion-blocking",
+    expectedEvidenceKinds: ["artifact-ref" as const],
+  }, ...(options.secondCriterion ? [{
+    criterionId: "criterion-secondary",
+    criterionVersion: 1,
+    blocking: true,
+    artifactContractRef: "artifact.output",
+    artifactContractVersionRef: "artifact.output@1",
+    evaluatorProfileRef: "evaluator.secondary",
+    evaluatorProfileVersionRef: "evaluator.secondary@5",
+    verificationMode: "deterministic" as const,
+    procedureRef: "procedure:criterion-secondary",
+    expectedEvidenceKinds: ["artifact-ref" as const],
+  }] : [])];
   await upsertRuntimeResourcePg(db, {
     id: `coverage-${runId}`,
     resourceType: "goal_requirement_coverage",
@@ -710,20 +916,22 @@ async function seedCoveredGoalRun(
     title: "Frozen criterion coverage",
     payload: {
       schemaVersion: "southstar.goal_requirement_coverage.v1",
-      goalContractHash: (await db.one<{ runtime_context_json: { goalContractHash: string } }>(
-        "select runtime_context_json from southstar.workflow_runs where id = $1",
-        [runId],
-      )).runtime_context_json.goalContractHash,
+      goalContractHash: goalContractHashValue,
       entries: [{
         requirementId: "req-blocking",
         producerTaskIds: ["task-producer"],
         artifactRefs: [options.useAliases ? "artifact:output" : "artifact.output"],
-        evaluatorTaskIds: ["task-evaluator"],
-        evaluatorProfileRefs: [options.useAliases ? "evaluator:independent" : "evaluator.independent"],
-        evaluatorProfileVersionRefs: ["evaluator.independent@2"],
+        artifactContractRefs: ["artifact.output"],
+        evaluatorTaskIds: ["task-evaluator", ...(options.secondCriterion ? ["task-evaluator-secondary"] : [])],
+        evaluatorProfileRefs: [...new Set(criterionBindings.map((binding) => binding.evaluatorProfileRef))].sort(),
+        evaluatorProfileVersionRefs: [...new Set(criterionBindings.map((binding) => binding.evaluatorProfileVersionRef))].sort(),
         validationBindingId: "binding-req-blocking",
-        criterionIds: ["criterion-blocking"],
-        acceptanceCriteria: ["The produced artifact is independently verified"],
+        criterionBindings,
+        criterionIds: criterionBindings.map((binding) => binding.criterionId),
+        acceptanceCriteria: [
+          "The produced artifact is independently verified",
+          ...(options.secondCriterion ? ["The produced artifact passes a second independent check"] : []),
+        ],
         requiredEvidenceKinds: ["artifact-ref"],
       }, ...(options.includeOptionalRequirement ? [{
         requirementId: "req-optional",
@@ -731,6 +939,10 @@ async function seedCoveredGoalRun(
         artifactRefs: [],
         evaluatorTaskIds: [],
         evaluatorProfileRefs: [],
+        evaluatorProfileVersionRefs: [],
+        criterionBindings: [],
+        criterionIds: [],
+        acceptanceCriteria: [],
         requiredEvidenceKinds: [],
       }] : [])],
     },
@@ -748,15 +960,37 @@ async function seedCoveredGoalRun(
         evaluators: [{
           id: "check-criterion-blocking",
           kind: "checker-agent",
-          required: true,
+          required: options.criterionBlocking ?? true,
           config: {
+            validationBindingId: "binding-req-blocking",
             criterionId: "criterion-blocking",
             acceptanceCriterion: "The produced artifact is independently verified",
+            procedureRef: "procedure:criterion-blocking",
+            verificationMode: "deterministic",
             expectedEvidenceKinds: ["artifact-ref"],
           },
         }],
         onFailure: { defaultStrategy: "request-workflow-revision" },
-      }],
+      }, ...(options.secondCriterion ? [{
+        id: "secondary",
+        libraryObjectRef: "evaluator.secondary",
+        libraryVersionRef: "evaluator.secondary@5",
+        validationBindingIds: ["binding-req-blocking"],
+        evaluators: [{
+          id: "check-criterion-secondary",
+          kind: "checker-agent",
+          required: true,
+          config: {
+            validationBindingId: "binding-req-blocking",
+            criterionId: "criterion-secondary",
+            acceptanceCriterion: "The produced artifact passes a second independent check",
+            procedureRef: "procedure:criterion-secondary",
+            verificationMode: "deterministic",
+            expectedEvidenceKinds: ["artifact-ref"],
+          },
+        }],
+        onFailure: { defaultStrategy: "request-workflow-revision" },
+      }] : [])],
     })],
   );
   await upsertRuntimeResourcePg(db, {
@@ -767,7 +1001,27 @@ async function seedCoveredGoalRun(
     taskId: "task-evaluator",
     scope: "evaluator",
     status: "complete",
-    payload: { schemaVersion: "southstar.evidence_packet.v1" },
+    payload: {
+      schemaVersion: "southstar.runtime.evidence_packet.v1",
+      runId,
+      taskId: "task-evaluator",
+      artifactRef: artifact.resource_key,
+      lineage: {
+        goalContractHash: goalContractHashValue,
+        evaluatorTaskId: "task-evaluator",
+        evaluatorAttemptId: "attempt-1",
+        evaluatorArtifactRef: artifact.resource_key,
+        checks: [criterionEvidenceLineage({
+          requirementId: "req-blocking",
+          validationBindingId: "binding-req-blocking",
+          criterion: criterionBindings[0]!,
+          artifactRef: artifact.resource_key,
+          evaluatorTaskId: "task-evaluator",
+          evaluatorAttemptId: "attempt-1",
+          evaluatorArtifactRef: artifact.resource_key,
+        })],
+      },
+    },
   });
   await upsertRuntimeResourcePg(db, {
     id: `requirement-result-${runId}`,
@@ -782,8 +1036,10 @@ async function seedCoveredGoalRun(
       requirementId: "req-blocking",
       validationBindingId: "binding-req-blocking",
       artifactRefs: [artifact.resource_key],
+      evaluatorArtifactRef: artifact.resource_key,
       evaluatorId: `evaluator-${runId}`,
       evaluatorTaskId: "task-evaluator",
+      attemptId: "attempt-1",
       evaluatorProfileRef: options.useAliases ? "evaluator:independent" : "evaluator.independent",
       evaluatorProfileVersionRef: "evaluator.independent@2",
       verdict: options.evaluatorVerdict ?? "passed",
@@ -797,6 +1053,68 @@ async function seedCoveredGoalRun(
       findings: options.evaluatorVerdict === "failed" ? ["verification failed"] : [],
     },
   });
+  if (options.secondCriterion) {
+    await upsertRuntimeResourcePg(db, {
+      id: `evidence-secondary-${runId}`,
+      resourceType: "evidence_packet",
+      resourceKey: `evidence-secondary-${runId}`,
+      runId,
+      taskId: "task-evaluator-secondary",
+      scope: "evaluator",
+      status: "complete",
+      payload: {
+        schemaVersion: "southstar.runtime.evidence_packet.v1",
+        runId,
+        taskId: "task-evaluator-secondary",
+        artifactRef: artifact.resource_key,
+        lineage: {
+          goalContractHash: goalContractHashValue,
+          evaluatorTaskId: "task-evaluator-secondary",
+          evaluatorAttemptId: "attempt-1",
+          evaluatorArtifactRef: artifact.resource_key,
+          checks: [criterionEvidenceLineage({
+            requirementId: "req-blocking",
+            validationBindingId: "binding-req-blocking",
+            criterion: criterionBindings[1]!,
+            artifactRef: artifact.resource_key,
+            evaluatorTaskId: "task-evaluator-secondary",
+            evaluatorAttemptId: "attempt-1",
+            evaluatorArtifactRef: artifact.resource_key,
+          })],
+        },
+      },
+    });
+    await upsertRuntimeResourcePg(db, {
+      id: `requirement-result-secondary-${runId}`,
+      resourceType: "requirement_evaluator_result",
+      resourceKey: `requirement:${runId}:req-blocking:task-evaluator-secondary:${artifact.resource_key}`,
+      runId,
+      taskId: "task-evaluator-secondary",
+      scope: "evaluator",
+      status: "passed",
+      payload: {
+        schemaVersion: "southstar.requirement_evaluator_result.v2",
+        requirementId: "req-blocking",
+        validationBindingId: "binding-req-blocking",
+        artifactRefs: [artifact.resource_key],
+        evaluatorArtifactRef: artifact.resource_key,
+        evaluatorId: `evaluator-secondary-${runId}`,
+        evaluatorTaskId: "task-evaluator-secondary",
+        attemptId: "attempt-1",
+        evaluatorProfileRef: "evaluator.secondary",
+        evaluatorProfileVersionRef: "evaluator.secondary@5",
+        verdict: "passed",
+        criteriaResults: [{
+          criterionId: "criterion-secondary",
+          verdict: "passed",
+          evidenceRefs: [artifact.resource_key],
+          findings: [],
+        }],
+        evidenceRefs: [`evidence-secondary-${runId}`],
+        findings: [],
+      },
+    });
+  }
   return { runId };
 }
 

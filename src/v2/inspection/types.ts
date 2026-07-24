@@ -54,6 +54,7 @@ export type RunInspectionCounts = {
   resources: {
     acceptedArtifacts: number;
     acceptedArtifactRefs: number;
+    evidenceRequiredArtifactRefs: number;
     needsRepairArtifacts: number;
     rejectedArtifacts: number;
     handExecutions: number;

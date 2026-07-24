@@ -1,0 +1,49 @@
+schemaVersion: southstar.library.evaluator_profile_file.v1
+id: evaluator.quiz-scoring-consistency-verifier
+title: "Quiz Scoring Consistency Verifier"
+scope: "software"
+status: approved
+semanticTags:
+  - "scoring"
+  - "feedback"
+  - "accuracy"
+validatesArtifactRefs:
+  - "artifact.quiz-scoring-feedback-evidence"
+requiredInputs:
+  - "artifact.quiz-scoring-feedback-evidence"
+evidenceKinds:
+  - "screenshot"
+  - "command-output"
+  - "test-result"
+verificationModes:
+  - "browser_interaction"
+  - "deterministic"
+  - "semantic_review"
+verificationProcedures:
+  - id: "verify-per-question-correctness-visibility"
+    checkKind: "browser_interaction"
+    instruction: "Confirm result UI shows correctness status for each answered question."
+    allowedEvidenceKinds:
+      - "screenshot"
+  - id: "verify-score-count-deterministic-consistency"
+    checkKind: "deterministic"
+    instruction: "Confirm reported correct/total counts match per-question judgments using executable scoring outputs."
+    allowedEvidenceKinds:
+      - "command-output"
+      - "test-result"
+  - id: "verify-ui-score-and-judgment-reconciliation"
+    checkKind: "semantic_review"
+    instruction: "Cross-check that UI-displayed score totals are consistent with deterministic evidence and per-question judgments."
+    allowedEvidenceKinds:
+      - "screenshot"
+      - "command-output"
+      - "test-result"
+independencePolicy: "independent"
+resultSchemaRef: "southstar.requirement_evaluator_result.v2"
+failureClassifications:
+  - "missing-required-evidence"
+  - "per-question-feedback-not-visible"
+  - "score-summary-inconsistent-with-judgments"
+importDraftId: "library-import-goal-db33926089a81a581304cec756cb3ca2"
+importCandidateKey: "evaluator.quiz-scoring-consistency-verifier"
+importSourcePath: "Confirmed-Goal-validation-gaps.md"

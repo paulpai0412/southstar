@@ -479,6 +479,7 @@ test("Goal-linked candidate analysis revises an incomplete proposal until every 
   assert.equal(prompts.length, 2);
   assert.match(prompts[0]!, /one complete proposal/i);
   assert.match(prompts[0]!, /complete compatible artifact\/evaluator pair/i);
+  assert.match(prompts[0]!, /one target entry for the selected artifact and a second target entry for the selected evaluator/i);
   assert.match(prompts[1]!, /HostValidationFailed/);
   assert.match(prompts[1]!, /does not cover blocking gaps/);
   assert.equal(result.candidateCoverageTargets.length, 4);

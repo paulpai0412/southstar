@@ -3,15 +3,17 @@ import { findApprovedLibraryObjectsByKind } from "../design-library/library-grap
 import type {
   CandidatePacket,
   LibraryDefinitionKind,
+  WorkflowCompositionPatch,
   WorkflowCompositionPlan,
   WorkflowCompositionTask,
   WorkflowCompositionValidationIssue,
 } from "../design-library/types.ts";
 import type { SouthstarDb } from "../db/postgres.ts";
-import type { ComposeWorkflowInput, WorkflowComposer } from "./composer.ts";
+import type { ComposeWorkflowInput, ComposeWorkflowRepairInput, WorkflowComposer } from "./composer.ts";
 import type { GoalContractV1 } from "./goal-contract.ts";
 import type { GoalDesignPackage } from "./goal-design.ts";
 import type { PiRuntimeProfileBinding } from "../planner/pi-planner.ts";
+import type { RuntimeBindingCapabilities } from "./runtime-binding-capabilities.ts";
 import {
   GENERATED_AGENT_PROFILE_COMMAND_ENTRYPOINT,
 } from "./generated-agent-profile-policy.ts";
@@ -33,6 +35,7 @@ export type LlmWorkflowComposerOptions = {
   candidatePacketCharBudget?: number;
   composerSop?: ResolvedWorkflowComposerSopV1 | (() => Promise<ResolvedWorkflowComposerSopV1>);
   runtimeProfileBinding?: (cwd?: string) => Promise<PiRuntimeProfileBinding | undefined>;
+  runtimeBindingCapabilities?: RuntimeBindingCapabilities;
 };
 
 export type ResolvedWorkflowComposerSopV1 = {
@@ -365,6 +368,7 @@ export class LlmWorkflowComposer implements WorkflowComposer {
       composerSop,
       this.options.candidatePacketCharBudget,
       runtimeProfileBinding,
+      this.options.runtimeBindingCapabilities,
     );
     const textInput = {
       model: this.options.model,
@@ -377,6 +381,29 @@ export class LlmWorkflowComposer implements WorkflowComposer {
       : await this.options.client.generateText(textInput);
     const plan = parseWorkflowCompositionPlanFromText(text, this.options.maxOutputChars ?? 100_000);
     return applyRuntimeProfileBinding(plan, runtimeProfileBinding);
+  }
+
+  async repair(input: ComposeWorkflowRepairInput): Promise<WorkflowCompositionPatch> {
+    const composerSop = typeof this.options.composerSop === "function"
+      ? await this.options.composerSop()
+      : this.options.composerSop;
+    const runtimeProfileBinding = await this.options.runtimeProfileBinding?.(input.cwd);
+    const prompt = renderCompositionRepairPrompt(
+      input,
+      composerSop,
+      runtimeProfileBinding,
+      this.options.runtimeBindingCapabilities,
+    );
+    const textInput = {
+      model: this.options.model,
+      prompt,
+      temperature: this.options.temperature ?? 0,
+      ...(input.cwd ? { cwd: input.cwd } : {}),
+    };
+    const text = this.options.client.generateTextStream
+      ? await this.options.client.generateTextStream(textInput, { onDelta: input.onLlmDelta })
+      : await this.options.client.generateText(textInput);
+    return parseWorkflowCompositionPatchFromText(text, this.options.maxOutputChars ?? 100_000);
   }
 }
 
@@ -463,6 +490,75 @@ export function parseWorkflowCompositionPlanFromText(text: string, maxOutputChar
   return parsed as WorkflowCompositionPlan;
 }
 
+export function parseWorkflowCompositionPatchFromText(text: string, maxOutputChars: number): WorkflowCompositionPatch {
+  if (text.length > maxOutputChars) {
+    throw new LlmComposerOutputError([issue("composer_output_too_large", "$", `LLM workflow repair output exceeded max output size: ${text.length} > ${maxOutputChars}`)]);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text.trim());
+  } catch (error) {
+    throw new LlmComposerOutputError([issue("composer_output_invalid_json", "$", `LLM workflow repair returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`)]);
+  }
+  const issues: WorkflowCompositionValidationIssue[] = [];
+  if (!isRecord(parsed)) {
+    issues.push(issue("composer_output_schema_violation", "$", "workflow composition patch must be an object"));
+  } else {
+    validateObjectShape(parsed, ["schemaVersion", "basePlanHash", "operations", "rationale"], ["schemaVersion", "basePlanHash", "operations", "rationale"], "$", issues);
+    if (parsed.schemaVersion !== "southstar.workflow_composition_patch.v1") issues.push(issue("composer_output_schema_violation", "$.schemaVersion", "schemaVersion must be southstar.workflow_composition_patch.v1"));
+    if (!Array.isArray(parsed.operations) || parsed.operations.length !== 1) issues.push(issue("composer_output_schema_violation", "$.operations", "exactly one bounded repair operation is required"));
+    else validateRepairOperation(parsed.operations[0], "$.operations.0", issues);
+  }
+  if (issues.length > 0) throw new LlmComposerOutputError(issues);
+  return parsed as WorkflowCompositionPatch;
+}
+
+function validateRepairOperation(value: unknown, path: string, issues: WorkflowCompositionValidationIssue[]): void {
+  if (!isRecord(value)) {
+    issues.push(issue("composer_output_schema_violation", path, "repair operation must be an object"));
+    return;
+  }
+  if (value.op === "replace-task") {
+    if (typeof value.taskId !== "string" || !isRecord(value.task)) {
+      issues.push(issue("composer_output_schema_violation", path, "replace-task requires taskId and task"));
+    }
+    return;
+  }
+  if (value.op === "replace-ref") {
+    if (typeof value.taskId !== "string" || typeof value.field !== "string" || typeof value.fromRef !== "string" || typeof value.toRef !== "string") {
+      issues.push(issue("composer_output_schema_violation", path, "replace-ref requires taskId, field, fromRef, and toRef"));
+    }
+    return;
+  }
+  issues.push(issue("composer_output_schema_violation", `${path}.op`, "only replace-task or replace-ref repair operations are supported"));
+}
+
+function renderCompositionRepairPrompt(
+  input: ComposeWorkflowRepairInput,
+  composerSop: ResolvedWorkflowComposerSopV1 | undefined,
+  runtimeProfileBinding: PiRuntimeProfileBinding | undefined,
+  runtimeBindingCapabilities: RuntimeBindingCapabilities | undefined,
+): string {
+  return [
+    "Repair one already-composed Southstar workflow plan with exactly one bounded patch.",
+    "Return exactly one JSON object and no markdown.",
+    "Shape: {\"schemaVersion\":\"southstar.workflow_composition_patch.v1\",\"basePlanHash\":\"...\",\"operations\":[{\"op\":\"replace-task\",\"taskId\":\"...\",\"task\":{...}}],\"rationale\":\"...\"}.",
+    "Use the exact basePlanHash supplied below. Emit exactly one operation. Do not add/remove tasks, change task ids, slice ids, requirement ownership, or invent Library refs.",
+    "A replace-task operation must preserve the task's id, sliceId, requirementIds, dependsOn, and templateSlotRef; change only fields implicated by the structured issue.",
+    "A replace-ref operation is allowed only for one existing string reference field and must use exact values from the supplied candidate packet.",
+    "Library/runtime gaps are not repairable: return a patch only when the existing plan can be corrected within these bounds; otherwise the host will block.",
+    composerSop ? `Approved Composer SOP ${composerSop.objectKey}@${composerSop.versionRef}:\n${composerSop.body}` : "",
+    runtimeProfileBinding ? `Runtime host bindings (authoritative):\n${JSON.stringify(runtimeProfileBinding)}` : "",
+    runtimeBindingCapabilities
+      ? `RuntimeBindingCapabilities (authoritative):\n${JSON.stringify(runtimeBindingCapabilities)}\nEvery generated profile execution.image must be an exact value from RuntimeBindingCapabilities.images when images are advertised; never invent an image.`
+      : "",
+    `basePlanHash: ${contentHashForPayload(input.baseComposition)}`,
+    `validationIssues: ${JSON.stringify(input.validationIssues)}`,
+    `currentPlan: ${JSON.stringify(input.baseComposition)}`,
+    `goalContract: ${JSON.stringify(input.goalContract)}`,
+  ].filter(Boolean).join("\n\n");
+}
+
 export function renderComposerPrompt(
   goalPrompt: string,
   goalContract: GoalContractV1,
@@ -471,19 +567,23 @@ export function renderComposerPrompt(
   composerSop?: ResolvedWorkflowComposerSopV1,
   candidatePacketCharBudget?: number,
   runtimeProfileBinding?: PiRuntimeProfileBinding,
+  runtimeBindingCapabilities?: RuntimeBindingCapabilities,
 ): string {
   const packetBinding = boundCandidatePacket(candidatePacket, candidatePacketCharBudget, pinnedRefsForGoal(goalContract, goalDesignPackage));
   const boundedPacket = packetBinding.packet;
   const allowedRefsByField = composerAllowedRefsByField(boundedPacket);
   const evaluatorArtifactCompatibility = composerEvaluatorArtifactCompatibility(boundedPacket);
   const forbiddenGoalDesignRefs = goalDesignPackage ? goalDesignForbiddenRefs(goalDesignPackage) : [];
-  const frozenValidationConstraints = goalDesignPackage?.schemaVersion === "southstar.goal_design_package.v2"
+  const frozenValidationConstraints = goalDesignPackage?.schemaVersion === "southstar.goal_design_package.v3"
     ? [
         "FrozenValidationBindings are authoritative and immutable during DAG composition.",
-        "For every verify or review task, evaluatorProfileRef must equal the evaluatorProfileRef of a frozen binding for one of that task's requirementIds.",
-        "Use each frozen binding's artifactContractRefs as the artifacts that its evaluator profile validates.",
+        "For every verify or review task, evaluatorProfileRef must equal the evaluatorProfileRef of a frozen Criterion binding for one of that task's requirementIds.",
+        "Use each frozen Criterion binding's artifactContractRef as the artifact that its evaluator profile validates.",
+        "For every verify or review task, pair the frozen evaluator profile with the matching frozen artifactContractRef and preserve that pair for the covered Criterion; do not substitute a different artifact just because it is compatible in the graph.",
+        "For every covered Criterion, at least one producer task must emit its frozen artifactContractRef in outputArtifactRefs; do not leave a generic implementation_report when the Criterion binding selected a different artifact contract.",
+        "A verify or review node must preserve Criterion granularity in nodePromptSpec: name each covered criterion id, observable claim, required assurance, procedure, expected evidence kinds, and blocking behavior. Do not write one broad evaluator instruction that merges independent Criteria.",
         "Do not use a validation binding id as evaluatorProfileRef, and do not replace or invent evaluator profile or artifact refs.",
-        "Preserve evaluatorProfileVersionRef and artifactContractVersionRefs through the supplied Library candidate graph; the host validates their selected versions.",
+        "Preserve each Criterion binding's evaluatorProfileVersionRef and artifactContractVersionRef through the supplied Library candidate graph; the host validates their selected versions.",
       ]
     : [];
   const sliceConstraints = goalDesignPackage
@@ -532,6 +632,14 @@ export function renderComposerPrompt(
       : [
           "No DefaultRuntimeProfileBinding is available from the Pi registry. Do not invent provider, model, harnessRef, or execution image values; let validation fail closed if a required binding is absent.",
         ]),
+    ...(runtimeBindingCapabilities
+      ? [
+          "RuntimeBindingCapabilities (authoritative):",
+          JSON.stringify(runtimeBindingCapabilities),
+          "Every generated profile execution.image must be an exact value from RuntimeBindingCapabilities.images when images are advertised. If no image is advertised, do not invent one; let validation fail closed.",
+          "A selected skill is valid only when every intrinsic required tool, MCP grant, and instruction ref is present in the supplied ProfilePrimitiveCandidates or GraphMetadataCandidates. If a required ref such as tool.shell-command is absent, never select the skill that requires it.",
+        ]
+      : []),
     "Design for harness engineering: choose workerKind per task from execution_worker, validation_worker, repair_worker, or review_worker based on the goal, risk, and required artifacts.",
     "For workflows that create or modify artifacts, include a positive validation path with validation_worker, review_worker, deterministic checks, or another graph-justified verifier.",
     "For ordinary initial workflow generation, do not pre-add repair/reverify nodes unless the user explicitly asks for a static bounded repair path in the initial DAG. Instead, make validation_worker nodePromptSpec produce repair-ready failure reports for Southstar runtime dynamic repair revision.",
@@ -582,7 +690,7 @@ export function renderComposerPrompt(
           "",
           "GoalDesignPackage:",
           JSON.stringify(goalDesignPackage),
-          ...(goalDesignPackage.schemaVersion === "southstar.goal_design_package.v2"
+          ...(goalDesignPackage.schemaVersion === "southstar.goal_design_package.v3"
             ? [
                 "",
                 "FrozenValidationBindings:",
@@ -1349,8 +1457,10 @@ function pinnedRefsForGoal(goalContract: GoalContractV1, goalDesignPackage?: Com
   const policy = goalDesignPackage?.templatePolicy;
   if (policy && policy.mode !== "auto") refs.add(policy.templateRef);
   for (const binding of goalDesignPackage?.validationBindings ?? []) {
-    refs.add(binding.evaluatorProfileRef);
-    for (const ref of binding.artifactContractRefs) refs.add(ref);
+    for (const criterionBinding of binding.criterionBindings) {
+      refs.add(criterionBinding.evaluatorProfileRef);
+      refs.add(criterionBinding.artifactContractRef);
+    }
   }
   return refs;
 }

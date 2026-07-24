@@ -8,16 +8,24 @@ import type { WorkflowCompositionPlan } from "../../src/v2/design-library/types.
 import { resolveWorkflowCandidates } from "../../src/v2/orchestration/candidate-resolver.ts";
 import { compileWorkflowComposition } from "../../src/v2/orchestration/composition-compiler.ts";
 import { validateWorkflowCompositionPlan } from "../../src/v2/orchestration/composition-validator.ts";
+import { finalizeGoalDesignPackageV3 } from "../../src/v2/orchestration/goal-design.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 import { softwareGoalContract } from "./fixtures/goal-contract.ts";
 
-const GOAL_CONTRACT = {
-  ...softwareGoalContract("Build a todo web app"),
-  requirements: softwareGoalContract("Build a todo web app").requirements.map((requirement) => ({
-    ...requirement,
-    blocking: false,
-  })),
-};
+const GOAL_CONTRACT = (() => {
+  const contract = softwareGoalContract("Build a todo web app");
+  return {
+    ...contract,
+    requirements: contract.requirements.map((requirement) => ({
+      ...requirement,
+      acceptanceCriteria: requirement.acceptanceCriteria.map((criterion) => ({
+        ...criterion,
+        blocking: false,
+      })),
+      blocking: false,
+    })),
+  };
+})();
 
 test("workflow composition accepts generated profiles built from approved primitives", async () => {
   const db = await createTestPostgresDb();
@@ -84,6 +92,7 @@ test("compiler preserves generated profile and primitive refs in the manifest", 
       candidatePacket: packet,
       composition,
       scope: "software",
+      goalDesignPackage: dynamicProfileGoalDesignPackage(),
     });
 
     const task = compiled.workflow.tasks.find((candidate) => candidate.id === "implement-ui");
@@ -400,6 +409,44 @@ function requirementSpec() {
   };
 }
 
+function dynamicProfileGoalDesignPackage() {
+  const requirement = GOAL_CONTRACT.requirements[0]!;
+  const artifactRef = GOAL_CONTRACT.expectedArtifactRefs[0] ?? "artifact.todo_app";
+  return finalizeGoalDesignPackageV3({
+    schemaVersion: "southstar.goal_design_package.v3",
+    revision: 1,
+    goalContract: GOAL_CONTRACT,
+    requirementDraftHash: "dynamic-profile-requirement-draft",
+    validationBindings: [],
+    slicePlan: {
+      schemaVersion: "southstar.goal_slice_plan.v1",
+      goalContractHash: "host-filled",
+      revision: 1,
+      slices: [{
+        id: "slice-generated",
+        requirementIds: [requirement.id],
+        outcome: requirement.statement,
+        stateOrArtifactOwner: artifactRef,
+        mutationBoundary: "generated profile composition test",
+        expectedArtifactRefs: [artifactRef],
+        evaluatorContractRefs: [],
+        dependsOnSliceIds: [],
+        dependencyArtifactRefs: [],
+      }],
+    },
+    compositionStrategy: {
+      mode: "single-run",
+      sliceIds: ["slice-generated"],
+      rationale: "Exercise a generated profile through one producer and one verification task.",
+    },
+    templatePolicy: { mode: "auto" },
+    goalDesignSkillRef: "skill.southstar-goal-design",
+    goalDesignSkillVersionRef: "skill.southstar-goal-design@test",
+    workspaceDiscoveryHash: "dynamic-profile-workspace@test",
+    mode: "review_before_compose",
+  });
+}
+
 function generatedProfilePlan(): WorkflowCompositionPlan {
   return {
     schemaVersion: "southstar.workflow_composition_plan.v1",
@@ -412,6 +459,7 @@ function generatedProfilePlan(): WorkflowCompositionPlan {
       responsibility: "Build the todo web app",
       requirementIds: GOAL_CONTRACT.requirements.map((requirement) => requirement.id),
       dependsOn: [],
+      sliceId: "slice-generated",
       templateSlotRef: "implement",
       agentDefinitionRef: "agent.frontend-developer",
       agentProfileRef: "profile.generated.todo.implement-ui",
@@ -425,6 +473,26 @@ function generatedProfilePlan(): WorkflowCompositionPlan {
       evaluatorProfileRef: "evaluator.todo-quality",
       recoveryStrategyRefs: [],
       rationale: "Generated profile uses approved primitives.",
+    }, {
+      id: "verify-ui",
+      name: "Verify UI",
+      responsibility: "Verify the todo web app",
+      requirementIds: GOAL_CONTRACT.requirements.map((requirement) => requirement.id),
+      dependsOn: ["implement-ui"],
+      sliceId: "slice-generated",
+      templateSlotRef: "verify",
+      agentDefinitionRef: "agent.frontend-developer",
+      agentProfileRef: "profile.generated.todo.implement-ui",
+      instructionRefs: ["instruction.react-review"],
+      skillRefs: ["skill.react-ui"],
+      toolGrantRefs: ["tool.workspace-write"],
+      mcpGrantRefs: [],
+      vaultLeasePolicyRefs: [],
+      inputArtifactRefs: ["artifact.todo_app"],
+      outputArtifactRefs: [],
+      evaluatorProfileRef: "evaluator.todo-quality",
+      recoveryStrategyRefs: [],
+      rationale: "Verify the generated implementation after the producer completes.",
     }],
     rejectedCandidates: [],
     generatedComponentProposals: [{

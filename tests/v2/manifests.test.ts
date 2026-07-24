@@ -9,6 +9,22 @@ test("validates a canonical Southstar workflow manifest", () => {
   assert.deepEqual(validatePlanBundle(bundle), { ok: true, issues: [] });
 });
 
+test("rejects an unpinned artifact contract referenced by a task", () => {
+  const bundle = makeBundle();
+  bundle.workflow.tasks[0]!.requiredArtifactRefs = ["implementation_report"];
+  bundle.workflow.artifactContracts = [{
+    id: "artifact.implementation_report",
+    artifactType: "implementation_report",
+    requiredFields: ["summary"],
+    evidenceFields: [],
+  }];
+
+  const result = validatePlanBundle(bundle);
+
+  assert.equal(result.ok, false);
+  assert.match(result.issues.map((issue) => `${issue.path}: ${issue.message}`).join("\n"), /libraryVersionRef/);
+});
+
 test("rejects unknown harness references and non-Tork execution", () => {
   const bundle = makeBundle();
   bundle.workflow.tasks[0].execution.engine = "local" as never;

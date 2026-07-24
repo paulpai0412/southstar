@@ -9,6 +9,90 @@ import { getResourceByKeyPg, upsertRuntimeResourcePg } from "../../src/v2/stores
 
 type SseFrame = { event: string; data: Record<string, unknown> };
 
+test("planner Requirement PATCH versions canonical Criteria and rejects the removed criterion shape", async () => {
+  const db = await createTestPostgresDb();
+  const cwd = process.cwd();
+  try {
+    await seedGoalDesignSkill(db);
+    const initial = finalizeGoalRequirementDraft({
+      goalPrompt: "Create a review flow",
+      cwd,
+      summary: "Review flow",
+      requirements: [{
+        id: "req-review",
+        title: "Review flow",
+        statement: "A learner can review a word.",
+        source: "explicit",
+        blocking: true,
+        userVisibleBehaviors: ["Show a word"],
+        businessRules: [],
+        acceptanceCriteria: [reviewCriterion()],
+        expectedOutcomeArtifacts: [{ description: "review UI", mediaType: "text/html" }],
+        verificationIntent: ["complete one review"],
+        assumptions: [],
+        openQuestions: [],
+        riskTags: [],
+        interactionContractRefs: [],
+      }],
+      nonGoals: [],
+      blockingInputs: [],
+    });
+    const prepared = await preparePostgresGoalRequirementDraft(db, {
+      goalPrompt: initial.originalPrompt,
+      cwd,
+      requirementInterpreter: {
+        async interpret() { return initial; },
+        async revise() { return { kind: "needs_input" as const, question: "No chat revision expected." }; },
+      },
+    });
+    const requirement = prepared.goalRequirementDraft.requirements[0]!;
+    const criterion = requirement.acceptanceCriteria[0]!;
+    const context = {
+      db,
+      plannerClient: { generate: async () => { throw new Error("planner not used"); } },
+      executorProvider: { executorType: "tork" as const, submit: async () => { throw new Error("executor not used"); } },
+    };
+    const route = `http://127.0.0.1/api/v2/planner/drafts/${prepared.draftId}/goal-requirements/${requirement.id}`;
+    const revisedResponse = await handleRuntimeRoute(context, new Request(route, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        expectedDraftHash: prepared.goalRequirementDraftHash,
+        patch: {
+          acceptanceCriteria: [{
+            id: criterion.id,
+            observableClaim: "A review is persisted with its selected result.",
+            blocking: true,
+            verificationIntent: ["Complete one review and read the persisted result."],
+            requiredAssurance: ["deterministic"],
+            evidenceIntent: ["artifact-ref"],
+          }],
+        },
+      }),
+    }));
+    assert.equal(revisedResponse.status, 200, await revisedResponse.clone().text());
+    const revised = (await revisedResponse.json() as {
+      result: { goalRequirementDraftHash: string; goalRequirementDraft: typeof prepared.goalRequirementDraft };
+    }).result;
+    const revisedCriterion = revised.goalRequirementDraft.requirements[0]!.acceptanceCriteria[0]!;
+    assert.equal(revisedCriterion.id, criterion.id);
+    assert.equal(revisedCriterion.version, criterion.version + 1);
+
+    const legacyResponse = await handleRuntimeRoute(context, new Request(route, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        expectedDraftHash: revised.goalRequirementDraftHash,
+        patch: { acceptanceCriteria: [{ statement: "legacy criterion", evidenceIntent: ["artifact-ref"] }] },
+      }),
+    }));
+    assert.equal(legacyResponse.status, 422);
+    assert.match(await legacyResponse.text(), /observableClaim/);
+  } finally {
+    await db.close();
+  }
+});
+
 test("requirement review revise stream is phase-aware and returns a goal_requirements block", async () => {
   const db = await createTestPostgresDb();
   const cwd = process.cwd();
@@ -26,7 +110,7 @@ test("requirement review revise stream is phase-aware and returns a goal_require
         blocking: true,
         userVisibleBehaviors: ["Show a word"],
         businessRules: [],
-        acceptanceCriteria: [{ statement: "A review is persisted", evidenceIntent: ["artifact-ref"] }],
+        acceptanceCriteria: [reviewCriterion()],
         expectedOutcomeArtifacts: [{ description: "review UI", mediaType: "text/html" }],
         verificationIntent: ["complete one review"],
         assumptions: [],
@@ -110,7 +194,7 @@ test("requirement revision stream emits standard heartbeat frames while revision
         blocking: true,
         userVisibleBehaviors: ["Show a word"],
         businessRules: [],
-        acceptanceCriteria: [{ statement: "A review is persisted", evidenceIntent: ["artifact-ref"] }],
+        acceptanceCriteria: [reviewCriterion()],
         expectedOutcomeArtifacts: [{ description: "review UI", mediaType: "text/html" }],
         verificationIntent: ["complete one review"],
         assumptions: [],
@@ -180,7 +264,7 @@ test("requirement revision needs_input keeps the current Goal Requirements block
         blocking: true,
         userVisibleBehaviors: ["Show a word"],
         businessRules: [],
-        acceptanceCriteria: [{ statement: "A review is persisted", evidenceIntent: ["artifact-ref"] }],
+        acceptanceCriteria: [reviewCriterion()],
         expectedOutcomeArtifacts: [{ description: "review UI", mediaType: "text/html" }],
         verificationIntent: ["complete one review"],
         assumptions: [],
@@ -240,7 +324,7 @@ test("planner draft requirement SSE exposes host confirmable state", async () =>
         blocking: true,
         userVisibleBehaviors: ["Show a word"],
         businessRules: [],
-        acceptanceCriteria: [{ statement: "A review is persisted", evidenceIntent: ["artifact-ref"] }],
+        acceptanceCriteria: [reviewCriterion()],
         expectedOutcomeArtifacts: [{ description: "review UI", mediaType: "text/html" }],
         verificationIntent: ["complete one review"],
         assumptions: [],
@@ -328,6 +412,16 @@ test("planner revision routes reject drafts without a canonical V2 Goal Design p
     await db.close();
   }
 });
+
+function reviewCriterion() {
+  return {
+    observableClaim: "A review is persisted",
+    blocking: true,
+    verificationIntent: ["Complete one review and verify the saved result."],
+    requiredAssurance: ["deterministic" as const],
+    evidenceIntent: ["artifact-ref" as const],
+  };
+}
 
 function parseSse(text: string): SseFrame[] {
   return text.trim().split(/\n\n/).filter(Boolean).map((frame) => {

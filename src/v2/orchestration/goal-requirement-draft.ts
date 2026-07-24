@@ -3,7 +3,7 @@ import {
   finalizeGoalContract,
   type GoalContractV1,
 } from "./goal-contract.ts";
-import type { RequirementSpecV2 } from "../design-library/types.ts";
+import type { RequirementSpecV2, RequirementValidationMode } from "../design-library/types.ts";
 import type { ResolvedGoalDesignSkillV1 } from "./goal-design.ts";
 import type { LlmTextClient } from "./llm-composer.ts";
 import type { WorkspaceGoalDiscoveryV1 } from "./goal-workspace-discovery.ts";
@@ -15,12 +15,25 @@ import {
 } from "./ui-interaction-contract.ts";
 
 export type GoalAcceptanceCriterionDraftV1 = {
+  /** Host-owned proposal identity. Confirmation freezes it as the canonical Criterion id. */
   id: string;
-  statement: string;
+  /** Proposal revision only; canonical Criterion version is assigned during confirmation. */
+  version: number;
+  observableClaim: string;
+  blocking: boolean;
+  verificationIntent: string[];
+  requiredAssurance: RequirementValidationMode[];
   evidenceIntent: EvidenceKind[];
 };
 
-export type GoalAcceptanceCriterionDraftInputV1 = Omit<GoalAcceptanceCriterionDraftV1, "id"> & {
+export const CRITERION_ASSURANCE_CLASSES = [
+  "deterministic",
+  "browser_interaction",
+  "semantic_review",
+  "human_approval",
+] as const satisfies readonly RequirementValidationMode[];
+
+export type GoalAcceptanceCriterionDraftInputV1 = Omit<GoalAcceptanceCriterionDraftV1, "id" | "version"> & {
   id?: string;
 };
 
@@ -54,7 +67,7 @@ export type GoalRequirementDraftItemInputV1 = Omit<
 };
 
 export type GoalRequirementDraftV1 = {
-  schemaVersion: "southstar.goal_requirement_draft.v1";
+  schemaVersion: "southstar.goal_requirement_draft.v2";
   revision: number;
   parentRevision?: number;
   originalPrompt: string;
@@ -185,7 +198,7 @@ export function finalizeGoalRequirementDraft(input: GoalRequirementDraftInputV1)
   const requirements = input.requirements.map((requirement) => materializeRequirement(requirement));
   assertUniqueIds(requirements);
   const draft: DraftWithoutHash = {
-    schemaVersion: "southstar.goal_requirement_draft.v1",
+    schemaVersion: "southstar.goal_requirement_draft.v2",
     revision: 1,
     originalPrompt: input.goalPrompt,
     workspace: {
@@ -384,7 +397,7 @@ export function validateGoalRequirementDraft(draft: GoalRequirementDraftV1): Goa
   if (!isRecord(draft)) {
     return [issue("invalid_draft", "draft", "Goal Requirement Draft must be an object")];
   }
-  if (draft.schemaVersion !== "southstar.goal_requirement_draft.v1") {
+  if (draft.schemaVersion !== "southstar.goal_requirement_draft.v2") {
     issues.push(issue("invalid_schema_version", "schemaVersion", "unsupported Goal Requirement Draft schema version"));
   }
   if (!Number.isInteger(draft.revision) || draft.revision < 1) {
@@ -436,8 +449,8 @@ export function validateGoalRequirementDraft(draft: GoalRequirementDraftV1): Goa
     }
     for (const [criterionIndex, criterion] of requirement.acceptanceCriteria.entries()) {
       const criterionPath = `${path}.acceptanceCriteria.${criterionIndex}`;
-      if (!nonEmptyString(criterion.id) || !nonEmptyString(criterion.statement) || !stringArrayValid(criterion.evidenceIntent)) {
-        issues.push(issue("invalid_criterion", criterionPath, "criterion needs id, statement, and evidenceIntent"));
+      if (!criterionDraftShape(criterion)) {
+        issues.push(issue("invalid_criterion", criterionPath, "criterion needs immutable identity, an atomic observable claim, verification intent, required assurance, and evidence intent"));
       }
       if (criterion.id && criterionIds.has(criterion.id)) issues.push(issue("duplicate_criterion_id", `${criterionPath}.id`, `duplicate criterion id: ${criterion.id}`));
       if (criterion.id) criterionIds.add(criterion.id);
@@ -566,12 +579,13 @@ export function confirmGoalRequirementDraft(
     assumptions: string[];
     requestedSideEffects: string[];
   },
+  previousContract?: GoalContractV1,
 ): GoalContractV1 {
   const issues = validateGoalRequirementDraft(draft);
   if (issues.length > 0) throw new Error("goal_requirement_draft_invalid: " + JSON.stringify(issues));
   const active = draft.requirements.filter((requirement) => requirement.status !== "superseded");
   if (active.length === 0) throw new Error("goal_requirement_draft_invalid: no active requirements");
-  return finalizeGoalContract({
+  const contract = finalizeGoalContract({
     goalPrompt: draft.originalPrompt,
     cwd: draft.workspace.cwd,
     ...(draft.workspace.projectRef !== undefined ? { projectRef: draft.workspace.projectRef } : {}),
@@ -581,7 +595,19 @@ export function confirmGoalRequirementDraft(
       requirements: active.map((requirement) => ({
         id: requirement.id,
         statement: requirement.statement,
-        acceptanceCriteria: requirement.acceptanceCriteria.map((criterion) => criterion.statement),
+        acceptanceCriteria: requirement.acceptanceCriteria.map((criterion) => {
+          const previousCriterion = previousContract?.requirements
+            .find((entry) => entry.id === requirement.id)
+            ?.acceptanceCriteria.find((entry) => entry.id === criterion.id);
+          const semantic = confirmedCriterionSemantic(criterion);
+          const changed = previousCriterion !== undefined
+            && contentHashForPayload(confirmedCriterionSemantic(previousCriterion)) !== contentHashForPayload(semantic);
+          return {
+            id: previousCriterion?.id ?? criterion.id,
+            version: previousCriterion ? previousCriterion.version + (changed ? 1 : 0) : 1,
+            ...semantic,
+          };
+        }),
         ...(requirement.semanticTags !== undefined ? { semanticTags: [...requirement.semanticTags] } : {}),
         blocking: requirement.blocking,
         source: requirement.source,
@@ -592,6 +618,34 @@ export function confirmGoalRequirementDraft(
       riskTags: [...new Set(active.flatMap((requirement) => requirement.riskTags))],
     },
   });
+  // The staged Requirement Draft is the canonical source for Criterion
+  // identity during confirmation.  Keep the semantic projection produced by
+  // Goal Contract validation, but explicitly restore the draft's immutable
+  // id/version by position.  This prevents a second materialization pass (or
+  // an interpreter revision that reordered criteria) from silently creating a
+  // new Criterion identity between requirements review and Library
+  // validation.
+  const draftRequirementsById = new Map(active.map((requirement) => [requirement.id, requirement]));
+  const projectedContract: GoalContractV1 = {
+    ...contract,
+    requirements: contract.requirements.map((requirement) => {
+      const draftRequirement = draftRequirementsById.get(requirement.id);
+      if (!draftRequirement || draftRequirement.acceptanceCriteria.length !== requirement.acceptanceCriteria.length) {
+        throw new Error(`confirmed Criterion projection drifted for Requirement ${requirement.id}`);
+      }
+      return {
+        ...requirement,
+        acceptanceCriteria: requirement.acceptanceCriteria.map((criterion, index) => ({
+          ...criterion,
+          id: draftRequirement.acceptanceCriteria[index]!.id,
+          version: previousContract ? draftRequirement.acceptanceCriteria[index]!.version : 1,
+        })),
+      };
+    }),
+  };
+  return previousContract
+    ? { ...projectedContract, revision: previousContract.revision + 1 }
+    : projectedContract;
 }
 
 const VALID_STATUSES = new Set<GoalRequirementDraftItemV1["status"]>([
@@ -601,6 +655,7 @@ const VALID_STATUSES = new Set<GoalRequirementDraftItemV1["status"]>([
   "superseded",
 ]);
 const VALID_EVIDENCE_KINDS = new Set<string>(EVIDENCE_KINDS);
+const VALID_ASSURANCE_CLASSES = new Set<RequirementValidationMode>(CRITERION_ASSURANCE_CLASSES);
 
 const REVISION_REVIEWABLE_ISSUES = new Set<GoalRequirementDraftIssueCode>([
   "blocking_inputs_unresolved",
@@ -616,7 +671,10 @@ function materializeRequirement(
   previous?: GoalRequirementDraftItemV1,
 ): GoalRequirementDraftItemV1 {
   const semanticCriteria = input.acceptanceCriteria.map((criterion) => ({
-    statement: criterion.statement,
+    observableClaim: criterion.observableClaim,
+    blocking: criterion.blocking,
+    verificationIntent: [...criterion.verificationIntent],
+    requiredAssurance: [...criterion.requiredAssurance],
     evidenceIntent: [...criterion.evidenceIntent],
   }));
   const semantic = {
@@ -637,10 +695,20 @@ function materializeRequirement(
   };
   const id = preservedId ?? `req-${contentHashForPayload(semantic).slice(0, 12)}`;
   const criteria = input.acceptanceCriteria.map((criterion, index) => {
-    const previousCriterion = previous?.acceptanceCriteria.find((item) => normalize(item.statement) === normalize(criterion.statement));
     const semanticCriterion = semanticCriteria[index]!;
+    const explicitPrevious = criterion.id === undefined
+      ? undefined
+      : previous?.acceptanceCriteria.find((item) => item.id === criterion.id);
+    if (criterion.id !== undefined && previous && !explicitPrevious) {
+      throw new Error(`unknown criterion id for requirement ${id}: ${criterion.id}`);
+    }
+    const previousCriterion = explicitPrevious
+      ?? previous?.acceptanceCriteria.find((item) => normalize(item.observableClaim) === normalize(criterion.observableClaim));
+    const changed = previousCriterion !== undefined
+      && contentHashForPayload(criterionSemantic(previousCriterion)) !== contentHashForPayload(semanticCriterion);
     return {
       id: previousCriterion?.id ?? `criterion-${contentHashForPayload({ requirementId: id, ...semanticCriterion }).slice(0, 12)}`,
+      version: previousCriterion ? previousCriterion.version + (changed ? 1 : 0) : 1,
       ...semanticCriterion,
     };
   });
@@ -654,7 +722,7 @@ function materializeRequirement(
 
 function finalizeRevision(draft: GoalRequirementDraftV1, requirements: GoalRequirementDraftItemV1[]): GoalRequirementDraftV1 {
   const withoutHash: DraftWithoutHash = {
-    schemaVersion: "southstar.goal_requirement_draft.v1",
+    schemaVersion: "southstar.goal_requirement_draft.v2",
     revision: draft.revision + 1,
     parentRevision: draft.revision,
     originalPrompt: draft.originalPrompt,
@@ -675,6 +743,13 @@ function validateDraftInput(input: GoalRequirementDraftInputV1): void {
   if (!Array.isArray(input.requirements) || input.requirements.length === 0) throw new Error("requirements must contain at least one requirement");
   if (!stringArrayValid(input.nonGoals) || !stringArrayValid(input.blockingInputs)) throw new Error("nonGoals and blockingInputs must be arrays of non-empty strings");
   for (const [index, requirement] of input.requirements.entries()) {
+    if (Array.isArray(requirement.acceptanceCriteria)) {
+      for (const [criterionIndex, criterion] of requirement.acceptanceCriteria.entries()) {
+        if (!criterion.requiredAssurance || criterion.requiredAssurance.length !== 1) {
+          throw new Error(`requirements.${index}.acceptanceCriteria.${criterionIndex}.requiredAssurance must contain exactly one assurance class; split compound assurance into separate Criteria`);
+        }
+      }
+    }
     if (!validateRequirementInputShape(requirement)) throw new Error(`requirements.${index} is invalid`);
   }
 }
@@ -713,11 +788,20 @@ function validateRequirementShape(requirement: unknown): boolean {
 
 function criterionInputShape(value: unknown): boolean {
   if (!isRecord(value)) return false;
-  return nonEmptyString(value.statement) && evidenceKindArrayValid(value.evidenceIntent);
+  return nonEmptyString(value.observableClaim)
+    && typeof value.blocking === "boolean"
+    && stringArrayValid(value.verificationIntent)
+    && value.verificationIntent.length > 0
+    && assuranceArrayValid(value.requiredAssurance)
+    && evidenceKindArrayValid(value.evidenceIntent);
 }
 
 function criterionDraftShape(value: unknown): boolean {
-  return isRecord(value) && nonEmptyString(value.id) && criterionInputShape(value);
+  return isRecord(value)
+    && nonEmptyString(value.id)
+    && Number.isInteger(value.version)
+    && Number(value.version) >= 1
+    && criterionInputShape(value);
 }
 
 function artifactInputShape(value: unknown): boolean {
@@ -737,7 +821,7 @@ function collectNestedRequirementIssues(
   } else {
     for (const [criterionIndex, criterion] of requirement.acceptanceCriteria.entries()) {
       if (!criterionDraftShape(criterion)) {
-        issues.push(issue("invalid_criterion", `${path}.acceptanceCriteria.${criterionIndex}`, "criterion needs id, statement, and evidenceIntent"));
+        issues.push(issue("invalid_criterion", `${path}.acceptanceCriteria.${criterionIndex}`, "criterion needs immutable identity, an atomic observable claim, verification intent, required assurance, and evidence intent"));
       }
     }
   }
@@ -783,7 +867,10 @@ function toRequirementInput(requirement: GoalRequirementDraftItemV1): GoalRequir
     businessRules: [...requirement.businessRules],
     acceptanceCriteria: requirement.acceptanceCriteria.map((criterion) => ({
       id: criterion.id,
-      statement: criterion.statement,
+      observableClaim: criterion.observableClaim,
+      blocking: criterion.blocking,
+      verificationIntent: [...criterion.verificationIntent],
+      requiredAssurance: [...criterion.requiredAssurance],
       evidenceIntent: [...criterion.evidenceIntent],
     })),
     expectedOutcomeArtifacts: requirement.expectedOutcomeArtifacts.map((artifact) => ({ ...artifact })),
@@ -797,7 +884,7 @@ function toRequirementInput(requirement: GoalRequirementDraftItemV1): GoalRequir
 }
 
 function cloneRequirement(requirement: GoalRequirementDraftItemV1): GoalRequirementDraftItemV1 {
-  return materializeRequirement(toRequirementInput(requirement), requirement.id, requirement.status);
+  return materializeRequirement(toRequirementInput(requirement), requirement.id, requirement.status, requirement);
 }
 
 function statusFor(openQuestions: string[]): GoalRequirementDraftItemV1["status"] {
@@ -818,6 +905,27 @@ function nonEmptyString(value: unknown): value is string {
 
 function normalize(value: string): string {
   return value.trim().replace(/\s+/g, " ").toLocaleLowerCase();
+}
+
+function criterionSemantic(criterion: GoalAcceptanceCriterionDraftV1): Omit<GoalAcceptanceCriterionDraftV1, "id" | "version"> {
+  return {
+    observableClaim: criterion.observableClaim,
+    blocking: criterion.blocking,
+    verificationIntent: [...criterion.verificationIntent],
+    requiredAssurance: [...criterion.requiredAssurance],
+    evidenceIntent: [...criterion.evidenceIntent],
+  };
+}
+
+function confirmedCriterionSemantic(
+  criterion: Pick<GoalAcceptanceCriterionDraftV1, "observableClaim" | "blocking" | "verificationIntent" | "requiredAssurance">,
+) {
+  return {
+    observableClaim: criterion.observableClaim,
+    blocking: criterion.blocking,
+    verificationIntent: [...criterion.verificationIntent],
+    requiredAssurance: [...criterion.requiredAssurance],
+  };
 }
 
 function issue(code: GoalRequirementDraftIssueCode, path: string, message: string): GoalRequirementDraftIssue {
@@ -846,7 +954,13 @@ const REQUIREMENT_SEMANTIC_KEYS = [
   "riskTags",
   "interactionContractRefs",
 ] as const;
-const REQUIREMENT_CRITERION_KEYS = ["statement", "evidenceIntent"] as const;
+const REQUIREMENT_CRITERION_KEYS = [
+  "observableClaim",
+  "blocking",
+  "verificationIntent",
+  "requiredAssurance",
+  "evidenceIntent",
+] as const;
 const REQUIREMENT_ARTIFACT_KEYS = ["description", "mediaType"] as const;
 const REQUIREMENT_TOP_LEVEL_KEYS = ["summary", "requirements", "nonGoals", "blockingInputs"] as const;
 const REQUIREMENT_SEMANTIC_PROMPT_SCHEMA = {
@@ -857,7 +971,13 @@ const REQUIREMENT_SEMANTIC_PROMPT_SCHEMA = {
   blocking: "boolean",
   userVisibleBehaviors: ["string"],
   businessRules: ["string"],
-  acceptanceCriteria: [{ statement: "string", evidenceIntent: ["EvidenceKind"] }],
+  acceptanceCriteria: [{
+    observableClaim: "one atomic observable claim",
+    blocking: "boolean",
+    verificationIntent: ["how the claim will be verified"],
+    requiredAssurance: ["exactly one: deterministic | browser_interaction | semantic_review | human_approval"],
+    evidenceIntent: ["EvidenceKind"],
+  }],
   expectedOutcomeArtifacts: [{ description: "string", mediaType: "string?" }],
   verificationIntent: ["string"],
   assumptions: ["string"],
@@ -865,6 +985,11 @@ const REQUIREMENT_SEMANTIC_PROMPT_SCHEMA = {
   riskTags: ["string"],
   interactionContractRefs: ["string"],
 } as const;
+
+export const GOAL_REQUIREMENT_CRITERION_PROMPT_VERSION = "southstar.goal_requirement.atomic_criterion.v1";
+export const GOAL_REQUIREMENT_CRITERION_SCHEMA_HASH = contentHashForPayload(
+  REQUIREMENT_SEMANTIC_PROMPT_SCHEMA.acceptanceCriteria[0],
+);
 
 type GoalRequirementDraftSemanticV1 = Omit<GoalRequirementDraftInputV1, "goalPrompt" | "cwd" | "projectRef">;
 type GoalRequirementDraftSemanticPatchV1 = Partial<Omit<GoalRequirementDraftItemInputV1, "id" | "status">>;
@@ -904,6 +1029,8 @@ function renderRequirementInterpretationPrompt(input: {
     "Return exactly the requirement fields shown above. Every array item must be a non-empty string unless it is an object shown in the schema.",
     "Use [] for empty arrays. Do not use null, false, objects, or empty strings as array entries.",
     "Requirements must describe independently verifiable observable outcomes, including user-visible behaviors, rules, acceptance criteria, expected artifacts, verification intent, and semanticTags. semanticTags are short lower-case or kebab-case outcome/domain concepts; do not use technical ids or vocabulary supplied by host code.",
+    "Each acceptance criterion must contain exactly one atomic observable claim. Claims with independent failure reasons, artifact owners, or repair responsibilities must be separate criteria; never combine them into one criterion.",
+    "Set criterion.blocking independently, describe its verificationIntent, and select exactly one requiredAssurance class. Assurance classes are deterministic, browser_interaction, semantic_review, and human_approval. If a claim needs multiple independent assurance classes, split it into separate atomic Criteria with separate observable claims or verification responsibilities.",
     `Every acceptanceCriteria.evidenceIntent value must be one of these exact host evidence kinds: ${EVIDENCE_KINDS.join(", ")}. Translate semantic evidence requests into these values; never put prose in evidenceIntent.`,
     "Set interactionContractRefs only when that requirement's acceptance depends on reviewing a visual layout, visible UI state, responsive behavior, accessibility behavior, or an interactive screen transition.",
     "Do not attach interactionContractRefs to persistence, data integrity, offline operation, implementation, automated testing, packaging, or other non-visual requirements merely because the overall goal includes a UI. Use [] for those requirements.",
@@ -952,6 +1079,7 @@ function renderRequirementRevisionPrompt(input: {
     JSON.stringify(REQUIREMENT_SEMANTIC_PROMPT_SCHEMA),
     "Every requirement in draft, create, merge, or split must include every field in RevisionRequirementSemanticSchema, including unchanged source, blocking, and riskTags. An update patch may include only changed semantic fields.",
     "For kind=needs_input, return exactly kind and question.",
+    "Every revised acceptance criterion must keep exactly one requiredAssurance class. If a claim needs multiple independent assurance classes, split it into separate atomic Criteria; duplicate modes are forbidden.",
     `Every revised acceptanceCriteria.evidenceIntent value must remain one of these exact host evidence kinds: ${EVIDENCE_KINDS.join(", ")}. Never put prose in evidenceIntent.`,
     "For every remaining openQuestions or blockingInputs item with a finite decision set, include 2-4 concise answer options in the same string using: Question? Options: A) ...; B) ...; C) ... . Use a short-answer question only when finite options are not reasonable.",
     "When the user answers a question, apply the answer and remove that question only when the decision is fully resolved; preserve answer options for any remaining question.",
@@ -1040,7 +1168,9 @@ function parseUiInteractionContractDesign(
   return contracts;
 }
 
-function renderRequirementRepairPrompt(basePrompt: string, response: string, error: unknown): string {
+function renderRequirementRepairPrompt(
+  basePrompt: string, response: string, error: unknown,
+): string {
   return [
     basePrompt,
     "",
@@ -1147,7 +1277,10 @@ function parseSemanticPatch(value: unknown, path: string): GoalRequirementDraftS
       const criterionObject = parseJsonObject(criterion, criterionPath);
       exactSemanticKeys(criterionObject, REQUIREMENT_CRITERION_KEYS, criterionPath);
       return {
-        statement: requiredString(criterionObject.statement, `${criterionPath}.statement`),
+        observableClaim: requiredString(criterionObject.observableClaim, `${criterionPath}.observableClaim`),
+        blocking: requiredBoolean(criterionObject.blocking, `${criterionPath}.blocking`),
+        verificationIntent: requiredStringArray(criterionObject.verificationIntent, `${criterionPath}.verificationIntent`),
+        requiredAssurance: requiredAssurance(criterionObject.requiredAssurance, `${criterionPath}.requiredAssurance`),
         evidenceIntent: requiredEvidenceKinds(criterionObject.evidenceIntent, `${criterionPath}.evidenceIntent`),
       };
     });
@@ -1178,7 +1311,10 @@ function parseSemanticRequirement(value: unknown, index: number, prefix = "requi
     const criterionObject = parseJsonObject(criterion, criterionPath);
     exactSemanticKeys(criterionObject, REQUIREMENT_CRITERION_KEYS, criterionPath);
     return {
-      statement: requiredString(criterionObject.statement, `${criterionPath}.statement`),
+      observableClaim: requiredString(criterionObject.observableClaim, `${criterionPath}.observableClaim`),
+      blocking: requiredBoolean(criterionObject.blocking, `${criterionPath}.blocking`),
+      verificationIntent: requiredStringArray(criterionObject.verificationIntent, `${criterionPath}.verificationIntent`),
+      requiredAssurance: requiredAssurance(criterionObject.requiredAssurance, `${criterionPath}.requiredAssurance`),
       evidenceIntent: requiredEvidenceKinds(criterionObject.evidenceIntent, `${criterionPath}.evidenceIntent`),
     };
   });
@@ -1236,9 +1372,18 @@ function applySemanticRequirementRevision(
   });
   const requirements = materialized.requirements.map((requirement, index) => {
     const existing = existingById.get(mappedIds[index]!);
-    return existing
-      ? materializeRequirement(toRequirementInput(requirement), existing.id, existing.status === "superseded" ? "superseded" : undefined, existing)
-      : requirement;
+    if (!existing) return requirement;
+    const semanticInput = toRequirementInput(requirement);
+    semanticInput.acceptanceCriteria = reconcileSemanticCriterionIdentities(
+      semanticInput.acceptanceCriteria,
+      existing.acceptanceCriteria,
+    );
+    return materializeRequirement(
+      semanticInput,
+      existing.id,
+      existing.status === "superseded" ? "superseded" : undefined,
+      existing,
+    );
   });
   const included = new Set(requirements.map((requirement) => requirement.id));
   for (const existing of currentDraft.requirements) {
@@ -1253,6 +1398,45 @@ function applySemanticRequirementRevision(
     },
     requirements,
   );
+}
+
+function reconcileSemanticCriterionIdentities(
+  proposed: GoalAcceptanceCriterionDraftInputV1[],
+  previous: GoalAcceptanceCriterionDraftV1[],
+): GoalAcceptanceCriterionDraftInputV1[] {
+  const reconciled: GoalAcceptanceCriterionDraftInputV1[] = proposed.map(({ id: _id, ...criterion }) => criterion);
+  const usedPreviousIds = new Set<string>();
+  const unmatchedProposedIndexes: number[] = [];
+
+  for (const [index, criterion] of reconciled.entries()) {
+    const exact = previous.find((entry) => (
+      !usedPreviousIds.has(entry.id)
+      && contentHashForPayload(criterionSemantic(entry)) === contentHashForPayload(criterion)
+    ));
+    const sameClaim = previous.find((entry) => (
+      !usedPreviousIds.has(entry.id)
+      && normalize(entry.observableClaim) === normalize(criterion.observableClaim)
+    ));
+    const matched = exact ?? sameClaim;
+    if (matched) {
+      usedPreviousIds.add(matched.id);
+      reconciled[index] = { ...criterion, id: matched.id };
+    } else {
+      unmatchedProposedIndexes.push(index);
+    }
+  }
+
+  const unmatchedPrevious = previous.filter((criterion) => !usedPreviousIds.has(criterion.id));
+  if (unmatchedProposedIndexes.length > 0 && unmatchedPrevious.length > 0) {
+    if (unmatchedProposedIndexes.length === 1 && unmatchedPrevious.length === 1) {
+      const index = unmatchedProposedIndexes[0]!;
+      reconciled[index] = { ...reconciled[index]!, id: unmatchedPrevious[0]!.id };
+    } else {
+      throw new Error("ambiguous Criterion revision: revise one unmatched Criterion at a time or preserve its observable claim");
+    }
+  }
+
+  return reconciled;
 }
 
 function applySemanticRequirementOperation(
@@ -1433,8 +1617,31 @@ function requiredEvidenceKinds(value: unknown, path: string): EvidenceKind[] {
   return values as EvidenceKind[];
 }
 
+function requiredAssurance(value: unknown, path: string): RequirementValidationMode[] {
+  const values = requiredStringArray(value, path);
+  if (values.length !== 1) throw new Error(`${path} must contain exactly one assurance class; split compound assurance into separate Criteria`);
+  const unsupported = values.filter((item) => !VALID_ASSURANCE_CLASSES.has(item as RequirementValidationMode));
+  if (unsupported.length > 0) {
+    throw new Error(`${path} contains unsupported assurance classes: ${unsupported.join(", ")}`);
+  }
+  if (new Set(values).size !== values.length) throw new Error(`${path} must not contain duplicate assurance classes`);
+  return values as RequirementValidationMode[];
+}
+
+function requiredBoolean(value: unknown, path: string): boolean {
+  if (typeof value !== "boolean") throw new Error(`${path} must be a boolean`);
+  return value;
+}
+
 function evidenceKindArrayValid(value: unknown): value is EvidenceKind[] {
   return stringArrayValid(value) && value.every((item) => VALID_EVIDENCE_KINDS.has(item));
+}
+
+function assuranceArrayValid(value: unknown): value is RequirementValidationMode[] {
+  return stringArrayValid(value)
+    && value.length === 1
+    && new Set(value).size === value.length
+    && value.every((item) => VALID_ASSURANCE_CLASSES.has(item as RequirementValidationMode));
 }
 
 function requiredString(value: unknown, path: string): string {

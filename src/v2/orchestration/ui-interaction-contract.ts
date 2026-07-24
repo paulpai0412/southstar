@@ -53,8 +53,19 @@ export type UiInteractionContractScreenV1 = {
   accessibilityRules: string[];
 };
 
+export type UiInteractionCriterionBindingInputV1 = {
+  criterionId: string;
+  screenIds: string[];
+  elementIds: string[];
+  actionIds: string[];
+};
+
+export type UiInteractionCriterionBindingV1 = UiInteractionCriterionBindingInputV1 & {
+  criterionVersion: number;
+};
+
 export type UiInteractionContractV1 = {
-  schemaVersion: "southstar.ui_interaction_contract.v1";
+  schemaVersion: "southstar.ui_interaction_contract.v2";
   id: string;
   revision: number;
   parentRevision?: number;
@@ -62,19 +73,16 @@ export type UiInteractionContractV1 = {
   requirementIds: string[];
   screens: UiInteractionContractScreenV1[];
   flows: Array<{ id: string; steps: string[]; successOutcome: string }>;
-  criterionBindings: Array<{
-    criterionId: string;
-    screenIds: string[];
-    elementIds: string[];
-    actionIds: string[];
-  }>;
+  criterionBindings: UiInteractionCriterionBindingV1[];
   contractHash: string;
 };
 
 export type UiInteractionContractInputV1 = Pick<
   UiInteractionContractV1,
-  "requirementIds" | "screens" | "flows" | "criterionBindings"
->;
+  "requirementIds" | "screens" | "flows"
+> & {
+  criterionBindings: UiInteractionCriterionBindingInputV1[];
+};
 
 export type UiInteractionContractIssueCode =
   | "invalid_contract"
@@ -100,6 +108,7 @@ export type UiInteractionContractIssueCode =
   | "invalid_flow"
   | "unknown_flow_action"
   | "unknown_criterion"
+  | "stale_criterion_binding"
   | "unknown_binding_screen"
   | "unknown_binding_element"
   | "unknown_binding_action"
@@ -158,8 +167,14 @@ export function finalizeUiInteractionContract(
   host: { id?: string; revision?: number; parentRevision?: number; status?: UiInteractionContractStatus } = {},
 ): UiInteractionContractV1 {
   const id = host.id ?? inferContractId(input.requirementIds, requirementDraft);
+  const criteria = new Map(
+    requirementDraft.requirements
+      .filter((requirement) => input.requirementIds.includes(requirement.id))
+      .flatMap((requirement) => requirement.acceptanceCriteria)
+      .map((criterion) => [criterion.id, criterion]),
+  );
   const withoutHash: ContractWithoutHash = {
-    schemaVersion: "southstar.ui_interaction_contract.v1",
+    schemaVersion: "southstar.ui_interaction_contract.v2",
     id,
     revision: host.revision ?? 1,
     ...(host.parentRevision !== undefined ? { parentRevision: host.parentRevision } : {}),
@@ -167,7 +182,10 @@ export function finalizeUiInteractionContract(
     requirementIds: [...input.requirementIds],
     screens: structuredClone(input.screens),
     flows: structuredClone(input.flows),
-    criterionBindings: structuredClone(input.criterionBindings),
+    criterionBindings: input.criterionBindings.map((binding) => ({
+      ...structuredClone(binding),
+      criterionVersion: criteria.get(binding.criterionId)?.version ?? 0,
+    })),
   };
   const contract = { ...withoutHash, contractHash: uiInteractionContractHash(withoutHash) };
   const issues = validateUiInteractionContract(contract, requirementDraft);
@@ -191,7 +209,7 @@ export function reviseUiInteractionContract(
     requirementIds: [...current.requirementIds],
     screens: structuredClone(current.screens),
     flows: structuredClone(current.flows),
-    criterionBindings: structuredClone(current.criterionBindings),
+    criterionBindings: current.criterionBindings.map(({ criterionVersion: _criterionVersion, ...binding }) => structuredClone(binding)),
   };
   let status: UiInteractionContractStatus = current.status === "confirmed" ? "draft" : current.status;
 
@@ -251,7 +269,7 @@ export function validateUiInteractionContract(
 ): UiInteractionContractIssue[] {
   const issues: UiInteractionContractIssue[] = [];
   if (!record(contract)) return [issue("invalid_contract", "contract", "UI interaction contract must be an object")];
-  if (contract.schemaVersion !== "southstar.ui_interaction_contract.v1") issues.push(issue("invalid_schema_version", "schemaVersion", "unsupported UI interaction contract schema version"));
+  if (contract.schemaVersion !== "southstar.ui_interaction_contract.v2") issues.push(issue("invalid_schema_version", "schemaVersion", "unsupported UI interaction contract schema version"));
   if (!nonEmpty(contract.id)) issues.push(issue("invalid_contract_id", "id", "contract id must be non-empty"));
   if (!Number.isInteger(contract.revision) || contract.revision < 1) issues.push(issue("invalid_revision", "revision", "revision must be a positive integer"));
   if (contract.parentRevision !== undefined && (!Number.isInteger(contract.parentRevision) || contract.parentRevision < 1 || contract.parentRevision >= contract.revision)) {
@@ -351,16 +369,34 @@ export function validateUiInteractionContract(
     for (const actionId of flow.steps) if (!globalActionIds.has(actionId)) issues.push(issue("unknown_flow_action", `${path}.steps`, `unknown action: ${actionId}`));
   }
 
-  const knownCriteria = new Set([...activeRequirements.values()].flatMap((requirement) => requirement.acceptanceCriteria.map((criterion) => criterion.id)));
+  const knownCriteria = new Map(
+    [...activeRequirements.values()]
+      .flatMap((requirement) => requirement.acceptanceCriteria)
+      .map((criterion) => [criterion.id, criterion]),
+  );
   const boundCriteria = new Set<string>();
   for (const [bindingIndex, binding] of (Array.isArray(contract.criterionBindings) ? contract.criterionBindings : []).entries()) {
     const path = `criterionBindings.${bindingIndex}`;
-    if (!record(binding) || !nonEmpty(binding.criterionId) || !stringArray(binding.screenIds) || !stringArray(binding.elementIds) || !stringArray(binding.actionIds)) {
+    if (!record(binding)
+      || !nonEmpty(binding.criterionId)
+      || !Number.isInteger(binding.criterionVersion)
+      || binding.criterionVersion < 1
+      || !stringArray(binding.screenIds)
+      || !stringArray(binding.elementIds)
+      || !stringArray(binding.actionIds)) {
       issues.push(issue("unknown_criterion", path, "criterion binding is malformed"));
       continue;
     }
     unique(boundCriteria, binding.criterionId, `${path}.criterionId`, issues);
-    if (!knownCriteria.has(binding.criterionId)) issues.push(issue("unknown_criterion", `${path}.criterionId`, `unknown criterion: ${binding.criterionId}`));
+    const criterion = knownCriteria.get(binding.criterionId);
+    if (!criterion) issues.push(issue("unknown_criterion", `${path}.criterionId`, `unknown criterion: ${binding.criterionId}`));
+    else if (criterion.version !== binding.criterionVersion) {
+      issues.push(issue(
+        "stale_criterion_binding",
+        `${path}.criterionVersion`,
+        `criterion binding version ${binding.criterionVersion} does not match current version ${criterion.version}`,
+      ));
+    }
     for (const id of binding.screenIds) if (!screenIds.has(id)) issues.push(issue("unknown_binding_screen", `${path}.screenIds`, `unknown screen: ${id}`));
     for (const id of binding.elementIds) if (!globalElementIds.has(id)) issues.push(issue("unknown_binding_element", `${path}.elementIds`, `unknown element: ${id}`));
     for (const id of binding.actionIds) if (!globalActionIds.has(id)) issues.push(issue("unknown_binding_action", `${path}.actionIds`, `unknown action: ${id}`));

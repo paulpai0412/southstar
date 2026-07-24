@@ -703,9 +703,9 @@ test("requirement evaluation persists a blocking incompatibility for legacy cove
     });
 
     assert.equal(result.ok, false);
-    assert.deepEqual(result.failedBlockingRequirementIds, ["req-offline"]);
+    assert.deepEqual(result.failedBlockingRequirementIds, []);
     assert.deepEqual(result.findings, [
-      "canonical_criterion_coverage_required: requirement req-offline has no frozen criterion coverage",
+      "canonical_goal_requirement_coverage_invalid: run run-requirement-legacy-coverage frozen Goal Requirement Coverage is incompatible with canonical Goal Design lineage",
     ]);
     const exception = await db.one<{ status: string; payload_json: { providerEvidence: { code: string; message: string } } }>(
       `select status, payload_json
@@ -714,7 +714,7 @@ test("requirement evaluation persists a blocking incompatibility for legacy cove
       [fixture.runId],
     );
     assert.equal(exception.status, "blocked");
-    assert.equal(exception.payload_json.providerEvidence.code, "canonical_criterion_coverage_required");
+    assert.equal(exception.payload_json.providerEvidence.code, "canonical_goal_requirement_coverage_invalid");
     assert.equal(exception.payload_json.providerEvidence.message, result.findings[0]);
   });
 });
@@ -789,6 +789,8 @@ test("a shared evaluator artifact may report frozen criteria for every covered r
               criterionId: `criterion-${requirementId}`,
               acceptanceCriterion: `${requirementId} is independently verified`,
               expectedEvidenceKinds: ["artifact-ref"],
+              procedureRef: "procedure.test",
+              verificationMode: "deterministic",
             },
           })),
           onFailure: { defaultStrategy: "request-workflow-revision" },
@@ -859,11 +861,23 @@ test("frozen coverage scopes a shared evaluator pipeline by validation binding",
               criterionId: `criterion-${requirementId}`,
               acceptanceCriterion: `${requirementId} is independently verified`,
               expectedEvidenceKinds: ["artifact-ref"],
+              procedureRef: "procedure.test",
+              verificationMode: "deterministic",
             },
           })),
           onFailure: { defaultStrategy: "request-workflow-revision" },
         }],
       })],
+    );
+    await db.query(
+      `update southstar.workflow_runs
+          set workflow_manifest_json = jsonb_set(
+            workflow_manifest_json,
+            '{tasks,0,evaluatorPipelineRef}',
+            to_jsonb('shared-quality'::text)
+          )
+        where id = $1`,
+      [runId],
     );
 
     const contexts = await loadFrozenCoverageContextsPg(db, [runId]);
@@ -945,19 +959,22 @@ test("requirement evaluator profile must match the persisted manifest task", asy
       [fixture.runId],
     );
 
-    await assert.rejects(
-      ingestTaskRunResultPg(db, verifierCallback({
-        runId: fixture.runId,
-        artifact: {
-          kind: "verification_report",
-          pass: true,
-          commandsRun: [{ command: "npm test", status: "passed" }],
-          testResults: [{ status: "passed" }],
-          verifiedArtifactRefs: [fixture.producerArtifactRefId],
-        },
-      })),
-      /evaluator profile different-evaluator does not match frozen coverage for task task-verify/,
+    const result = await ingestTaskRunResultPg(db, verifierCallback({
+      runId: fixture.runId,
+      artifact: {
+        kind: "verification_report",
+        pass: true,
+        commandsRun: [{ command: "npm test", status: "passed" }],
+        testResults: [{ status: "passed" }],
+        verifiedArtifactRefs: [fixture.producerArtifactRefId],
+      },
+    }));
+    assert.equal(result.accepted, false);
+    const exception = await db.one<{ payload_json: { providerEvidence: { code: string } } }>(
+      "select payload_json from southstar.runtime_resources where resource_type = 'runtime_exception' and run_id = $1",
+      [fixture.runId],
     );
+    assert.equal(exception.payload_json.providerEvidence.code, "canonical_goal_requirement_coverage_invalid");
   });
 });
 
@@ -1101,12 +1118,63 @@ test("a callback with frozen coverage but missing canonical lineage persists a b
   });
 });
 
+test("browser criterion blocks evaluator acceptance without runtime-observed Playwright CLI evidence", async () => {
+  await withDb(async (db) => {
+    const fixture = await seedRequirementEvidenceRun(db, "run-browser-cli-evidence-required", {
+      verificationMode: "browser_interaction",
+    });
+    const coverage = requirementCoverage(["req-offline"], fixture.goalContractHash);
+    coverage.entries[0]!.requiredEvidenceKinds = ["artifact-ref"];
+    coverage.entries[0]!.criterionBindings[0]!.verificationMode = "browser_interaction";
+    coverage.entries[0]!.criterionBindings[0]!.procedureRef = "procedure.browser-interaction";
+    await replaceRequirementCoverage(db, fixture.runId, coverage);
+
+    const result = await recordRequirementEvaluatorResultsPg(db, {
+      runId: fixture.runId,
+      taskId: "task-verify",
+      artifactRefId: "artifact-ref:browser-cli-verification",
+      artifact: {
+        verdict: "passed",
+        verifiedArtifactRefs: [fixture.producerArtifactRefId],
+        commandsRun: [
+          { command: "playwright-cli open http://127.0.0.1:30141", status: "passed", ok: true },
+          { command: "playwright-cli snapshot", status: "passed", ok: true },
+        ],
+        criteriaResults: [{
+          criterionId: "criterion-req-offline",
+          verificationMode: "browser_interaction",
+          verdict: "passed",
+          evidenceRefs: [fixture.producerArtifactRefId],
+          findings: [],
+        }],
+      },
+      callbackOk: true,
+      rootSessionId: "session-1",
+      attemptId: "attempt-1",
+      handExecutionId: `hand-execution:${fixture.runId}:task-verify:attempt-1`,
+    });
+
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.failedBlockingRequirementIds, ["req-offline"]);
+    assert.equal(result.findings.includes(
+      "browser interaction requires a successful direct playwright-cli navigation command",
+    ), true);
+    assert.equal(result.findings.includes(
+      "browser interaction requires a successful direct playwright-cli observation command",
+    ), true);
+  });
+});
+
 test("browser verifier evidence passes only with valid structured URL and screenshot evidence", async () => {
   await withDb(async (db) => {
-    const fixture = await seedRequirementEvidenceRun(db, "run-browser-requirement-evidence");
+    const fixture = await seedRequirementEvidenceRun(db, "run-browser-requirement-evidence", {
+      verificationMode: "browser_interaction",
+    });
     const workspace = await mkdtemp(join(tmpdir(), "southstar-screenshot-"));
     const coverage = requirementCoverage(["req-offline"], fixture.goalContractHash);
     coverage.entries[0]!.requiredEvidenceKinds = ["artifact-ref", "url", "screenshot"];
+    coverage.entries[0]!.criterionBindings[0]!.verificationMode = "browser_interaction";
+    coverage.entries[0]!.criterionBindings[0]!.procedureRef = "procedure.browser-interaction";
     await replaceRequirementCoverage(db, fixture.runId, coverage);
     try {
       const screenshotBytes = ONE_PIXEL_PNG;
@@ -1127,6 +1195,20 @@ test("browser verifier evidence passes only with valid structured URL and screen
             url: "https://example.test/subscriptions?view=summary#details",
             screenshots: [{ path: "artifacts/subscription-page.png" }],
           },
+          runtimeCommandExecutions: [
+            {
+              ref: "playwright-cli open https://example.test/subscriptions?view=summary#details --browser chromium",
+              command: "playwright-cli open https://example.test/subscriptions?view=summary#details --browser chromium",
+              status: "passed",
+              ok: true,
+            },
+            {
+              ref: "playwright-cli screenshot --filename artifacts/subscription-page.png",
+              command: "playwright-cli screenshot --filename artifacts/subscription-page.png",
+              status: "passed",
+              ok: true,
+            },
+          ],
         },
       }));
 
@@ -1742,10 +1824,12 @@ test("non-blocking uncovered Goal Contract entries do not block a valid evaluato
       requirementId: "req-optional",
       producerTaskIds: [],
       artifactRefs: [],
+      artifactContractRefs: [],
       evaluatorTaskIds: [],
       evaluatorProfileRefs: [],
       evaluatorProfileVersionRefs: [],
       criterionIds: [],
+      criterionBindings: [],
       acceptanceCriteria: [],
       requiredEvidenceKinds: [],
     });
@@ -1762,7 +1846,7 @@ test("optional evaluator evidence is persisted without failing a passing blockin
       requirementIds: ["req-blocking", "req-optional"],
       nonBlockingRequirementIds: ["req-optional"],
     });
-    const coverage = requirementCoverage(["req-blocking", "req-optional"], fixture.goalContractHash);
+    const coverage = requirementCoverage(["req-blocking", "req-optional"], fixture.goalContractHash, undefined, ["req-blocking"]);
     coverage.entries[0]!.requiredEvidenceKinds = ["artifact-ref"];
     coverage.entries[1]!.requiredEvidenceKinds = ["artifact-ref", "screenshot"];
     await replaceRequirementCoverage(db, fixture.runId, coverage);
@@ -1835,7 +1919,10 @@ test("producer artifacts match frozen coverage through host-owned contract refs 
 async function seedRunTask(db: SouthstarDb, runId: string, taskId: string): Promise<void> {
   const goalContract = requirementGoalContract(["req-callback"], ["req-callback"]);
   const contractHash = goalContractHash(goalContract);
-  const goalDesignPackage = canonicalGoalDesignPackageFixture(goalContract);
+  const goalDesignPackage = canonicalGoalDesignPackageFixture(goalContract, undefined, {
+    evaluatorProfileRef: "evaluator.software-verification-quality",
+    evaluatorProfileVersionRef: "evaluator.software-verification-quality@2",
+  });
   const draftId = `draft-${runId}`;
   await upsertRuntimeResourcePg(db, {
     resourceType: "planner_draft",
@@ -1946,14 +2033,29 @@ async function seedRequirementEvidenceRun(
     nonBlockingRequirementIds?: string[];
     producerContractRefs?: string[];
     coverageArtifactRefs?: string[];
-    manifestArtifactContracts?: Array<{ id: string; artifactType: string; requiredFields: string[]; evidenceFields: string[] }>;
+    manifestArtifactContracts?: Array<{
+      id: string;
+      artifactType: string;
+      requiredFields: string[];
+      evidenceFields: string[];
+      libraryObjectRef?: string;
+      libraryVersionRef?: string;
+    }>;
+    verificationMode?: "deterministic" | "browser_interaction";
   } = {},
 ): Promise<{ runId: string; producerArtifactRefId: string; goalContractHash: string }> {
   await seedRunTask(db, runId, "task-verify");
   const requirementIds = options.requirementIds ?? ["req-offline"];
-  const goalContract = requirementGoalContract(requirementIds, options.nonBlockingRequirementIds);
+  const goalContract = requirementGoalContract(
+    requirementIds,
+    options.nonBlockingRequirementIds,
+    options.verificationMode,
+  );
   const contractHash = goalContractHash(goalContract);
-  const goalDesignPackage = canonicalGoalDesignPackageFixture(goalContract);
+  const goalDesignPackage = canonicalGoalDesignPackageFixture(goalContract, undefined, {
+    evaluatorProfileRef: "evaluator.software-verification-quality",
+    evaluatorProfileVersionRef: "evaluator.software-verification-quality@2",
+  });
   const draftId = `draft-${runId}`;
   await upsertRuntimeResourcePg(db, {
     id: draftId,
@@ -1985,7 +2087,16 @@ async function seedRequirementEvidenceRun(
         goalContractHash: contractHash,
         goalDesignPackageHash: goalDesignPackage.packageHash,
       }),
-      JSON.stringify(options.manifestArtifactContracts ? { artifactContracts: options.manifestArtifactContracts } : {}),
+      JSON.stringify({
+        artifactContracts: options.manifestArtifactContracts ?? [{
+          id: "artifact.implementation_report",
+          artifactType: "implementation_report",
+          requiredFields: ["summary"],
+          evidenceFields: [],
+          libraryObjectRef: "artifact.implementation_report",
+          libraryVersionRef: "artifact.implementation_report@2",
+        }],
+      }),
       JSON.stringify([
         {
           id: "task-verify",
@@ -2020,13 +2131,19 @@ async function seedRequirementEvidenceRun(
     status: "accepted",
     content: { kind: "implementation_report", summary: "built" },
     contractRefs: options.producerContractRefs ?? ["implementation_report"],
+    contractVersionRefs: [options.manifestArtifactContracts?.[0]?.libraryVersionRef ?? "artifact.implementation_report@2"],
     summary: "Build artifact",
     producedAt: "2026-07-10T00:00:00.000Z",
   });
   await replaceRequirementCoverage(
     db,
     runId,
-    requirementCoverage(requirementIds, contractHash, options.coverageArtifactRefs),
+    requirementCoverage(
+      requirementIds,
+      contractHash,
+      options.coverageArtifactRefs,
+      requirementIds.filter((requirementId) => !(options.nonBlockingRequirementIds ?? []).includes(requirementId)),
+    ),
   );
   await seedEvaluatorAttempt(db, {
     runId,
@@ -2038,7 +2155,13 @@ async function seedRequirementEvidenceRun(
   return { runId, producerArtifactRefId: producerArtifact.artifactRefId, goalContractHash: contractHash };
 }
 
-function requirementCoverage(requirementIds: string[], contractHash: string, artifactRefs = ["artifact.implementation_report"]) {
+function requirementCoverage(
+  requirementIds: string[],
+  contractHash: string,
+  artifactRefs = ["artifact.implementation_report"],
+  blockingRequirementIds = requirementIds,
+) {
+  const blockingIds = new Set(blockingRequirementIds);
   return {
     schemaVersion: "southstar.goal_requirement_coverage.v1",
     goalContractHash: contractHash,
@@ -2046,10 +2169,23 @@ function requirementCoverage(requirementIds: string[], contractHash: string, art
       requirementId,
       producerTaskIds: ["task-build"],
       artifactRefs,
+      artifactContractRefs: ["artifact.implementation_report"],
       evaluatorTaskIds: ["task-verify"],
       evaluatorProfileRefs: ["evaluator.software-verification-quality"],
       evaluatorProfileVersionRefs: ["evaluator.software-verification-quality@2"],
       validationBindingId: `binding-${requirementId}`,
+      criterionBindings: [{
+        criterionId: `criterion-${requirementId}`,
+        criterionVersion: 1,
+        blocking: blockingIds.has(requirementId),
+        artifactContractRef: "artifact.implementation_report",
+        artifactContractVersionRef: "artifact.implementation_report@2",
+        evaluatorProfileRef: "evaluator.software-verification-quality",
+        evaluatorProfileVersionRef: "evaluator.software-verification-quality@2",
+        verificationMode: "deterministic",
+        procedureRef: "procedure.test",
+        expectedEvidenceKinds: ["artifact-ref", "command-output", "test-result"],
+      }],
       criterionIds: [`criterion-${requirementId}`],
       acceptanceCriteria: [`${requirementId} is independently verified`],
       requiredEvidenceKinds: ["artifact-ref", "command-output", "test-result"],
@@ -2090,10 +2226,11 @@ async function upgradeRequirementCoverageToV2(
 function requirementGoalContract(
   requirementIds: string[],
   nonBlockingIds: string[] = [],
+  verificationMode: "deterministic" | "browser_interaction" = "deterministic",
 ): GoalContractV1 {
   const prompt = "Build and independently verify the requested feature";
   return {
-    schemaVersion: "southstar.goal_contract.v1",
+    schemaVersion: "southstar.goal_contract.v2",
     originalPrompt: prompt,
     promptHash: createHash("sha256").update(prompt).digest("hex"),
     revision: 1,
@@ -2105,7 +2242,14 @@ function requirementGoalContract(
     requirements: requirementIds.map((id) => ({
       id,
       statement: `Satisfy ${id}`,
-      acceptanceCriteria: [`${id} is independently verified`],
+      acceptanceCriteria: [{
+        id: `criterion-${id}`,
+        version: 1,
+        observableClaim: `${id} is independently verified`,
+        blocking: !nonBlockingIds.includes(id),
+        verificationIntent: ["Verify the accepted artifact with the independent evaluator."],
+        requiredAssurance: [verificationMode],
+      }],
       blocking: !nonBlockingIds.includes(id),
       source: "explicit",
       expectedArtifacts: [],
@@ -2227,6 +2371,19 @@ async function seedEvaluatorAttempt(
 }
 
 async function replaceRequirementCoverage(db: SouthstarDb, runId: string, payload: unknown): Promise<void> {
+  const entries = (payload as { entries?: Array<ReturnType<typeof requirementCoverage>["entries"][number]> }).entries;
+  if (Array.isArray(entries)) {
+    for (const entry of entries) {
+      if (!Array.isArray(entry.criterionBindings) || entry.criterionBindings.length === 0) continue;
+      entry.criterionBindings = entry.criterionBindings.map((binding) => ({
+        ...binding,
+        artifactContractRef: entry.artifactContractRefs?.[0] ?? binding.artifactContractRef,
+        evaluatorProfileRef: entry.evaluatorProfileRefs[0] ?? binding.evaluatorProfileRef,
+        evaluatorProfileVersionRef: entry.evaluatorProfileVersionRefs[0] ?? binding.evaluatorProfileVersionRef,
+        expectedEvidenceKinds: [...entry.requiredEvidenceKinds],
+      }));
+    }
+  }
   await upsertRuntimeResourcePg(db, {
     id: `goal-requirement-coverage:${runId}`,
     resourceType: "goal_requirement_coverage",
@@ -2237,7 +2394,6 @@ async function replaceRequirementCoverage(db: SouthstarDb, runId: string, payloa
     title: "Goal Requirement Coverage",
     payload,
   });
-  const entries = (payload as { entries?: Array<ReturnType<typeof requirementCoverage>["entries"][number]> }).entries;
   if (!Array.isArray(entries)) return;
   const grouped = new Map<string, typeof entries>();
   for (const entry of entries) {
@@ -2262,16 +2418,18 @@ async function replaceRequirementCoverage(db: SouthstarDb, runId: string, payloa
       libraryObjectRef: profileRef,
       libraryVersionRef: profileVersionRef,
       validationBindingIds: group.map((entry) => entry.validationBindingId!),
-      evaluators: group.flatMap((entry) => entry.criterionIds.map((criterionId, index) => ({
-        id: `check-${criterionId}`,
+      evaluators: group.flatMap((entry) => entry.criterionBindings.map((criterionBinding, index) => ({
+        id: `check-${criterionBinding.criterionId}`,
         kind: "checker-agent",
-        required: true,
+        required: criterionBinding.blocking,
         config: {
           validationBindingId: entry.validationBindingId,
           requirementId: entry.requirementId,
-          criterionId,
+          criterionId: criterionBinding.criterionId,
           acceptanceCriterion: entry.acceptanceCriteria[index],
-          expectedEvidenceKinds: entry.requiredEvidenceKinds,
+          expectedEvidenceKinds: criterionBinding.expectedEvidenceKinds,
+          procedureRef: criterionBinding.procedureRef,
+          verificationMode: criterionBinding.verificationMode,
         },
       }))),
       onFailure: { defaultStrategy: "request-workflow-revision" },

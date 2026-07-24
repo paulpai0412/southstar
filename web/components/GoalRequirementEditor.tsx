@@ -10,7 +10,6 @@ type RequirementForm = {
   userVisibleBehaviors: string;
   businessRules: string;
   acceptanceCriteria: string;
-  evidenceIntent: string;
   expectedOutcomeArtifacts: string;
   verificationIntent: string;
   assumptions: string;
@@ -92,8 +91,17 @@ export function GoalRequirementEditor({
         <Field label="Statement"><textarea value={form.statement} onChange={(event) => setForm((current) => ({ ...current, statement: event.target.value }))} rows={4} style={textareaStyle} /></Field>
         <Field label="User-visible behaviors"><ListField value={form.userVisibleBehaviors} onChange={(value) => setForm((current) => ({ ...current, userVisibleBehaviors: value }))} /></Field>
         <Field label="Business rules"><ListField value={form.businessRules} onChange={(value) => setForm((current) => ({ ...current, businessRules: value }))} /></Field>
-        <Field label="Acceptance criteria"><ListField value={form.acceptanceCriteria} onChange={(value) => setForm((current) => ({ ...current, acceptanceCriteria: value }))} /></Field>
-        <Field label="Evidence intent"><ListField value={form.evidenceIntent} onChange={(value) => setForm((current) => ({ ...current, evidenceIntent: value }))} /></Field>
+        <Field label="Observable Criterion claims"><ListField value={form.acceptanceCriteria} onChange={(value) => setForm((current) => ({ ...current, acceptanceCriteria: value }))} /></Field>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {requirement.acceptanceCriteria.map((criterion) => (
+            <div key={criterion.id} style={{ border: "1px solid var(--border)", borderRadius: 7, padding: 8, color: "var(--text-muted)", fontSize: 11 }}>
+              <div><strong style={{ color: "var(--text)" }}>{criterionLabel(criterion.blocking, criterion.version)}</strong></div>
+              <div>Assurance: {criterion.requiredAssurance.join(" · ")}</div>
+              <div>Verification: {criterion.verificationIntent.join(" · ")}</div>
+              <div>Evidence: {criterion.evidenceIntent.join(" · ")}</div>
+            </div>
+          ))}
+        </div>
         <Field label="Expected artifacts"><ListField value={form.expectedOutcomeArtifacts} onChange={(value) => setForm((current) => ({ ...current, expectedOutcomeArtifacts: value }))} placeholder="Description | mediaType" /></Field>
         <Field label="Verification intent"><ListField value={form.verificationIntent} onChange={(value) => setForm((current) => ({ ...current, verificationIntent: value }))} /></Field>
         <Field label="Assumptions"><ListField value={form.assumptions} onChange={(value) => setForm((current) => ({ ...current, assumptions: value }))} /></Field>
@@ -146,8 +154,7 @@ function formFromRequirement(requirement: GoalRequirementDraftView["requirements
     statement: requirement.statement,
     userVisibleBehaviors: requirement.userVisibleBehaviors.join("\n"),
     businessRules: requirement.businessRules.join("\n"),
-    acceptanceCriteria: requirement.acceptanceCriteria.map((criterion) => criterion.statement).join("\n"),
-    evidenceIntent: uniqueStrings(requirement.acceptanceCriteria.flatMap((criterion) => criterion.evidenceIntent)).join("\n"),
+    acceptanceCriteria: requirement.acceptanceCriteria.map((criterion) => criterion.observableClaim).join("\n"),
     expectedOutcomeArtifacts: requirement.expectedOutcomeArtifacts.map((artifact) => artifact.mediaType ? `${artifact.description} | ${artifact.mediaType}` : artifact.description).join("\n"),
     verificationIntent: requirement.verificationIntent.join("\n"),
     assumptions: requirement.assumptions.join("\n"),
@@ -157,17 +164,30 @@ function formFromRequirement(requirement: GoalRequirementDraftView["requirements
   };
 }
 
+function criterionLabel(blocking: boolean, version: number): string {
+  return `${blocking ? "Required" : "Advisory"} · v${version}`;
+}
+
 function emptyForm(): RequirementForm {
-  return { title: "", statement: "", userVisibleBehaviors: "", businessRules: "", acceptanceCriteria: "", evidenceIntent: "", expectedOutcomeArtifacts: "", verificationIntent: "", assumptions: "", openQuestions: "", riskTags: "", interactionContractRefs: "" };
+  return { title: "", statement: "", userVisibleBehaviors: "", businessRules: "", acceptanceCriteria: "", expectedOutcomeArtifacts: "", verificationIntent: "", assumptions: "", openQuestions: "", riskTags: "", interactionContractRefs: "" };
 }
 
 function patchFromForm(form: RequirementForm, requirement: GoalRequirementDraftView["requirements"][number]): Record<string, unknown> {
-  const evidenceIntent = lines(form.evidenceIntent);
-  const criteria = lines(form.acceptanceCriteria).map((statement, index) => ({
-    id: requirement.acceptanceCriteria[index]?.id ?? `${requirement.id}-criterion-${index + 1}`,
-    statement,
-    evidenceIntent,
-  }));
+  const claims = lines(form.acceptanceCriteria);
+  if (claims.length !== requirement.acceptanceCriteria.length) {
+    throw new Error("Add, split, or remove Criteria through Goal revision so assurance and verification intent can be reviewed explicitly.");
+  }
+  const criteria = claims.map((observableClaim, index) => {
+    const existing = requirement.acceptanceCriteria[index]!;
+    return {
+      id: existing.id,
+      observableClaim,
+      blocking: existing.blocking,
+      verificationIntent: [...existing.verificationIntent],
+      requiredAssurance: [...existing.requiredAssurance],
+      evidenceIntent: [...existing.evidenceIntent],
+    };
+  });
   return {
     title: form.title.trim(),
     statement: form.statement.trim(),

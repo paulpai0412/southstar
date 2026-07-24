@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { seedSoftwareLibraryGraph } from "./fixtures/software-library-graph.ts";
 import type { GeneratedAgentProfile, WorkflowCompositionPlan, WorkflowCompositionTask } from "../../src/v2/design-library/types.ts";
+import { contentHashForPayload } from "../../src/v2/design-library/canonical-json.ts";
 import { resolveWorkflowCandidates } from "../../src/v2/orchestration/candidate-resolver.ts";
 import type { ComposeWorkflowInput, WorkflowComposer } from "../../src/v2/orchestration/composer.ts";
-import { runCompositionRepairLoop } from "../../src/v2/orchestration/composition-repair-loop.ts";
+import { applyBoundedCompositionPatch, runCompositionRepairLoop } from "../../src/v2/orchestration/composition-repair-loop.ts";
 import { LlmComposerOutputError } from "../../src/v2/orchestration/llm-composer.ts";
 import { requirementSpecFromGoalContract } from "../../src/v2/orchestration/goal-contract.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
@@ -25,7 +26,7 @@ class ScriptedWorkflowComposer implements WorkflowComposer {
   }
 }
 
-test("composition repair loop retries once and returns valid composition", async () => {
+test("composition repair loop blocks non-repairable Library/runtime gaps", async () => {
   const db = await createTestPostgresDb();
   try {
     await seedSoftwareLibraryGraph(db);
@@ -43,16 +44,16 @@ test("composition repair loop retries once and returns valid composition", async
       scope: "software",
       maxRepairAttempts: 1,
     });
-    assert.equal(result.validation.ok, true, JSON.stringify(result.validation.issues, null, 2));
-    assert.equal(result.attempts.length, 2);
+    assert.equal(result.validation.ok, false);
+    assert.equal(result.attempts.length, 1);
     assert.equal(result.attempts[0]?.validation.ok, false);
-    assert.equal(result.composition.tasks[0]?.agentProfileRef, "profile.generated.understand-repo");
+    assert.match(result.attempts[0]?.repairBlockedReason ?? "", /non_repairable_library_or_runtime_gap/);
   } finally {
     await db.close();
   }
 });
 
-test("composition repair loop retry prompt includes previous composition JSON and validation issues", async () => {
+test("bounded composition patch changes one allowed reference and preserves DAG structure", async () => {
   const db = await createTestPostgresDb();
   try {
     await seedSoftwareLibraryGraph(db);
@@ -60,51 +61,30 @@ test("composition repair loop retry prompt includes previous composition JSON an
       requirementSpec: requirementSpecFromGoalContract(GOAL_CONTRACT),
       scope: "software",
     });
-    const prompts: string[] = [];
-    const composer = {
-      async compose(input: { goalPrompt: string }) {
-        prompts.push(input.goalPrompt);
-        return prompts.length === 1 ? invalidPlan() : validPlan();
-      },
-    };
-    const result = await runCompositionRepairLoop({
-      db,
-      goalPrompt: "implement calc sum",
-      goalContract: GOAL_CONTRACT,
-      candidatePacket,
-      composer,
-      scope: "software",
-      maxRepairAttempts: 1,
-      runtimeBindingCapabilities: {
-        providers: ["pi"],
-        models: ["pi-agent-default"],
-        harnesses: ["pi"],
-        executionEngines: ["tork"],
-        images: ["southstar/pi-agent:local"],
-      },
+    const base = validPlan();
+    const originalTask = base.tasks[0]!;
+    const patched = applyBoundedCompositionPatch(base, {
+      schemaVersion: "southstar.workflow_composition_patch.v1",
+      basePlanHash: contentHashForPayload(base),
+      operations: [{
+        op: "replace-ref",
+        taskId: originalTask.id,
+        field: "agentProfileRef",
+        fromRef: originalTask.agentProfileRef,
+        toRef: "profile.generated.repaired",
+      }],
+      rationale: "Use the reviewed generated profile for this task.",
     });
-    const initialPrompt = prompts[0] ?? "";
-    const retryPrompt = prompts[1] ?? "";
-    const firstIssueCode = result.attempts[0]?.validation.issues[0]?.code ?? "";
-
-    assert.equal(result.validation.ok, true, JSON.stringify(result.validation.issues, null, 2));
-    assert.equal(prompts.length, 2);
-    assert.match(initialPrompt, /Runtime host advertised bindings \(authoritative; use exact values\):/);
-    assert.match(initialPrompt, /"providers":\["pi"\]/);
-    assert.match(initialPrompt, /"models":\["pi-agent-default"\]/);
-    assert.match(initialPrompt, /"harnesses":\["pi"\]/);
-    assert.match(initialPrompt, /"images":\["southstar\/pi-agent:local"\]/);
-    assert.match(retryPrompt, /Previous composition JSON:/);
-    assert.match(retryPrompt, /"providers":\["pi"\]/);
-    assert.match(retryPrompt, /Latest validation issues:/);
-    assert.match(retryPrompt, new RegExp(firstIssueCode));
-    assert.match(retryPrompt, /\"title\":\"Invalid Plan\"/);
+    assert.equal(patched.tasks[0]?.agentProfileRef, "profile.generated.repaired");
+    assert.equal(patched.tasks[0]?.dependsOn, originalTask.dependsOn);
+    assert.equal(patched.tasks[0]?.requirementIds, originalTask.requirementIds);
+    assert.equal(patched.tasks.length, base.tasks.length);
   } finally {
     await db.close();
   }
 });
 
-test("composition repair loop retries when composer output violates schema contract", async () => {
+test("composition repair loop blocks malformed composer output without a base plan", async () => {
   const db = await createTestPostgresDb();
   try {
     await seedSoftwareLibraryGraph(db);
@@ -139,16 +119,13 @@ test("composition repair loop retries when composer output violates schema contr
       scope: "software",
       maxRepairAttempts: 1,
     });
-    assert.equal(result.validation.ok, true, JSON.stringify(result.validation.issues, null, 2));
-    assert.equal(result.attempts.length, 2);
+    assert.equal(result.validation.ok, false);
+    assert.equal(result.attempts.length, 1);
     assert.equal(result.attempts[0]?.validation.ok, false);
     assert.equal(result.attempts[0]?.validation.issues[0]?.code, "composer_output_schema_violation");
     assert.equal(result.attempts[0]?.composition, undefined);
-    assert.equal(result.composition?.tasks[0]?.agentProfileRef, "profile.generated.understand-repo");
-    assert.equal(prompts.length, 2);
-    assert.match(prompts[1] ?? "", /Latest validation issues:/);
-    assert.match(prompts[1] ?? "", /composer_output_schema_violation/);
-    assert.equal((prompts[1] ?? "").includes("Previous composition JSON:"), false);
+    assert.equal(result.composition, null);
+    assert.equal(result.attempts[0]?.repairBlockedReason, "no_base_composition");
   } finally {
     await db.close();
   }
@@ -165,6 +142,7 @@ function invalidPlan(): WorkflowCompositionPlan {
     generatedComponentProposals: [],
   };
 }
+
 
 function validPlan(): WorkflowCompositionPlan {
   return {

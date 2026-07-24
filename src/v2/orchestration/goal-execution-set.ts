@@ -7,7 +7,7 @@ import { startRunSchedulingPg } from "../server/run-execution-controller.ts";
 import { getResourceByKeyPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../ui-api/postgres-run-api.ts";
 import {
-  finalizeGoalDesignPackageV2,
+  finalizeGoalDesignPackageV3,
   type GoalDesignPackage,
   type GoalSliceV1,
 } from "./goal-design.ts";
@@ -399,13 +399,17 @@ function updateEntry(
 
 function goalDesignPackageForSlice(pkg: GoalDesignPackage, slice: GoalSliceV1): GoalDesignPackage {
   const sliceGoalContract = goalContractForSlice(pkg.goalContract, slice);
-  return finalizeGoalDesignPackageV2({
-    schemaVersion: "southstar.goal_design_package.v2",
+  const sliceCriterionIds = new Set(sliceGoalContract.requirements.flatMap((requirement) => requirement.acceptanceCriteria.map((criterion) => criterion.id)));
+  return finalizeGoalDesignPackageV3({
+    schemaVersion: "southstar.goal_design_package.v3",
     revision: pkg.revision,
     ...(pkg.parentRevision !== undefined ? { parentRevision: pkg.parentRevision } : {}),
     goalContract: sliceGoalContract,
     requirementDraftHash: pkg.requirementDraftHash,
     validationBindings: pkg.validationBindings.filter((binding) => slice.evaluatorContractRefs.includes(binding.id)),
+    ...(pkg.assuranceRiskAcceptances
+      ? { assuranceRiskAcceptances: pkg.assuranceRiskAcceptances.filter((acceptance) => sliceCriterionIds.has(acceptance.criterionId)) }
+      : {}),
     slicePlan: {
       schemaVersion: "southstar.goal_slice_plan.v1",
       goalContractHash: "host-filled",
@@ -427,8 +431,10 @@ function goalContractForSlice(goalContract: GoalContractV1, slice: GoalSliceV1):
   const requirements = goalContract.requirements
     .filter((requirement) => requirementIds.has(requirement.id))
     .map((requirement) => ({
+      id: requirement.id,
       statement: requirement.statement,
       acceptanceCriteria: [...requirement.acceptanceCriteria],
+      ...(requirement.semanticTags ? { semanticTags: [...requirement.semanticTags] } : {}),
       blocking: requirement.blocking,
       source: requirement.source,
       expectedArtifacts: requirement.expectedArtifacts.map((artifact) => ({ ...artifact })),

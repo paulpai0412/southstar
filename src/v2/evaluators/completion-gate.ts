@@ -7,6 +7,8 @@ import {
 } from "../canonical-diagnostics.ts";
 import type { SouthstarDb } from "../db/postgres.ts";
 import { ARTIFACT_REF_RESOURCE_TYPE } from "../artifacts/types.ts";
+import { criterionValidationCheckKey } from "../design-library/types.ts";
+import type { RequirementValidationMode } from "../design-library/types.ts";
 import {
   listUnresolvedRuntimeExceptionsPg,
   recordRuntimeExceptionInTxPg,
@@ -38,14 +40,15 @@ export type CompletionGateResult = {
 
 type ArtifactRow = { task_id: string };
 type EvaluatorRow = { task_id: string | null; resource_key: string; status: string; payload_json: unknown };
+type EvidenceRow = { resource_key: string; payload_json: unknown };
 
 export async function evaluateRunCompletionGatePg(
   db: SouthstarDb,
   input: { runId: string },
 ): Promise<CompletionGateResult> {
   return await db.tx(async (tx) => {
-    const run = await tx.maybeOne<{ id: string; status: string; runtime_context_json: unknown }>(
-      "select id, status, runtime_context_json from southstar.workflow_runs where id = $1 for update",
+    const run = await tx.maybeOne<{ id: string; status: string; runtime_context_json: unknown; workflow_manifest_json: unknown }>(
+      "select id, status, runtime_context_json, workflow_manifest_json from southstar.workflow_runs where id = $1 for update",
       [input.runId],
     );
     if (!run) throw new Error(`run not found: ${input.runId}`);
@@ -169,8 +172,58 @@ export async function evaluateRunCompletionGatePg(
       actorType: "evaluator",
       idempotencyKey: `completion-gate:${input.runId}:completed:${fingerprint}`,
     });
+    await persistStopConditionResultsPg(tx, input.runId, stopConditionsFromManifest(run.workflow_manifest_json), outcomeStatus);
     return { runId: input.runId, executionStatus: "completed", outcomeStatus, findings };
   });
+}
+
+type StopConditionResultDefinition = {
+  id: string;
+  type: string;
+  evaluatorRefs: string[];
+};
+
+function stopConditionsFromManifest(value: unknown): StopConditionResultDefinition[] {
+  const manifest = asRecord(value);
+  if (!Array.isArray(manifest.stopConditions)) return [];
+  return manifest.stopConditions.flatMap((raw) => {
+    const condition = asRecord(raw);
+    const id = stringValue(condition.id);
+    const type = stringValue(condition.type);
+    if (!id || !type) return [];
+    return [{ id, type, evaluatorRefs: stringArray(condition.evaluatorRefs) }];
+  });
+}
+
+async function persistStopConditionResultsPg(
+  db: SouthstarDb,
+  runId: string,
+  conditions: StopConditionResultDefinition[],
+  outcomeStatus: CompletionGateResult["outcomeStatus"],
+): Promise<void> {
+  for (const condition of conditions) {
+    const derivedFromCompletion = new Set(["artifact-accepted", "tests-passed", "checker-passed"]).has(condition.type);
+    const passed = outcomeStatus === "satisfied" && derivedFromCompletion;
+    const status = passed ? "passed" : outcomeStatus === "blocked" ? "blocked" : "failed";
+    await upsertRuntimeResourcePg(db, {
+      id: `stop-condition:${runId}:${condition.id}`,
+      resourceType: "stop_condition_result",
+      resourceKey: `stop-condition:${runId}:${condition.id}`,
+      runId,
+      scope: "stop-condition",
+      status,
+      title: `Stop condition ${condition.id}`,
+      payload: {
+        schemaVersion: "southstar.stop_condition_result.v1",
+        conditionId: condition.id,
+        conditionType: condition.type,
+        evaluatorRefs: condition.evaluatorRefs,
+        outcomeStatus,
+        passed,
+      },
+      summary: { passed, evaluatorRefCount: condition.evaluatorRefs.length },
+    });
+  }
 }
 
 async function hasUnresolvedBlockingApprovalPg(db: SouthstarDb, runId: string): Promise<boolean> {
@@ -196,19 +249,24 @@ async function evaluateCoveragePg(
   diagnostics: CanonicalDiagnostic[];
   totalBlockingRequirements: number;
 }> {
-  const completeEvidenceRefs = new Set((await db.query<{ resource_key: string }>(
+  const completeEvidenceRows = (await db.query<EvidenceRow>(
     `select resource_key
+          , payload_json
        from southstar.runtime_resources
       where run_id = $1 and resource_type = 'evidence_packet' and status = 'complete'
       order by resource_key`,
     [runId],
-  )).rows.map((row) => row.resource_key));
+  )).rows;
+  const completeEvidenceRefs = new Set(completeEvidenceRows.map((row) => row.resource_key));
+  const completeEvidenceByRef = new Map(completeEvidenceRows.map((row) => [row.resource_key, asRecord(row.payload_json)]));
   const coveredRequirementIds: string[] = [];
   const failedRequirementIds: string[] = [];
   const findings: string[] = [];
   const diagnostics: CanonicalDiagnostic[] = [];
   const entries = new Map(context.coverage.entries.map((entry) => [entry.requirementId, entry]));
-  const blockingRequirements = context.goalContract.requirements.filter((requirement) => requirement.blocking);
+  const blockingRequirements = context.goalContract.requirements.filter((requirement) => (
+    requirement.acceptanceCriteria.some((criterion) => criterion.blocking)
+  ));
 
   for (const requirement of blockingRequirements) {
     const entry = entries.get(requirement.id);
@@ -217,7 +275,8 @@ async function evaluateCoveragePg(
       findings.push(`blocking requirement ${requirement.id} is missing frozen coverage`);
       continue;
     }
-    if (entry.criterionIds.length === 0) {
+    const blockingBindings = entry.criterionBindings.filter((binding) => binding.blocking);
+    if (blockingBindings.length === 0) {
       failedRequirementIds.push(requirement.id);
       diagnostics.push(canonicalDiagnostic(
         CANONICAL_DIAGNOSTIC_CODES.criterionCoverageRequired,
@@ -229,37 +288,74 @@ async function evaluateCoveragePg(
     const acceptedRefs = await acceptedProducerArtifactRefsPg(db, runId, entry, context.manifest);
     const acceptedRefSet = new Set(acceptedRefs);
     const evaluatorTaskIds = new Set(entry.evaluatorTaskIds);
-    const evaluatorProfiles = new Set(entry.evaluatorProfileRefs.map((ref) => normalizeRequirementEvidenceRef(ref, "evaluator")));
     const passed = entry.evaluatorTaskIds.every((taskId) => !producerTaskIds.has(taskId))
       && acceptedRefs.length > 0
-      && results.some((row) => {
+      && blockingBindings.every((binding) => results.some((row) => {
         const payload = asRecord(row.payload_json);
-        const identityMatches = row.status === "passed"
-          && row.task_id !== null
+        const normalizedProfileRef = normalizeRequirementEvidenceRef(binding.evaluatorProfileRef, "evaluator");
+        const expectedBindings = entry.criterionBindings
+          .filter((candidate) => (
+            normalizeRequirementEvidenceRef(candidate.evaluatorProfileRef, "evaluator") === normalizedProfileRef
+            && candidate.evaluatorProfileVersionRef === binding.evaluatorProfileVersionRef
+          ));
+        const expectedCheckKeys = expectedBindings
+          .map((candidate) => criterionValidationCheckKey(candidate.criterionId, candidate.verificationMode))
+          .sort();
+        const identityMatches = row.task_id !== null
           && evaluatorTaskIds.has(row.task_id)
-          && payload.verdict === "passed"
           && payload.evaluatorTaskId === row.task_id
-          && evaluatorProfiles.has(normalizeRequirementEvidenceRef(stringValue(payload.evaluatorProfileRef) ?? "", "evaluator"))
+          && stringValue(payload.attemptId) !== undefined
+          && normalizeRequirementEvidenceRef(stringValue(payload.evaluatorProfileRef) ?? "", "evaluator") === normalizedProfileRef
+          && payload.evaluatorProfileVersionRef === binding.evaluatorProfileVersionRef
           && stringArray(payload.artifactRefs).some((ref) => acceptedRefSet.has(ref));
         if (!identityMatches) return false;
         if (
           payload.schemaVersion !== "southstar.requirement_evaluator_result.v2"
           || payload.requirementId !== requirement.id
           || payload.validationBindingId !== entry.validationBindingId
-          || payload.evaluatorProfileVersionRef !== entry.evaluatorProfileVersionRefs[0]
           || !stringArray(payload.evidenceRefs).every((ref) => completeEvidenceRefs.has(ref))
           || stringArray(payload.evidenceRefs).length === 0
+          || !stringArray(payload.evidenceRefs).every((ref) => evidencePacketMatchesEvaluatorLineage(
+            completeEvidenceByRef.get(ref),
+            {
+              runId,
+              requirementId: requirement.id,
+              validationBindingId: entry.validationBindingId,
+              evaluatorTaskId: row.task_id!,
+              evaluatorAttemptId: stringValue(payload.attemptId)!,
+              evaluatorArtifactRef: stringValue(payload.evaluatorArtifactRef) ?? "",
+              artifactRefs: stringArray(payload.artifactRefs),
+              goalContractHash: context.coverage.goalContractHash,
+              bindings: expectedBindings,
+            },
+          ))
         ) return false;
         const criteriaResults = Array.isArray(payload.criteriaResults)
           ? payload.criteriaResults.map(asRecord)
           : [];
-        const criterionIds = criteriaResults.map((result) => stringValue(result.criterionId));
-        return criteriaResults.length === entry.criterionIds.length
-          && criterionIds.every((criterionId): criterionId is string => Boolean(criterionId))
-          && new Set(criterionIds).size === criterionIds.length
-          && [...criterionIds].sort().join("\u0000") === [...entry.criterionIds].sort().join("\u0000")
-          && criteriaResults.every((result) => result.verdict === "passed" && stringArray(result.evidenceRefs).length > 0);
-      });
+        const resultCheckKeys = criteriaResults.map((result) => {
+          const criterionId = stringValue(result.criterionId);
+          const verificationMode = stringValue(result.verificationMode);
+          if (!criterionId) return undefined;
+          if (verificationMode) return criterionValidationCheckKey(
+            criterionId,
+            verificationMode as RequirementValidationMode,
+          );
+          const unambiguousBinding = expectedBindings.filter((candidate) => candidate.criterionId === criterionId);
+          return unambiguousBinding.length === 1
+            ? criterionValidationCheckKey(criterionId, unambiguousBinding[0]!.verificationMode)
+            : undefined;
+        });
+        if (
+          resultCheckKeys.some((key) => key === undefined)
+          || criteriaResults.length !== expectedCheckKeys.length
+          || new Set(resultCheckKeys).size !== resultCheckKeys.length
+          || (resultCheckKeys as string[]).sort().join("\u0000") !== expectedCheckKeys.join("\u0000")
+        ) return false;
+        const bindingCheckKey = criterionValidationCheckKey(binding.criterionId, binding.verificationMode);
+        const criterionResult = criteriaResults.find((result, index) => resultCheckKeys[index] === bindingCheckKey);
+        return criterionResult?.verdict === "passed" && stringArray(criterionResult.evidenceRefs).length > 0;
+      }));
     if (passed) coveredRequirementIds.push(requirement.id);
     else {
       failedRequirementIds.push(requirement.id);
@@ -273,6 +369,58 @@ async function evaluateCoveragePg(
     diagnostics,
     totalBlockingRequirements: blockingRequirements.length,
   };
+}
+
+function evidencePacketMatchesEvaluatorLineage(
+  packet: Record<string, unknown> | undefined,
+  expected: {
+    runId: string;
+    requirementId: string;
+    validationBindingId: string | undefined;
+    evaluatorTaskId: string;
+    evaluatorAttemptId: string;
+    evaluatorArtifactRef: string;
+    artifactRefs: string[];
+    goalContractHash: string;
+    bindings: FrozenCoverageContext["coverage"]["entries"][number]["criterionBindings"];
+  },
+): boolean {
+  if (!packet || packet.runId !== expected.runId || packet.taskId !== expected.evaluatorTaskId) return false;
+  if (packet.artifactRef !== stringValue(asRecord(packet.lineage).evaluatorArtifactRef)) return false;
+  const lineage = asRecord(packet.lineage);
+  if (
+    lineage.goalContractHash !== expected.goalContractHash
+    || lineage.evaluatorTaskId !== expected.evaluatorTaskId
+    || lineage.evaluatorAttemptId !== expected.evaluatorAttemptId
+    || lineage.evaluatorArtifactRef !== expected.evaluatorArtifactRef
+  ) return false;
+  const checks = Array.isArray(lineage.checks) ? lineage.checks.map(asRecord) : [];
+  return expected.bindings.every((binding) => {
+    const checkKey = criterionValidationCheckKey(binding.criterionId, binding.verificationMode);
+    return checks.some((check) => (
+      check.checkKey === checkKey
+      && check.requirementId === expected.requirementId
+      && check.validationBindingId === expected.validationBindingId
+      && check.criterionId === binding.criterionId
+      && check.criterionVersion === binding.criterionVersion
+      && check.verificationMode === binding.verificationMode
+      && check.artifactContractRef === binding.artifactContractRef
+      && check.artifactContractVersionRef === binding.artifactContractVersionRef
+      && check.procedureRef === binding.procedureRef
+      && (binding.procedureVersionRef === undefined || check.procedureVersionRef === binding.procedureVersionRef)
+      && (binding.oracleRef === undefined || (check.oracleRef === binding.oracleRef && check.oracleVersionRef === binding.oracleVersionRef))
+      && check.evaluatorTaskId === expected.evaluatorTaskId
+      && check.evaluatorAttemptId === expected.evaluatorAttemptId
+      && check.evaluatorArtifactRef === expected.evaluatorArtifactRef
+      && check.evaluatorProfileRef === binding.evaluatorProfileRef
+      && check.evaluatorProfileVersionRef === binding.evaluatorProfileVersionRef
+      && sameStringValues(stringArray(check.artifactInstanceRefs), expected.artifactRefs)
+    ));
+  });
+}
+
+function sameStringValues(left: string[], right: string[]): boolean {
+  return [...new Set(left)].sort().join("\u0000") === [...new Set(right)].sort().join("\u0000");
 }
 
 async function persistCanonicalCompletionDiagnosticsPg(

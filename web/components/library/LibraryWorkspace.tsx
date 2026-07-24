@@ -371,7 +371,7 @@ export function LibraryWorkspaceProvider({
       objectKey: node.objectKey,
       title: node.title ?? node.objectKey,
       objectKind: node.objectKind,
-      status: node.status ?? "proposed",
+      status: node.status,
       ...(node.viewOnly || node.selectionGraph ? { viewOnly: true } : {}),
       sourcePath: node.sourcePath,
       sourceContent: node.sourceContent,

@@ -1,7 +1,8 @@
 import { contentHashForPayload } from "../design-library/canonical-json.ts";
 import { findApprovedLibraryObjectsByKind } from "../design-library/library-graph-store.ts";
 import type { SouthstarDb } from "../db/postgres.ts";
-import type { RequirementValidationBindingV1 } from "../design-library/types.ts";
+import { criterionValidationCheckKey } from "../design-library/types.ts";
+import type { AssuranceRiskAcceptanceV1, RequirementValidationBindingV3, RequirementValidationMode } from "../design-library/types.ts";
 import {
   goalContractHash,
   type GoalContractV1,
@@ -10,6 +11,8 @@ import {
 import type { LlmTextClient } from "./llm-composer.ts";
 import type { WorkspaceGoalDiscoveryV1 } from "./goal-workspace-discovery.ts";
 import {
+  GOAL_REQUIREMENT_CRITERION_PROMPT_VERSION,
+  GOAL_REQUIREMENT_CRITERION_SCHEMA_HASH,
   goalRequirementDraftHash,
   type GoalRequirementDraftV1,
 } from "./goal-requirement-draft.ts";
@@ -53,13 +56,14 @@ export type CompositionStrategyV1 =
   | { mode: "single-run"; sliceIds: string[]; rationale: string }
   | { mode: "per-slice-runs"; sliceIds: string[]; rationale: string };
 
-export type GoalDesignPackageV2 = {
-  schemaVersion: "southstar.goal_design_package.v2";
+export type GoalDesignPackageV3 = {
+  schemaVersion: "southstar.goal_design_package.v3";
   revision: number;
   parentRevision?: number;
   goalContract: GoalContractV1;
   requirementDraftHash: string;
-  validationBindings: RequirementValidationBindingV1[];
+  validationBindings: RequirementValidationBindingV3[];
+  assuranceRiskAcceptances?: AssuranceRiskAcceptanceV1[];
   slicePlan: GoalSlicePlanV1;
   compositionStrategy: CompositionStrategyV1;
   templatePolicy: WorkflowTemplatePolicyV1;
@@ -69,14 +73,16 @@ export type GoalDesignPackageV2 = {
   packageHash: string;
   goalDesignSkillRef: string;
   goalDesignSkillVersionRef: string;
+  criterionPromptVersion: string;
+  criterionSchemaHash: string;
   workspaceDiscoveryHash: string;
   mode: GoalDesignMode;
 };
 
-// Package V2 is the only persisted Goal Design contract. Old V1 drafts are
+// Package V3 is the only persisted Goal Design contract. Older packages are
 // intentionally not readable by the runtime and must be regenerated through
 // the staged Requirement/Validation/Slice flow.
-export type GoalDesignPackage = GoalDesignPackageV2;
+export type GoalDesignPackage = GoalDesignPackageV3;
 
 export type GoalSliceDesignRevisionProposal =
   | {
@@ -95,17 +101,17 @@ export type GoalSliceDesigner = {
   design(input: {
     goalContract: GoalContractV1;
     requirementDraft: GoalRequirementDraftV1;
-    validationBindings: RequirementValidationBindingV1[];
+    validationBindings: RequirementValidationBindingV3[];
     workspaceDiscovery: WorkspaceGoalDiscoveryV1;
     mode: GoalDesignMode;
     templatePolicy: WorkflowTemplatePolicyV1;
     skill: ResolvedGoalDesignSkillV1;
     onDelta?: (text: string) => void;
-  }): Promise<GoalDesignPackageV2>;
+  }): Promise<GoalDesignPackageV3>;
   revise(input: {
-    currentPackage: GoalDesignPackageV2;
+    currentPackage: GoalDesignPackageV3;
     requirementDraft: GoalRequirementDraftV1;
-    validationBindings: RequirementValidationBindingV1[];
+    validationBindings: RequirementValidationBindingV3[];
     workspaceDiscovery: WorkspaceGoalDiscoveryV1;
     mode: GoalDesignMode;
     templatePolicy: WorkflowTemplatePolicyV1;
@@ -135,12 +141,15 @@ export type GoalDesignValidationIssue = {
     | "invalid_mode"
     | "empty_rationale"
     | "invalid_requirement_draft_hash"
+    | "invalid_criterion_prompt_version"
+    | "invalid_criterion_schema_hash"
     | "validation_bindings_hash_mismatch"
     | "duplicate_validation_binding_id"
     | "invalid_validation_binding"
     | "binding_criteria_mismatch"
     | "requirement_missing_validation_binding"
-    | "slice_missing_validation_binding";
+    | "slice_missing_validation_binding"
+    | "invalid_assurance_risk_acceptance";
   path: string;
   message: string;
 };
@@ -148,7 +157,7 @@ export type GoalDesignValidationIssue = {
 type DesignGoalSlicesWithLlmInput = {
   goalContract: GoalContractV1;
   requirementDraft: GoalRequirementDraftV1;
-  validationBindings: RequirementValidationBindingV1[];
+  validationBindings: RequirementValidationBindingV3[];
   workspaceDiscovery: WorkspaceGoalDiscoveryV1;
   mode: GoalDesignMode;
   templatePolicy: WorkflowTemplatePolicyV1;
@@ -159,7 +168,7 @@ type DesignGoalSlicesWithLlmInput = {
 };
 
 type ReviseGoalSlicesWithLlmInput = Omit<DesignGoalSlicesWithLlmInput, "onDelta"> & {
-  currentPackage: GoalDesignPackageV2;
+  currentPackage: GoalDesignPackageV3;
   message: string;
   selectedSliceId?: string;
   onDelta?: (text: string) => void;
@@ -207,7 +216,7 @@ export async function loadGoalDesignSkillPg(db: SouthstarDb): Promise<ResolvedGo
 
 export async function designGoalSlicesWithLlm(
   input: DesignGoalSlicesWithLlmInput,
-): Promise<GoalDesignPackageV2> {
+): Promise<GoalDesignPackageV3> {
   assertConfirmedSliceDesignInputs(input);
   const basePrompt = renderSliceDesignPrompt(input);
   let prompt = basePrompt;
@@ -225,8 +234,8 @@ export async function designGoalSlicesWithLlm(
     try {
       const payload = parseGoalSlicePayload(response);
       const hostFinalized = hostFinalizeSlicePayload(payload, input.goalContract);
-      const pkg = finalizeGoalDesignPackageV2({
-        schemaVersion: "southstar.goal_design_package.v2",
+      const pkg = finalizeGoalDesignPackageV3({
+        schemaVersion: "southstar.goal_design_package.v3",
         revision: 1,
         goalContract: input.goalContract,
         requirementDraftHash: input.requirementDraft.draftHash,
@@ -264,8 +273,8 @@ export async function reviseGoalSlicesWithLlm(
   input: ReviseGoalSlicesWithLlmInput,
 ): Promise<GoalSliceDesignRevisionProposal> {
   assertConfirmedSliceDesignInputs(input);
-  if (input.currentPackage.schemaVersion !== "southstar.goal_design_package.v2") {
-    throw new Error("staged Slice revision requires Goal Design Package V2");
+  if (input.currentPackage.schemaVersion !== "southstar.goal_design_package.v3") {
+    throw new Error("staged Slice revision requires Goal Design Package V3");
   }
   if (input.currentPackage.requirementDraftHash !== input.requirementDraft.draftHash
     || input.currentPackage.goalContractHash !== goalContractHash(input.goalContract)
@@ -335,14 +344,16 @@ export function createLlmGoalSliceDesigner(input: {
   };
 }
 
-export function finalizeGoalDesignPackageV2(
-  input: Omit<GoalDesignPackageV2,
+export function finalizeGoalDesignPackageV3(
+  input: Omit<GoalDesignPackageV3,
     | "goalContractHash"
     | "validationBindingsHash"
     | "slicePlanHash"
     | "packageHash"
+    | "criterionPromptVersion"
+    | "criterionSchemaHash"
   >,
-): GoalDesignPackageV2 {
+): GoalDesignPackageV3 {
   const goalHash = goalContractHash(input.goalContract);
   const validationBindingsHash = contentHashForPayload(input.validationBindings);
   const slicePlan: GoalSlicePlanV1 = {
@@ -353,31 +364,33 @@ export function finalizeGoalDesignPackageV2(
   const slicePlanHash = contentHashForPayload(slicePlan);
   const withoutPackageHash = {
     ...input,
+    criterionPromptVersion: GOAL_REQUIREMENT_CRITERION_PROMPT_VERSION,
+    criterionSchemaHash: GOAL_REQUIREMENT_CRITERION_SCHEMA_HASH,
     goalContractHash: goalHash,
     validationBindingsHash,
     slicePlan,
     slicePlanHash,
   };
-  const pkg: GoalDesignPackageV2 = {
+  const pkg: GoalDesignPackageV3 = {
     ...withoutPackageHash,
     packageHash: contentHashForPayload(withoutPackageHash),
   };
-  const issues = validateGoalDesignPackageV2(pkg);
+  const issues = validateGoalDesignPackageV3(pkg);
   if (issues.length > 0) {
-    throw new Error(`invalid Goal Design package v2: ${issues.map((entry) => `${entry.code} at ${entry.path}`).join("; ")}`);
+    throw new Error(`invalid Goal Design package v3: ${issues.map((entry) => `${entry.code} at ${entry.path}`).join("; ")}`);
   }
   return pkg;
 }
 
-export function goalDesignPackageV2Hash(pkg: GoalDesignPackageV2): string {
+export function goalDesignPackageV3Hash(pkg: GoalDesignPackageV3): string {
   const { packageHash: _packageHash, ...withoutPackageHash } = pkg;
   return contentHashForPayload(withoutPackageHash);
 }
 
-export function validateGoalDesignPackageV2(pkg: GoalDesignPackageV2): GoalDesignValidationIssue[] {
+export function validateGoalDesignPackageV3(pkg: GoalDesignPackageV3): GoalDesignValidationIssue[] {
   const issues: GoalDesignValidationIssue[] = [];
-  if (pkg.schemaVersion !== "southstar.goal_design_package.v2") {
-    issues.push(issue("invalid_schema_version", "schemaVersion", "schemaVersion must be southstar.goal_design_package.v2"));
+  if (pkg.schemaVersion !== "southstar.goal_design_package.v3") {
+    issues.push(issue("invalid_schema_version", "schemaVersion", "schemaVersion must be southstar.goal_design_package.v3"));
   }
   const expectedGoalHash = goalContractHash(pkg.goalContract);
   if (pkg.goalContractHash !== expectedGoalHash || pkg.slicePlan.goalContractHash !== expectedGoalHash) {
@@ -386,31 +399,38 @@ export function validateGoalDesignPackageV2(pkg: GoalDesignPackageV2): GoalDesig
   if (!nonEmpty(pkg.requirementDraftHash)) {
     issues.push(issue("invalid_requirement_draft_hash", "requirementDraftHash", "confirmed requirement draft hash is required"));
   }
+  if (pkg.criterionPromptVersion !== GOAL_REQUIREMENT_CRITERION_PROMPT_VERSION) {
+    issues.push(issue("invalid_criterion_prompt_version", "criterionPromptVersion", "Criterion prompt version is not canonical"));
+  }
+  if (pkg.criterionSchemaHash !== GOAL_REQUIREMENT_CRITERION_SCHEMA_HASH) {
+    issues.push(issue("invalid_criterion_schema_hash", "criterionSchemaHash", "Criterion schema hash is not canonical"));
+  }
   if (pkg.validationBindingsHash !== contentHashForPayload(pkg.validationBindings)) {
     issues.push(issue("validation_bindings_hash_mismatch", "validationBindingsHash", "validation bindings hash is not canonical"));
   }
   if (pkg.slicePlanHash !== contentHashForPayload(pkg.slicePlan)) {
     issues.push(issue("slice_plan_hash_mismatch", "slicePlanHash", "slice plan hash is not canonical"));
   }
-  if (pkg.packageHash !== goalDesignPackageV2Hash(pkg)) {
+  if (pkg.packageHash !== goalDesignPackageV3Hash(pkg)) {
     issues.push(issue("package_hash_mismatch", "packageHash", "package hash is not canonical"));
   }
   if (pkg.mode !== "review_before_compose" && pkg.mode !== "auto_until_blocked") {
     issues.push(issue("invalid_mode", "mode", "mode is not supported"));
   }
   validateTemplatePolicy(pkg.templatePolicy, issues);
+  validateAssuranceRiskAcceptances(pkg, issues);
   validateValidationBindings(pkg, issues);
   validateSlicesV2(pkg, issues);
   validateStrategyShape(pkg.slicePlan.slices, pkg.compositionStrategy, issues);
   return issues;
 }
 
-export function goalDesignPackageV2FromUnknown(value: unknown): GoalDesignPackageV2 | undefined {
+export function goalDesignPackageV3FromUnknown(value: unknown): GoalDesignPackageV3 | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const pkg = value as GoalDesignPackageV2;
-  if (pkg.schemaVersion !== "southstar.goal_design_package.v2") return undefined;
+  const pkg = value as GoalDesignPackageV3;
+  if (pkg.schemaVersion !== "southstar.goal_design_package.v3") return undefined;
   try {
-    return validateGoalDesignPackageV2(pkg).length === 0 ? pkg : undefined;
+    return validateGoalDesignPackageV3(pkg).length === 0 ? pkg : undefined;
   } catch {
     return undefined;
   }
@@ -421,7 +441,9 @@ function renderSliceDesignPrompt(input: DesignGoalSlicesWithLlmInput): string {
   const allowedBindingIds = input.validationBindings.map((binding) => binding.id);
   const allowedArtifactRefs = [...new Set([
     ...input.goalContract.expectedArtifactRefs,
-    ...input.validationBindings.flatMap((binding) => binding.artifactContractRefs),
+    ...input.validationBindings.flatMap((binding) => (
+      binding.criterionBindings.map((item) => item.artifactContractRef)
+    )),
   ])];
   return [
     "Use the approved Library Goal Design SOP to design outcome slices from the confirmed Goal Contract and frozen validation bindings.",
@@ -453,8 +475,8 @@ function renderSliceDesignPrompt(input: DesignGoalSlicesWithLlmInput): string {
     `AllowedRequirementIds: ${JSON.stringify(allowedRequirementIds)}`,
     `AllowedValidationBindingIds: ${JSON.stringify(allowedBindingIds)}`,
     `AllowedArtifactRefs: ${JSON.stringify(allowedArtifactRefs)}`,
-    "evaluatorContractRefs is a legacy field name: fill it only with AllowedValidationBindingIds.",
-    "Every blocking requirement must belong to exactly one slice and that slice must include its frozen validation binding ids.",
+    "evaluatorContractRefs is the canonical Slice field for frozen validation binding ids. Fill it only with AllowedValidationBindingIds; never put an evaluator profile ref or a criterion id here.",
+    "Every blocking requirement must belong to exactly one slice and that slice must include its frozen validation binding ids. The binding carries the immutable per-Criterion artifact/evaluator/version/procedure/evidence contract; Slice design may arrange ownership and dependencies but must not reinterpret or merge those Criterion contracts.",
     "Do not add requirements, acceptance criteria, validation bindings, evaluator profiles, artifact contracts, or version refs.",
     "Only add a slice dependency when dependencyArtifactRefs consumes an expectedArtifactRef produced by that dependency.",
     `Mode: ${input.mode}`,
@@ -471,7 +493,9 @@ function renderSliceRevisionPrompt(input: ReviseGoalSlicesWithLlmInput): string 
   const allowedBindingIds = input.validationBindings.map((binding) => binding.id);
   const allowedArtifactRefs = [...new Set([
     ...input.goalContract.expectedArtifactRefs,
-    ...input.validationBindings.flatMap((binding) => binding.artifactContractRefs),
+    ...input.validationBindings.flatMap((binding) => (
+      binding.criterionBindings.map((item) => item.artifactContractRef)
+    )),
   ])];
   return [
     "Use the approved Library Goal Design SOP to revise the reviewed Slice Plan.",
@@ -488,8 +512,8 @@ function renderSliceRevisionPrompt(input: ReviseGoalSlicesWithLlmInput): string 
     `AllowedRequirementIds: ${JSON.stringify(allowedRequirementIds)}`,
     `AllowedValidationBindingIds: ${JSON.stringify(allowedBindingIds)}`,
     `AllowedArtifactRefs: ${JSON.stringify(allowedArtifactRefs)}`,
-    "evaluatorContractRefs is a legacy field name: fill it only with AllowedValidationBindingIds.",
-    "Return the complete revised Slice Plan and composition strategy, not a patch.",
+    "evaluatorContractRefs is the canonical Slice field for frozen validation binding ids. Fill it only with AllowedValidationBindingIds; never put an evaluator profile ref or a criterion id here.",
+    "Return the complete revised Slice Plan and composition strategy, not a patch. Preserve every frozen Criterion contract exactly; only slice ownership, outcome, mutation boundary, dependencies, and strategy may change.",
     `Mode: ${input.mode}`,
     `TemplatePolicy: ${JSON.stringify(input.templatePolicy)}`,
     `WorkspaceDiscovery: ${JSON.stringify(input.workspaceDiscovery)}`,
@@ -564,16 +588,46 @@ function assertConfirmedSliceDesignInputs(input: DesignGoalSlicesWithLlmInput): 
   }
   for (const requirement of input.goalContract.requirements) {
     const draftRequirement = draftById.get(requirement.id);
-    if (!draftRequirement
-      || normalizedCriteria(draftRequirement.statement) !== normalizedCriteria(requirement.statement)
-      || !sameCriteria(
-        draftRequirement.acceptanceCriteria.map((criterion) => criterion.statement),
-        requirement.acceptanceCriteria,
-      )) {
+    const draftContractRequirement = draftRequirement
+      ? {
+          statement: draftRequirement.statement,
+          acceptanceCriteria: draftRequirement.acceptanceCriteria.map((criterion) => ({
+            id: criterion.id,
+            version: criterion.version,
+            observableClaim: criterion.observableClaim,
+            blocking: criterion.blocking,
+            verificationIntent: [...criterion.verificationIntent],
+            requiredAssurance: [...criterion.requiredAssurance],
+          })),
+          ...(draftRequirement.semanticTags !== undefined ? { semanticTags: [...draftRequirement.semanticTags] } : {}),
+          blocking: draftRequirement.blocking,
+          source: draftRequirement.source,
+          expectedArtifacts: draftRequirement.expectedOutcomeArtifacts.map((artifact) => ({ ...artifact })),
+        }
+      : undefined;
+    const confirmedContractRequirement = {
+      statement: requirement.statement,
+      acceptanceCriteria: requirement.acceptanceCriteria.map((criterion) => ({
+        id: criterion.id,
+        version: criterion.version,
+        observableClaim: criterion.observableClaim,
+        blocking: criterion.blocking,
+        verificationIntent: [...criterion.verificationIntent],
+        requiredAssurance: [...criterion.requiredAssurance],
+      })),
+      ...(requirement.semanticTags !== undefined ? { semanticTags: [...requirement.semanticTags] } : {}),
+      blocking: requirement.blocking,
+      source: requirement.source,
+      expectedArtifacts: requirement.expectedArtifacts.map((artifact) => ({ ...artifact })),
+    };
+    if (!draftContractRequirement
+      || contentHashForPayload(draftContractRequirement) !== contentHashForPayload(confirmedContractRequirement)) {
       throw new Error(`confirmed requirement does not match Goal Contract: ${requirement.id}`);
     }
   }
-  if (input.validationBindings.length === 0 && input.goalContract.requirements.some((requirement) => requirement.blocking)) {
+  if (input.validationBindings.length === 0 && input.goalContract.requirements.some((requirement) => (
+    requirement.acceptanceCriteria.some((criterion) => criterion.blocking)
+  ))) {
     throw new Error("blocking Goal Contract requires frozen validation bindings before Slice Design");
   }
 }
@@ -676,7 +730,7 @@ function validateTemplatePolicy(policy: WorkflowTemplatePolicyV1, issues: GoalDe
   }
 }
 
-function validateValidationBindings(pkg: GoalDesignPackageV2, issues: GoalDesignValidationIssue[]): void {
+function validateValidationBindings(pkg: GoalDesignPackageV3, issues: GoalDesignValidationIssue[]): void {
   const requirementsById = new Map(pkg.goalContract.requirements.map((requirement) => [requirement.id, requirement]));
   const bindingIds = new Set<string>();
   const requirementBindingCounts = new Map<string, number>();
@@ -693,34 +747,76 @@ function validateValidationBindings(pkg: GoalDesignPackageV2, issues: GoalDesign
       continue;
     }
     requirementBindingCounts.set(binding.requirementId, (requirementBindingCounts.get(binding.requirementId) ?? 0) + 1);
-    if (!sameCriteria(binding.acceptanceCriteria, requirement.acceptanceCriteria)) {
-      issues.push(issue("binding_criteria_mismatch", `${path}.acceptanceCriteria`, `binding criteria must equal requirement criteria for ${binding.requirementId}`));
+    const expectedCriterionContracts = requirement.acceptanceCriteria;
+    const expectedById = new Map(expectedCriterionContracts.map((criterion, criterionIndex) => [
+      criterion.id,
+      { criterion, criterionIndex },
+    ]));
+    const criterionBindings = Array.isArray(binding.criterionBindings) ? binding.criterionBindings : [];
+    const boundCriterionIds = new Set<string>();
+    const boundCheckKeys = new Set<string>();
+    const coveredAssurances = new Map<string, Set<string>>();
+    let previousCriterionIndex = -1;
+    let criteriaMatch = criterionBindings.length > 0;
+    let childrenValid = criterionBindings.length > 0;
+    for (const child of criterionBindings) {
+      if (!child || typeof child !== "object" || Array.isArray(child)
+        || !child.criterionContract || typeof child.criterionContract !== "object" || Array.isArray(child.criterionContract)
+      ) {
+        childrenValid = false;
+        criteriaMatch = false;
+        continue;
+      }
+      const expected = expectedById.get(child.criterionContract.id);
+      if (!expected
+        || expected.criterionIndex < previousCriterionIndex
+        || !sameCriterionContracts([child.criterionContract], [expected.criterion])
+      ) {
+        criteriaMatch = false;
+      } else {
+        previousCriterionIndex = expected.criterionIndex;
+      }
+      boundCriterionIds.add(child.criterionContract.id);
+      const checkKey = criterionValidationCheckKey(child.criterionContract.id, child.verificationMode);
+      if (boundCheckKeys.has(checkKey)) criteriaMatch = false;
+      boundCheckKeys.add(checkKey);
+      const assuranceCoverage = coveredAssurances.get(child.criterionContract.id) ?? new Set<string>();
+      assuranceCoverage.add(child.verificationMode);
+      coveredAssurances.set(child.criterionContract.id, assuranceCoverage);
+      if (
+        !Array.isArray(child.criterionContract.requiredAssurance)
+        || child.criterionContract.requiredAssurance.length !== 1
+        || new Set(child.criterionContract.requiredAssurance).size !== child.criterionContract.requiredAssurance.length
+        || child.criterionContract.requiredAssurance[0] !== child.verificationMode
+        || !nonEmpty(child.artifactContractRef)
+        || !nonEmpty(child.artifactContractVersionRef)
+        || !nonEmpty(child.evaluatorProfileRef)
+        || !nonEmpty(child.evaluatorProfileVersionRef)
+        || !verificationModes.has(child.verificationMode)
+        || !nonEmpty(child.procedureRef)
+        || !Array.isArray(child.expectedEvidenceKinds)
+        || child.expectedEvidenceKinds.length === 0
+        || child.expectedEvidenceKinds.some((kind) => !nonEmpty(kind))
+        || child.independence !== "independent"
+        || !Array.isArray(child.failureClassifications)
+        || child.failureClassifications.some((kind) => !nonEmpty(kind))
+      ) childrenValid = false;
     }
-    const criterionIds = new Set(binding.criterionIds);
-    const checkCriterionIds = binding.criterionChecks.map((check) => check.criterionId);
-    const invalid = binding.schemaVersion !== "southstar.requirement_validation_binding.v1"
+    if (expectedCriterionContracts.some((criterion) => (
+      (!boundCriterionIds.has(criterion.id)
+        && !riskAcceptedAssurance(pkg, criterion.id, criterion.version, criterion.requiredAssurance[0]!))
+      || (boundCriterionIds.has(criterion.id)
+        && criterion.requiredAssurance.length === 1
+        && !coveredAssurances.get(criterion.id)?.has(criterion.requiredAssurance[0]!))
+    ))) {
+      criteriaMatch = false;
+    }
+    if (!criteriaMatch) {
+      issues.push(issue("binding_criteria_mismatch", `${path}.criterionBindings`, `binding criteria must preserve confirmed Criterion identity and order for ${binding.requirementId}`));
+    }
+    const invalid = binding.schemaVersion !== "southstar.requirement_validation_binding.v3"
       || !nonEmpty(binding.id)
-      || binding.criterionIds.length === 0
-      || binding.criterionIds.length !== binding.acceptanceCriteria.length
-      || criterionIds.size !== binding.criterionIds.length
-      || binding.artifactContractRefs.length === 0
-      || binding.artifactContractRefs.length !== binding.artifactContractVersionRefs.length
-      || binding.artifactContractRefs.some((ref) => !nonEmpty(ref))
-      || binding.artifactContractVersionRefs.some((ref) => !nonEmpty(ref))
-      || !nonEmpty(binding.evaluatorProfileRef)
-      || !nonEmpty(binding.evaluatorProfileVersionRef)
-      || !verificationModes.has(binding.verificationMode)
-      || binding.independence !== "independent"
-      || binding.requiredEvidenceKinds.length === 0
-      || binding.requiredEvidenceKinds.some((kind) => !nonEmpty(kind))
-      || binding.criterionChecks.length !== binding.criterionIds.length
-      || new Set(checkCriterionIds).size !== checkCriterionIds.length
-      || !sameStringSet(checkCriterionIds, binding.criterionIds)
-      || binding.criterionChecks.some((check) => (
-        !nonEmpty(check.procedureRef)
-        || check.expectedEvidenceKinds.length === 0
-        || check.expectedEvidenceKinds.some((kind) => !nonEmpty(kind))
-      ));
+      || !childrenValid;
     if (invalid) {
       issues.push(issue("invalid_validation_binding", path, `validation binding is incomplete or malformed: ${binding.id}`));
     }
@@ -734,39 +830,90 @@ function validateValidationBindings(pkg: GoalDesignPackageV2, issues: GoalDesign
         `requirement must have exactly one frozen validation binding: ${requirement.id}`,
       ));
     }
-    if (requirement.blocking && bindingCount === 0) {
+    if (requirement.acceptanceCriteria.some((criterion) => criterion.blocking) && bindingCount === 0) {
       issues.push(issue(
         "requirement_missing_validation_binding",
         "validationBindings",
-        `blocking requirement has no frozen validation binding: ${requirement.id}`,
+        `requirement has a blocking Criterion without a frozen validation binding: ${requirement.id}`,
       ));
     }
   }
 }
 
-function normalizedCriteria(value: string): string {
-  return value.trim().replace(/\s+/g, " ").toLowerCase();
+function validateAssuranceRiskAcceptances(pkg: GoalDesignPackageV3, issues: GoalDesignValidationIssue[]): void {
+  const acceptances = pkg.assuranceRiskAcceptances;
+  if (acceptances === undefined) return;
+  if (!Array.isArray(acceptances)) {
+    issues.push(issue("invalid_assurance_risk_acceptance", "assuranceRiskAcceptances", "assuranceRiskAcceptances must be an array"));
+    return;
+  }
+  const criteria = new Map(pkg.goalContract.requirements.flatMap((requirement) => requirement.acceptanceCriteria.map((criterion) => [criterion.id, criterion] as const)));
+  const ids = new Set<string>();
+  const checkKeys = new Set<string>();
+  const modes = new Set<RequirementValidationMode>(["deterministic", "browser_interaction", "semantic_review", "human_approval"]);
+  for (const [index, acceptance] of acceptances.entries()) {
+    const path = `assuranceRiskAcceptances.${index}`;
+    if (!acceptance || typeof acceptance !== "object" || Array.isArray(acceptance)) {
+      issues.push(issue("invalid_assurance_risk_acceptance", path, "risk acceptance must be an object"));
+      continue;
+    }
+    if (acceptance.schemaVersion !== "southstar.assurance_risk_acceptance.v1") issues.push(issue("invalid_assurance_risk_acceptance", `${path}.schemaVersion`, "risk acceptance schemaVersion is invalid"));
+    if (!nonEmpty(acceptance.id) || ids.has(acceptance.id)) issues.push(issue("invalid_assurance_risk_acceptance", `${path}.id`, "risk acceptance id must be unique and non-empty"));
+    ids.add(acceptance.id);
+    const criterion = criteria.get(acceptance.criterionId);
+    if (!criterion || criterion.version !== acceptance.criterionVersion) {
+      issues.push(issue("invalid_assurance_risk_acceptance", `${path}.criterionId`, "risk acceptance must target an existing immutable Criterion version"));
+    }
+    if (!Array.isArray(acceptance.omittedAssurance) || acceptance.omittedAssurance.length !== 1
+      || new Set(acceptance.omittedAssurance).size !== acceptance.omittedAssurance.length
+      || acceptance.omittedAssurance.some((mode) => !modes.has(mode))) {
+      issues.push(issue("invalid_assurance_risk_acceptance", `${path}.omittedAssurance`, "risk acceptance must list exactly one supported assurance class"));
+    }
+    for (const mode of acceptance.omittedAssurance ?? []) {
+      const key = `${acceptance.criterionId}::${mode}`;
+      if (checkKeys.has(key)) issues.push(issue("invalid_assurance_risk_acceptance", `${path}.omittedAssurance`, `duplicate risk acceptance for ${key}`));
+      checkKeys.add(key);
+      if (criterion && (criterion.requiredAssurance.length !== 1 || criterion.requiredAssurance[0] !== mode)) {
+        issues.push(issue("invalid_assurance_risk_acceptance", `${path}.omittedAssurance`, `${mode} is not the required assurance for Criterion ${criterion.id}`));
+      }
+    }
+    for (const [field, value] of Object.entries({ reason: acceptance.reason, approvalId: acceptance.approvalId, approvedBy: acceptance.approvedBy, approvedAt: acceptance.approvedAt, auditEventRef: acceptance.auditEventRef })) {
+      if (!nonEmpty(value)) issues.push(issue("invalid_assurance_risk_acceptance", `${path}.${field}`, `${field} is required for audited risk acceptance`));
+    }
+    if (nonEmpty(acceptance.approvedAt) && Number.isNaN(Date.parse(acceptance.approvedAt))) issues.push(issue("invalid_assurance_risk_acceptance", `${path}.approvedAt`, "approvedAt must be an ISO timestamp"));
+  }
 }
 
-function sameCriteria(left: string[], right: string[]): boolean {
-  return sameStringSet(left.map(normalizedCriteria), right.map(normalizedCriteria));
+function riskAcceptedAssurance(pkg: GoalDesignPackageV3, criterionId: string, criterionVersion: number, mode: RequirementValidationMode): boolean {
+  return pkg.assuranceRiskAcceptances?.some((acceptance) => (
+    acceptance.criterionId === criterionId
+    && acceptance.criterionVersion === criterionVersion
+    && acceptance.omittedAssurance.includes(mode)
+    && nonEmpty(acceptance.approvalId)
+    && nonEmpty(acceptance.auditEventRef)
+  )) === true;
 }
 
-function sameStringSet(left: string[], right: string[]): boolean {
-  const sortedLeft = [...left].sort();
-  const sortedRight = [...right].sort();
-  return sortedLeft.length === new Set(sortedLeft).size
-    && sortedRight.length === new Set(sortedRight).size
-    && JSON.stringify(sortedLeft) === JSON.stringify(sortedRight);
+function sameCriterionContracts(left: unknown[], right: unknown[]): boolean {
+  const byId = (values: unknown[]) => [...values].sort((leftValue, rightValue) => (
+    criterionContractId(leftValue).localeCompare(criterionContractId(rightValue))
+  ));
+  return contentHashForPayload(byId(left)) === contentHashForPayload(byId(right));
 }
 
-function validateSlicesV2(pkg: GoalDesignPackageV2, issues: GoalDesignValidationIssue[]): void {
+function criterionContractId(value: unknown): string {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "";
+  const id = (value as { id?: unknown }).id;
+  return typeof id === "string" ? id : "";
+}
+
+function validateSlicesV2(pkg: GoalDesignPackageV3, issues: GoalDesignValidationIssue[]): void {
   const requirementIds = new Set(pkg.goalContract.requirements.map((requirement) => requirement.id));
   const blockingRequirementIds = new Set(pkg.goalContract.requirements
-    .filter((requirement) => requirement.blocking)
+    .filter((requirement) => requirement.acceptanceCriteria.some((criterion) => criterion.blocking))
     .map((requirement) => requirement.id));
   const bindingsById = new Map(pkg.validationBindings.map((binding) => [binding.id, binding]));
-  const bindingsByRequirement = new Map<string, RequirementValidationBindingV1[]>();
+  const bindingsByRequirement = new Map<string, RequirementValidationBindingV3[]>();
   for (const binding of pkg.validationBindings) {
     bindingsByRequirement.set(binding.requirementId, [
       ...(bindingsByRequirement.get(binding.requirementId) ?? []),
@@ -775,7 +922,9 @@ function validateSlicesV2(pkg: GoalDesignPackageV2, issues: GoalDesignValidation
   }
   const allowedArtifactRefs = new Set([
     ...pkg.goalContract.expectedArtifactRefs,
-    ...pkg.validationBindings.flatMap((binding) => binding.artifactContractRefs),
+    ...pkg.validationBindings.flatMap((binding) => (
+      binding.criterionBindings.map((item) => item.artifactContractRef)
+    )),
   ]);
   const slicesById = new Map<string, GoalSliceV1>();
   const ownerCounts = new Map<string, number>();

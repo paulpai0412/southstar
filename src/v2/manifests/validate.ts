@@ -97,6 +97,8 @@ export function validateWorkflowManifest(workflow: SouthstarWorkflowManifest) {
     }
   }
 
+  validatePinnedArtifactContracts(workflow, issues);
+
   if (issues.length > 0) return { ok: false, issues };
 
   const taskIds = new Set<string>();
@@ -140,6 +142,50 @@ export function validateWorkflowManifest(workflow: SouthstarWorkflowManifest) {
   }
 
   return { ok: issues.length === 0, issues };
+}
+
+function validatePinnedArtifactContracts(
+  workflow: SouthstarWorkflowManifest,
+  issues: ValidationIssue[],
+): void {
+  const referencedArtifactRefs = Array.isArray(workflow.tasks)
+    ? workflow.tasks.flatMap((task) => task.requiredArtifactRefs ?? [])
+    : [];
+  if (workflow.artifactContracts === undefined) return;
+  if (!Array.isArray(workflow.artifactContracts)) {
+    issues.push({
+      path: "workflow.artifactContracts",
+      message: "must be present for compiled workflows with artifact contracts",
+    });
+    return;
+  }
+
+  const contractIds = new Set(workflow.artifactContracts.map((contract) => canonicalArtifactRef(contract.id)));
+  for (const [index, contract] of workflow.artifactContracts.entries()) {
+    if (typeof contract.libraryObjectRef !== "string" || contract.libraryObjectRef.trim().length === 0) {
+      issues.push({
+        path: `workflow.artifactContracts.${index}.libraryObjectRef`,
+        message: "must identify the approved Library artifact contract",
+      });
+    }
+    if (typeof contract.libraryVersionRef !== "string" || contract.libraryVersionRef.trim().length === 0) {
+      issues.push({
+        path: `workflow.artifactContracts.${index}.libraryVersionRef`,
+        message: "must identify the immutable Library artifact contract version",
+      });
+    }
+  }
+  for (const [index, artifactRef] of referencedArtifactRefs.entries()) {
+    if (contractIds.has(canonicalArtifactRef(artifactRef))) continue;
+    issues.push({
+      path: `workflow.tasks.artifactRefs.${index}`,
+      message: `must resolve to a declared artifact contract: ${artifactRef}`,
+    });
+  }
+}
+
+function canonicalArtifactRef(ref: string): string {
+  return ref.startsWith("artifact.") ? ref : `artifact.${ref}`;
 }
 
 function validateWorkspaceMutation(

@@ -8,6 +8,10 @@ import {
   storedGoalContract,
   type GoalContractV1,
 } from "../orchestration/goal-contract.ts";
+import {
+  goalDesignPackageV3FromUnknown,
+  type GoalDesignPackageV3,
+} from "../orchestration/goal-design.ts";
 import type { WorkflowCompositionPlan } from "../design-library/types.ts";
 import { contentHashForPayload } from "../design-library/canonical-json.ts";
 import { findLibraryObjectByKey } from "../design-library/library-graph-store.ts";
@@ -63,7 +67,8 @@ export async function maybeApplyDynamicRepairRevisionPg(
   db: SouthstarDb,
   input: DynamicRepairRevisionInput,
 ): Promise<DynamicRepairRevisionResult> {
-  if (!input.workflowComposer) return { status: "skipped", reason: "workflow-composer-unavailable" };
+  const workflowComposer = input.workflowComposer;
+  if (!workflowComposer) return { status: "skipped", reason: "workflow-composer-unavailable" };
   const maxRounds = input.maxDynamicRepairRounds ?? 2;
   if (maxRounds < 1) return { status: "skipped", reason: "dynamic-repair-disabled" };
 
@@ -188,11 +193,19 @@ export async function maybeApplyDynamicRepairRevisionPg(
     });
     const repairLoopComposer: WorkflowComposer = {
       async compose(composeInput) {
-        return prepareDynamicRepairCompositionForCompile(await input.workflowComposer!.compose(composeInput), {
+        return prepareDynamicRepairCompositionForCompile(await workflowComposer.compose(composeInput), {
           sliceId: taskSliceId(failedTask),
           requirementIds: targetRequirementIds,
         });
       },
+      ...(workflowComposer.repair ? {
+        async repair(repairInput) {
+          // The repair loop receives the already-normalized dynamic plan. Keep
+          // the underlying composer on that same bounded-patch contract; do
+          // not recompose or rewrite dynamic dependencies here.
+          return await workflowComposer.repair!(repairInput);
+        },
+      } : {}),
     };
     let repairLoop: Awaited<ReturnType<typeof runCompositionRepairLoop>>;
     try {
@@ -200,6 +213,7 @@ export async function maybeApplyDynamicRepairRevisionPg(
         db: tx,
         goalPrompt: repairGoalPrompt,
         goalContract: repairGoalContract,
+        goalDesignPackage: goalContractLineage.goalDesignPackage,
         targetRequirementIds,
         candidatePacket,
         composer: repairLoopComposer,
@@ -228,6 +242,7 @@ export async function maybeApplyDynamicRepairRevisionPg(
       goalContract: repairGoalContract,
       candidatePacket,
       composition: compositionForCompile,
+      goalDesignPackage: goalContractLineage.goalDesignPackage,
       targetRequirementIds,
       scope: candidateScope,
       manifestDomain: run.workflow_manifest_json.domain ?? scope,
@@ -543,7 +558,7 @@ async function loadCanonicalGoalContractLineage(
   db: SouthstarDb,
   run: RunRow,
 ): Promise<
-  | { goalContract: GoalContractV1; goalContractHash: string }
+  | { goalContract: GoalContractV1; goalContractHash: string; goalDesignPackage: GoalDesignPackageV3 }
   | { reason: string }
 > {
   const runtimeContext = asRecord(run.runtime_context_json);
@@ -551,6 +566,8 @@ async function loadCanonicalGoalContractLineage(
   if (!draftId) return { reason: "goal-contract-lineage-missing:draftId" };
   const runGoalContractHash = nonEmptyString(runtimeContext.goalContractHash);
   if (!runGoalContractHash) return { reason: "goal-contract-lineage-missing:goalContractHash" };
+  const runGoalDesignPackageHash = nonEmptyString(runtimeContext.goalDesignPackageHash);
+  if (!runGoalDesignPackageHash) return { reason: "goal-contract-lineage-missing:goalDesignPackageHash" };
 
   const plannerDraft = await getResourceByKeyPg(db, "planner_draft", draftId);
   if (!plannerDraft || plannerDraft.status !== "validated") {
@@ -559,6 +576,8 @@ async function loadCanonicalGoalContractLineage(
   const payload = asRecord(plannerDraft.payload);
   const goalContract = storedGoalContract(payload.goalContract);
   if (!goalContract) return { reason: "goal-contract-lineage-missing:plannerDraft.goalContract" };
+  const goalDesignPackage = goalDesignPackageV3FromUnknown(payload.goalDesignPackage);
+  if (!goalDesignPackage) return { reason: "goal-contract-lineage-missing:plannerDraft.goalDesignPackage" };
   const plannerDraftGoalContractHash = nonEmptyString(payload.goalContractHash);
   if (!plannerDraftGoalContractHash) {
     return { reason: "goal-contract-lineage-missing:plannerDraft.goalContractHash" };
@@ -567,10 +586,12 @@ async function loadCanonicalGoalContractLineage(
   if (
     runGoalContractHash !== plannerDraftGoalContractHash
     || plannerDraftGoalContractHash !== recomputedGoalContractHash
+    || goalDesignPackage.goalContractHash !== recomputedGoalContractHash
+    || goalDesignPackage.packageHash !== runGoalDesignPackageHash
   ) {
     return { reason: "goal-contract-hash-mismatch" };
   }
-  return { goalContract, goalContractHash: recomputedGoalContractHash };
+  return { goalContract, goalContractHash: recomputedGoalContractHash, goalDesignPackage };
 }
 
 async function loadFrozenRepairProtectionPg(
@@ -1211,9 +1232,9 @@ function dynamicRepairGoalPrompt(input: {
     "When a frozen slice id is listed, every repair/reverify task must use that exact sliceId; do not invent or rename slice ownership.",
     "Generate one bounded repair task followed by one reverify task unless the failure evidence clearly requires a smaller or larger bounded set.",
     "The repair task must use workerKind=repair_worker, consume the failed verification report and prior implementation artifacts, preserve existing behavior, fix only reported blocking failures, and output a repaired implementation artifact.",
-    "The reverify task must use workerKind=validation_worker, depend on the repair task, rerun the failed checks plus relevant regression checks, and produce an artifact that conforms exactly to the selected outputArtifactRefs contract and evaluatorProfileRef. Derive required fields, schema, evidence kinds, and failure representation from those declared Library contracts and the failed artifact; do not invent or assume a generic verification-report field set.",
+    "The reverify task must use workerKind=validation_worker, depend on the repair task, rerun the failed checks plus relevant regression checks, and produce an artifact that conforms exactly to the frozen Criterion's selected outputArtifactRefs contract and evaluatorProfileRef pair. Preserve the frozen artifact/evaluator version refs and Criterion identity; derive required fields, schema, evidence kinds, and failure representation from those declared Library contracts and the failed artifact; do not invent or assume a generic verification-report field set.",
     "For the repair nodePromptSpec include repairInputs, mustPreserve, implementationScope, testCases, expectedOutputs, acceptanceCriteria, and failureReportContract.",
-    "For the reverify nodePromptSpec include verificationChecks, testCases, failureArtifactContract, expectedOutputs, acceptanceCriteria, and an explicit rule to represent any blocking failure using the selected artifact/evaluator contract's declared fields and evidence kinds.",
+    "For the reverify nodePromptSpec include verificationChecks, testCases, failureArtifactContract, expectedOutputs, acceptanceCriteria, and an explicit rule to represent each affected Criterion and any blocking failure using the selected artifact/evaluator contract's declared fields and evidence kinds.",
     "Profile reuse hints:",
     JSON.stringify(input.profileHints, null, 2),
     "Use repairProfileSeed as the preferred source for the repair generated agent profile: preserve its agentRef, provider/model/thinkingLevel/harnessRef, skills, tools, MCP grants, vault grants, context/session policy, budget, and execution image/command/mount shape unless the repair evidence requires a narrower safe change.",

@@ -352,8 +352,15 @@ function criterionForRequirement(requirement: SourceRecord | undefined, criterio
 function criterionMetadata(criterion: SourceRecord | undefined, requirement: SourceRecord | undefined, criterionId: string): Record<string, unknown> {
   if (criterion) return pickContentFields(criterion, ["id"]);
   const acceptanceCriteria = Array.isArray(requirement?.acceptanceCriteria) ? requirement.acceptanceCriteria : [];
+  const canonicalCriterion = acceptanceCriteria.find((item) => (
+    item && typeof item === "object" && !Array.isArray(item) && (item as SourceRecord).id === criterionId
+  ));
+  if (canonicalCriterion && typeof canonicalCriterion === "object" && !Array.isArray(canonicalCriterion)) {
+    return pickContentFields(canonicalCriterion as SourceRecord, ["id"]);
+  }
   return {
-    statement: acceptanceCriteria.length === 1 ? acceptanceCriteria[0] : `No acceptance criterion statement was supplied for ${criterionId}.`,
+    criterionId,
+    lineageIssue: "missing_criterion_contract",
   };
 }
 

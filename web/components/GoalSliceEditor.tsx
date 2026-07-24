@@ -31,25 +31,30 @@ type GoalContractRequirementView = {
   expectedArtifacts: ExpectedArtifactView[];
 };
 
+type CriterionBindingView = {
+  criterionContract?: {
+    id: string;
+    version: number;
+    observableClaim: string;
+    blocking: boolean;
+    verificationIntent: string[];
+    requiredAssurance: string[];
+  };
+  artifactContractRef: string;
+  artifactContractVersionRef: string;
+  evaluatorProfileRef: string;
+  evaluatorProfileVersionRef: string;
+  verificationMode: string;
+  procedureRef: string;
+  expectedEvidenceKinds: string[];
+  independence: string;
+  failureClassifications: string[];
+};
+
 type ValidationBindingView = {
   id: string;
   requirementId: string;
-  artifactContractRefs: string[];
-  artifactContractVersionRefs: string[];
-  evaluatorProfileRef?: string;
-  evaluatorProfileVersionRef?: string;
-  acceptanceCriteria: string[];
-  verificationMode?: string;
-  requiredEvidenceKinds: string[];
-};
-
-type EvaluatorContractView = {
-  id: string;
-  requirementId: string;
-  acceptanceCriteria: string[];
-  requiredEvidenceKinds: string[];
-  independence?: string;
-  failureClassifications?: string[];
+  criterionBindings: CriterionBindingView[];
 };
 
 type GoalDesignPackageView = {
@@ -57,7 +62,6 @@ type GoalDesignPackageView = {
   packageHash?: string;
   goalContract?: { summary?: string; requirements: GoalContractRequirementView[] };
   validationBindings: ValidationBindingView[];
-  evaluatorContracts: EvaluatorContractView[];
   slicePlan?: { slices?: GoalSliceView[] };
   compositionStrategy?: { mode?: string; rationale?: string };
 };
@@ -350,9 +354,10 @@ function expectedArtifactDescription(
   const libraryDetail = libraryDetails[ref];
   if (libraryDetail) return libraryObjectDescription(libraryDetail, "artifact");
   const binding = pkg.validationBindings.find((candidate) => (
-    slice.requirementIds.includes(candidate.requirementId) && candidate.artifactContractRefs.includes(ref)
+    slice.requirementIds.includes(candidate.requirementId)
+      && candidate.criterionBindings.some((criterionBinding) => criterionBinding.artifactContractRef === ref)
   ));
-  const artifactIndex = binding?.artifactContractRefs.indexOf(ref) ?? -1;
+  const criterionBinding = binding?.criterionBindings.find((candidate) => candidate.artifactContractRef === ref);
   const contractRequirement = binding
     ? pkg.goalContract?.requirements.find((requirement) => requirement.id === binding.requirementId)
     : undefined;
@@ -360,61 +365,75 @@ function expectedArtifactDescription(
     ? selection.requirementDraft?.requirements.find((requirement) => requirement.id === binding.requirementId)
     : undefined;
   const generatedArtifact = generatedArtifactView(ref, pkg, selection);
-  const artifact = artifactIndex >= 0
-    ? contractRequirement?.expectedArtifacts[artifactIndex] ?? expectedArtifactFromDraft(draftRequirement?.expectedOutcomeArtifacts[artifactIndex])
-    : generatedArtifact;
+  const artifact = generatedArtifact
+    ?? contractRequirement?.expectedArtifacts[0]
+    ?? expectedArtifactFromDraft(draftRequirement?.expectedOutcomeArtifacts[0]);
   if (!artifact) return "Artifact contract content is not attached to this package";
   return [
     artifact.description,
     artifact.mediaType ? `media type: ${artifact.mediaType}` : undefined,
     artifact.path ? `path: ${artifact.path}` : undefined,
-    binding?.artifactContractVersionRefs[artifactIndex] ? `version: ${binding.artifactContractVersionRefs[artifactIndex]}` : undefined,
+    criterionBinding?.artifactContractVersionRef ? `version: ${criterionBinding.artifactContractVersionRef}` : undefined,
+    criterionBinding?.criterionContract?.observableClaim ? `criterion: ${criterionBinding.criterionContract.observableClaim}` : undefined,
   ].filter(Boolean).join(" · ");
 }
 
 function evaluatorDescription(ref: string, slice: GoalSliceView, pkg: GoalDesignPackageView, libraryDetails: Record<string, LibraryObjectDetail>): string {
   const binding = pkg.validationBindings.find((candidate) => (
-    slice.requirementIds.includes(candidate.requirementId) && (candidate.id === ref || candidate.evaluatorProfileRef === ref)
+    slice.requirementIds.includes(candidate.requirementId)
+      && (candidate.id === ref || candidate.criterionBindings.some((criterionBinding) => criterionBinding.evaluatorProfileRef === ref))
   ));
   if (binding) {
-    const profileDetail = binding.evaluatorProfileRef ? libraryDetails[binding.evaluatorProfileRef] : undefined;
+    const criterionBindings = binding.criterionBindings.filter((criterionBinding) => (
+      candidateRefMatches(criterionBinding.evaluatorProfileRef, ref, binding.id)
+    ));
+    const profiles = [...new Map(criterionBindings.map((criterionBinding) => [
+      criterionBinding.evaluatorProfileRef,
+      criterionBinding,
+    ])).values()];
     return [
-      profileDetail ? libraryObjectDescription(profileDetail, "evaluator") : `profile: ${binding.evaluatorProfileRef ?? "unresolved"}`,
-      binding.evaluatorProfileVersionRef ? `version: ${binding.evaluatorProfileVersionRef}` : undefined,
-      binding.verificationMode ? `mode: ${binding.verificationMode}` : undefined,
-      binding.requiredEvidenceKinds.length > 0 ? `evidence: ${binding.requiredEvidenceKinds.join(", ")}` : undefined,
-      binding.acceptanceCriteria.length > 0 ? `criteria: ${binding.acceptanceCriteria.join(" / ")}` : undefined,
-    ].filter(Boolean).join(" · ");
-  }
-  const contract = pkg.evaluatorContracts.find((candidate) => (
-    slice.requirementIds.includes(candidate.requirementId) && candidate.id === ref
-  ));
-  if (contract) {
-    const profileDetail = libraryDetails[ref];
-    return [
-      profileDetail ? libraryObjectDescription(profileDetail, "evaluator") : undefined,
-      contract.acceptanceCriteria.length > 0 ? `criteria: ${contract.acceptanceCriteria.join(" / ")}` : undefined,
-      contract.requiredEvidenceKinds.length > 0 ? `evidence: ${contract.requiredEvidenceKinds.join(", ")}` : undefined,
-      contract.independence ? `independence: ${contract.independence}` : undefined,
+      profiles.length > 0
+        ? profiles.map((criterionBinding) => {
+            const profileDetail = libraryDetails[criterionBinding.evaluatorProfileRef];
+            return profileDetail
+              ? libraryObjectDescription(profileDetail, "evaluator")
+              : `profile: ${criterionBinding.evaluatorProfileRef}`;
+          }).join(" / ")
+        : "Evaluator profile is not attached to this binding",
+      profiles.length > 0
+        ? `version: ${[...new Set(profiles.map((criterionBinding) => criterionBinding.evaluatorProfileVersionRef))].join(", ")}`
+        : undefined,
+      criterionBindings.length > 0
+        ? `mode: ${[...new Set(criterionBindings.map((criterionBinding) => criterionBinding.verificationMode))].join(", ")}`
+        : undefined,
+      criterionBindings.length > 0
+        ? `evidence: ${[...new Set(criterionBindings.flatMap((criterionBinding) => criterionBinding.expectedEvidenceKinds))].join(", ")}`
+        : undefined,
+      criterionBindings.length > 0
+        ? `criteria: ${criterionBindings.map((criterionBinding) => criterionBinding.criterionContract?.observableClaim ?? criterionBinding.procedureRef).join(" / ")}`
+        : undefined,
     ].filter(Boolean).join(" · ");
   }
   return "Evaluator contract content is not attached to this package";
+}
+
+function candidateRefMatches(profileRef: string, requestedRef: string, bindingId: string): boolean {
+  return requestedRef === bindingId || requestedRef === profileRef;
 }
 
 function libraryRefsForSlice(slice: GoalSliceView | null, pkg: GoalDesignPackageView | null): string[] {
   if (!slice || !pkg) return [];
   const profileRefs = pkg.validationBindings
     .filter((binding) => slice.requirementIds.includes(binding.requirementId))
-    .map((binding) => binding.evaluatorProfileRef)
-    .filter((ref): ref is string => Boolean(ref));
-  const evaluatorRefs = pkg.evaluatorContracts
-    .filter((contract) => slice.requirementIds.includes(contract.requirementId))
-    .map((contract) => contract.id);
+    .flatMap((binding) => binding.criterionBindings.map((criterionBinding) => criterionBinding.evaluatorProfileRef));
+  const artifactRefs = pkg.validationBindings
+    .filter((binding) => slice.requirementIds.includes(binding.requirementId))
+    .flatMap((binding) => binding.criterionBindings.map((criterionBinding) => criterionBinding.artifactContractRef));
   return [...new Set([
     ...slice.expectedArtifactRefs.filter((ref) => !ref.startsWith("artifact.goal.")),
     ...slice.dependencyArtifactRefs.filter((ref) => !ref.startsWith("artifact.goal.")),
+    ...artifactRefs,
     ...profileRefs,
-    ...evaluatorRefs,
   ])];
 }
 
@@ -507,9 +526,6 @@ function goalDesignPackageView(value: unknown): GoalDesignPackageView | null {
     validationBindings: Array.isArray(value.validationBindings)
       ? value.validationBindings.map(validationBindingView).filter((binding): binding is ValidationBindingView => Boolean(binding))
       : [],
-    evaluatorContracts: Array.isArray(value.evaluatorContracts)
-      ? value.evaluatorContracts.map(evaluatorContractView).filter((contract): contract is EvaluatorContractView => Boolean(contract))
-      : [],
     slicePlan: { slices },
     compositionStrategy: isRecord(value.compositionStrategy)
       ? {
@@ -541,27 +557,47 @@ function expectedArtifactView(value: unknown): ExpectedArtifactView | null {
 
 function validationBindingView(value: unknown): ValidationBindingView | null {
   if (!isRecord(value) || typeof value.id !== "string" || typeof value.requirementId !== "string") return null;
+  if (!Array.isArray(value.criterionBindings)) return null;
   return {
     id: value.id,
     requirementId: value.requirementId,
-    artifactContractRefs: stringArray(value.artifactContractRefs),
-    artifactContractVersionRefs: stringArray(value.artifactContractVersionRefs),
-    evaluatorProfileRef: typeof value.evaluatorProfileRef === "string" ? value.evaluatorProfileRef : undefined,
-    evaluatorProfileVersionRef: typeof value.evaluatorProfileVersionRef === "string" ? value.evaluatorProfileVersionRef : undefined,
-    acceptanceCriteria: stringArray(value.acceptanceCriteria),
-    verificationMode: typeof value.verificationMode === "string" ? value.verificationMode : undefined,
-    requiredEvidenceKinds: stringArray(value.requiredEvidenceKinds),
+    criterionBindings: value.criterionBindings.map(criterionBindingView).filter((binding): binding is CriterionBindingView => Boolean(binding)),
   };
 }
 
-function evaluatorContractView(value: unknown): EvaluatorContractView | null {
-  if (!isRecord(value) || typeof value.id !== "string" || typeof value.requirementId !== "string") return null;
+function criterionBindingView(value: unknown): CriterionBindingView | null {
+  if (!isRecord(value)
+    || typeof value.artifactContractRef !== "string"
+    || typeof value.artifactContractVersionRef !== "string"
+    || typeof value.evaluatorProfileRef !== "string"
+    || typeof value.evaluatorProfileVersionRef !== "string"
+    || typeof value.verificationMode !== "string"
+    || typeof value.procedureRef !== "string"
+    || typeof value.independence !== "string") return null;
+  const criterionContract = isRecord(value.criterionContract)
+    && typeof value.criterionContract.id === "string"
+    && typeof value.criterionContract.version === "number"
+    && typeof value.criterionContract.observableClaim === "string"
+    && typeof value.criterionContract.blocking === "boolean"
+    ? {
+        id: value.criterionContract.id,
+        version: value.criterionContract.version,
+        observableClaim: value.criterionContract.observableClaim,
+        blocking: value.criterionContract.blocking,
+        verificationIntent: stringArray(value.criterionContract.verificationIntent),
+        requiredAssurance: stringArray(value.criterionContract.requiredAssurance),
+      }
+    : undefined;
   return {
-    id: value.id,
-    requirementId: value.requirementId,
-    acceptanceCriteria: stringArray(value.acceptanceCriteria),
-    requiredEvidenceKinds: stringArray(value.requiredEvidenceKinds),
-    independence: typeof value.independence === "string" ? value.independence : undefined,
+    ...(criterionContract ? { criterionContract } : {}),
+    artifactContractRef: value.artifactContractRef,
+    artifactContractVersionRef: value.artifactContractVersionRef,
+    evaluatorProfileRef: value.evaluatorProfileRef,
+    evaluatorProfileVersionRef: value.evaluatorProfileVersionRef,
+    verificationMode: value.verificationMode,
+    procedureRef: value.procedureRef,
+    expectedEvidenceKinds: stringArray(value.expectedEvidenceKinds),
+    independence: value.independence,
     failureClassifications: stringArray(value.failureClassifications),
   };
 }

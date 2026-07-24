@@ -10,17 +10,74 @@ import {
   syncLibraryFileToGraph,
 } from "../../src/v2/design-library/files/library-file-store.ts";
 import { parseLibraryFileContent } from "../../src/v2/design-library/files/library-file-parser.ts";
-import { confirmGoalRequirementDraft, finalizeGoalRequirementDraft } from "../../src/v2/orchestration/goal-requirement-draft.ts";
+import { confirmGoalRequirementDraft, finalizeGoalRequirementDraft, reviseGoalRequirementDraft } from "../../src/v2/orchestration/goal-requirement-draft.ts";
 import {
   assertGoalValidationResolutionReady,
   resolveGoalValidationPg,
   type GoalValidationCandidateRanker,
   type GoalValidationCandidateRecommendationV1,
 } from "../../src/v2/orchestration/goal-validation-resolver.ts";
+import { rankGoalValidationCandidatesFromProposal } from "../../src/v2/orchestration/goal-validation-llm-adapter.ts";
 import type { GoalContractV1 } from "../../src/v2/orchestration/goal-contract.ts";
 import type { GoalRequirementDraftV1 } from "../../src/v2/orchestration/goal-requirement-draft.ts";
 import type { SouthstarDb } from "../../src/v2/db/postgres.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
+
+test("proposal ranker selects a procedure matching the atomic assurance mode", () => {
+  const contract = confirmedContract();
+  const draft = confirmedRequirementDraft();
+  const contractRequirement = contract.requirements[0]!;
+  const draftRequirement = draft.requirements[0]!;
+  const criterion = contractRequirement.acceptanceCriteria[0]!;
+  const draftCriterion = draftRequirement.acceptanceCriteria[0]!;
+  const artifact = {
+    ref: "artifact.assurance-proof",
+    versionRef: "artifact.assurance-proof@1",
+    kind: "artifact_contract" as const,
+    displayName: "Assurance proof",
+    state: {},
+    reason: "test",
+  };
+  const evaluator = {
+    ref: "evaluator.assurance-proof",
+    versionRef: "evaluator.assurance-proof@1",
+    kind: "evaluator_profile" as const,
+    displayName: "Assurance proof evaluator",
+    state: {
+      verificationModes: ["deterministic", "semantic_review"],
+      verificationProcedures: [
+        { id: "procedure.deterministic", checkKind: "deterministic", allowedEvidenceKinds: ["screenshot"] },
+        { id: "procedure.semantic", checkKind: "semantic_review", allowedEvidenceKinds: ["screenshot"] },
+      ],
+    },
+    reason: "test",
+  };
+  const result = rankGoalValidationCandidatesFromProposal({
+    rankInput: {
+      goalContract: contract,
+      contractRequirement: {
+        ...contractRequirement,
+        acceptanceCriteria: [{ ...criterion, requiredAssurance: ["semantic_review"] }],
+      },
+      requirement: {
+        ...draftRequirement,
+        acceptanceCriteria: [{ ...draftCriterion, requiredAssurance: ["semantic_review"] }],
+      },
+      artifactCandidates: [artifact],
+      evaluatorCandidatesByArtifact: { [artifact.ref]: [evaluator] },
+      artifactContractCandidates: [artifact],
+      evaluatorCandidates: { [artifact.ref]: [evaluator] },
+    },
+    coverageTargets: [{
+      candidateObjectKey: artifact.ref,
+      gapRef: "gap.assurance",
+      requirementId: contractRequirement.id,
+      criterionIds: [criterion.id],
+    }],
+  });
+  assert.deepEqual(result.map((recommendation) => recommendation.verificationMode), ["semantic_review"]);
+  assert.deepEqual(result.map((recommendation) => recommendation.procedureRef), ["procedure.semantic"]);
+});
 
 test("resolver binds only approved artifact and evaluator versions", async () => {
   await withDb(async (db) => {
@@ -40,12 +97,182 @@ test("resolver binds only approved artifact and evaluator versions", async () =>
       }),
     });
     assert.equal(result.gaps.length, 0);
-    assert.equal(result.bindings[0]!.artifactContractVersionRefs[0], "artifact.article-html@1");
-    assert.equal(result.bindings[0]!.evaluatorProfileVersionRef, "evaluator.offline-browser@2");
-    assert.deepEqual(result.bindings[0]!.acceptanceCriteria, contract.requirements[0]!.acceptanceCriteria);
+    const criterionBindings = result.bindings[0]?.criterionBindings ?? [];
+    assert.equal(criterionBindings.length, 1);
+    assert.equal(criterionBindings[0]!.artifactContractVersionRef, "artifact.article-html@1");
+    assert.equal(criterionBindings[0]!.evaluatorProfileVersionRef, "evaluator.offline-browser@2");
+    assert.equal(result.schemaVersion, "southstar.goal_validation_resolution.v2");
+    assert.equal(result.bindings[0]!.schemaVersion, "southstar.requirement_validation_binding.v3");
+    assert.deepEqual(
+      criterionBindings.map((binding) => binding.criterionContract),
+      contract.requirements[0]!.acceptanceCriteria,
+    );
     assert.equal(result.previews[0]!.status, "ready");
     assert.equal(result.ready, true);
     assert.doesNotThrow(() => assertGoalValidationResolutionReady(result));
+    assert.throws(
+      () => assertGoalValidationResolutionReady({ ...result, bindings: [] }),
+      /not ready/,
+    );
+  });
+});
+
+test("resolver rejects compound assurance on one Criterion", async () => {
+  await withDb(async (db) => {
+    const goalContract = confirmedContract();
+    const requirementDraft = confirmedRequirementDraft();
+    goalContract.requirements[0]!.acceptanceCriteria[0]!.requiredAssurance = ["deterministic", "browser_interaction"];
+    requirementDraft.requirements[0]!.acceptanceCriteria[0]!.requiredAssurance = ["deterministic", "browser_interaction"];
+
+    const result = await resolveGoalValidationPg(db, {
+      goalContract,
+      requirementDraft,
+      ranker: fixedRanker({
+        artifactRef: "artifact.unused",
+        evaluatorRef: "evaluator.unused",
+        verificationMode: "deterministic",
+        procedureRef: "procedure.unused",
+        expectedEvidenceKinds: ["screenshot"],
+      }),
+    });
+
+    assert.equal(result.ready, false);
+    assert.match(result.gaps.map((item) => item.message).join("\n"), /exactly one required assurance/i);
+  });
+});
+
+test("resolver binds each atomic Criterion to its own artifact, evaluator, mode, and procedure", async () => {
+  await withDb(async (db) => {
+    await upsertLibraryObject(db, {
+      objectKey: "artifact.article-source",
+      objectKind: "artifact_contract",
+      status: "approved",
+      headVersionId: "artifact.article-source@1",
+      state: artifactState(["test-result"]),
+    });
+    await upsertLibraryObject(db, {
+      objectKey: "evaluator.article-source",
+      objectKind: "evaluator_profile",
+      status: "approved",
+      headVersionId: "evaluator.article-source@1",
+      state: {
+        ...evaluatorState(["test-result"]),
+        validatesArtifactRefs: ["artifact.article-source"],
+        verificationModes: ["deterministic"],
+        verificationProcedures: [{
+          id: "procedure.source-check",
+          checkKind: "deterministic",
+          instruction: "Inspect the accepted source artifact.",
+          allowedEvidenceKinds: ["test-result"],
+        }],
+      },
+    });
+    await upsertLibraryEdge(db, {
+      fromObjectKey: "evaluator.article-source",
+      fromVersionRef: "evaluator.article-source@1",
+      edgeType: "validates_artifact",
+      toObjectKey: "artifact.article-source",
+      toVersionRef: "artifact.article-source@1",
+      scope: "article",
+    });
+    await approvedArtifact(db, "artifact.article-html", "artifact.article-html@1");
+    await approvedEvaluator(db, "evaluator.offline-browser", "evaluator.offline-browser@2");
+    await validatesArtifactEdge(db, "evaluator.offline-browser", "artifact.article-html");
+
+    const input = finalizeGoalRequirementDraft({
+      goalPrompt: "Build and verify an offline article viewer",
+      cwd: "/workspace/article",
+      summary: "Build and verify an offline article viewer",
+      requirements: [{
+        title: "Offline article",
+        statement: "The accepted article exists and opens offline",
+        source: "explicit",
+        blocking: true,
+        userVisibleBehaviors: ["article content is readable"],
+        businessRules: ["no network dependency"],
+        acceptanceCriteria: [{
+        observableClaim: "The accepted article source exists.",
+        blocking: true,
+        verificationIntent: ["Inspect the accepted source artifact."],
+        requiredAssurance: ["deterministic"],
+        evidenceIntent: ["test-result"],
+      }, {
+        observableClaim: "The accepted article opens offline.",
+        blocking: true,
+        verificationIntent: ["Open the accepted article without network access."],
+        requiredAssurance: ["browser_interaction"],
+        evidenceIntent: ["screenshot"],
+      }],
+        expectedOutcomeArtifacts: [{ description: "self-contained HTML article", mediaType: "text/html" }],
+        verificationIntent: ["Verify source identity and browser behavior independently."],
+        assumptions: [],
+        openQuestions: [],
+        riskTags: [],
+        interactionContractRefs: [],
+      }],
+      nonGoals: [],
+      blockingInputs: [],
+    });
+    const contract = confirmGoalRequirementDraft(input, {
+      domain: "article",
+      intent: "build_offline_article",
+      workType: "general",
+      expectedArtifactRefs: [],
+      requiredCapabilities: [],
+      assumptions: [],
+      requestedSideEffects: ["workspace-write"],
+    });
+    const result = await resolveGoalValidationPg(db, {
+      goalContract: contract,
+      requirementDraft: input,
+      ranker: {
+        async rank({ contractRequirement }) {
+          const criterion = contractRequirement.acceptanceCriteria[0]!;
+          return criterion.requiredAssurance[0] === "deterministic"
+            ? [{
+                artifactRef: "artifact.article-source",
+                evaluatorRef: "evaluator.article-source",
+                verificationMode: "deterministic",
+                procedureRef: "procedure.source-check",
+                expectedEvidenceKinds: ["test-result"],
+              }]
+            : [{
+                artifactRef: "artifact.article-html",
+                evaluatorRef: "evaluator.offline-browser",
+                verificationMode: "browser_interaction",
+                procedureRef: "procedure.offline-open",
+                expectedEvidenceKinds: ["screenshot"],
+              }];
+        },
+      },
+    });
+
+    assert.equal(result.ready, true);
+    assert.deepEqual(
+      result.bindings[0]!.criterionBindings.map((binding) => ({
+        criterionId: binding.criterionContract.id,
+        artifactRef: binding.artifactContractRef,
+        evaluatorRef: binding.evaluatorProfileRef,
+        verificationMode: binding.verificationMode,
+        procedureRef: binding.procedureRef,
+      })),
+      [
+        {
+          criterionId: contract.requirements[0]!.acceptanceCriteria[0]!.id,
+          artifactRef: "artifact.article-source",
+          evaluatorRef: "evaluator.article-source",
+          verificationMode: "deterministic",
+          procedureRef: "procedure.source-check",
+        },
+        {
+          criterionId: contract.requirements[0]!.acceptanceCriteria[1]!.id,
+          artifactRef: "artifact.article-html",
+          evaluatorRef: "evaluator.offline-browser",
+          verificationMode: "browser_interaction",
+          procedureRef: "procedure.offline-open",
+        },
+      ],
+    );
   });
 });
 
@@ -116,8 +343,8 @@ test("resolver keeps approved validation pairs when object and edge scopes cross
 
     assert.equal(result.ready, true);
     assert.equal(result.gaps.length, 0);
-    assert.equal(result.bindings[0]?.artifactContractVersionRefs[0], "artifact.product-outcome@1");
-    assert.equal(result.bindings[0]?.evaluatorProfileVersionRef, "evaluator.testing-outcome@1");
+    assert.equal(result.bindings[0]?.criterionBindings[0]?.artifactContractVersionRef, "artifact.product-outcome@1");
+    assert.equal(result.bindings[0]?.criterionBindings[0]?.evaluatorProfileVersionRef, "evaluator.testing-outcome@1");
   });
 });
 
@@ -153,7 +380,14 @@ test("resolver ranks independent requirements in parallel but preserves contract
           ...firstContract.requirements[0]!,
           id: secondRequirement.id,
           statement: secondRequirement.statement,
-          acceptanceCriteria: secondRequirement.acceptanceCriteria.map((criterion) => criterion.statement),
+          acceptanceCriteria: secondRequirement.acceptanceCriteria.map((criterion) => ({
+            id: criterion.id,
+            version: criterion.version,
+            observableClaim: criterion.observableClaim,
+            blocking: criterion.blocking,
+            verificationIntent: criterion.verificationIntent,
+            requiredAssurance: criterion.requiredAssurance,
+          })),
         },
       ],
     };
@@ -196,7 +430,7 @@ test("resolver reports a structured gap instead of selecting draft or invented r
       }),
     });
     assert.deepEqual(result.bindings, []);
-    assert.deepEqual(result.gaps.map((gap) => gap.kind).sort(), ["artifact", "evaluator"]);
+    assert.deepEqual(result.gaps.map((gap) => gap.kind).sort(), ["artifact", "evaluator", "evidence"]);
     assert.equal(result.previews[0]!.status, "missing");
     assert.equal(result.ready, false);
     assert.throws(() => assertGoalValidationResolutionReady(result), /not ready/);
@@ -213,7 +447,7 @@ test("resolver rejects criteria drift and evaluator evidence that the artifact c
       ...draft,
       requirements: draft.requirements.map((requirement) => ({
         ...requirement,
-        acceptanceCriteria: [{ ...requirement.acceptanceCriteria[0]!, statement: "different criterion" }],
+        acceptanceCriteria: [{ ...requirement.acceptanceCriteria[0]!, requiredAssurance: ["human_approval"] }],
       })),
     };
     const result = await resolveGoalValidationPg(db, {
@@ -229,6 +463,58 @@ test("resolver rejects criteria drift and evaluator evidence that the artifact c
     });
     assert.equal(result.bindings.length, 0);
     assert.equal(result.gaps.some((gap) => gap.kind === "criteria"), true);
+  });
+});
+
+test("resolver accepts proposal Criterion version drift on first contract confirmation", async () => {
+  await withDb(async (db) => {
+    await approvedArtifact(db, "artifact.article-html", "artifact.article-html@1");
+    await approvedEvaluator(db, "evaluator.offline-browser", "evaluator.offline-browser@2");
+    await validatesArtifactEdge(db, "evaluator.offline-browser", "artifact.article-html");
+
+    const firstDraft = confirmedRequirementDraft();
+    const firstCriterion = firstDraft.requirements[0]!.acceptanceCriteria[0]!;
+    const revisedDraft = reviseGoalRequirementDraft(firstDraft, {
+      kind: "update",
+      requirementId: firstDraft.requirements[0]!.id,
+      patch: {
+        acceptanceCriteria: [{
+          id: firstCriterion.id,
+          observableClaim: "The rendered article opens offline and exposes its title.",
+          blocking: firstCriterion.blocking,
+          verificationIntent: ["Open the rendered article without network access and inspect its title."],
+          requiredAssurance: [...firstCriterion.requiredAssurance],
+          evidenceIntent: [...firstCriterion.evidenceIntent],
+        }],
+      },
+    });
+    assert.equal(revisedDraft.requirements[0]!.acceptanceCriteria[0]!.version, 2);
+
+    const goalContract = confirmGoalRequirementDraft(revisedDraft, {
+      domain: "article",
+      intent: "build_offline_article",
+      workType: "general",
+      expectedArtifactRefs: [],
+      requiredCapabilities: [],
+      assumptions: [],
+      requestedSideEffects: ["workspace-write"],
+    });
+    assert.equal(goalContract.requirements[0]!.acceptanceCriteria[0]!.version, 1);
+
+    const result = await resolveGoalValidationPg(db, {
+      goalContract,
+      requirementDraft: revisedDraft,
+      ranker: fixedRanker({
+        artifactRef: "artifact.article-html",
+        evaluatorRef: "evaluator.offline-browser",
+        verificationMode: "browser_interaction",
+        procedureRef: "procedure.offline-open",
+        expectedEvidenceKinds: ["screenshot"],
+      }),
+    });
+    assert.equal(result.ready, true);
+    assert.deepEqual(result.gaps, []);
+    assert.equal(result.bindings.length, 1);
   });
 });
 
@@ -422,8 +708,8 @@ test("real approved flashcard files sync versioned edges and produce a ready bin
     assert.equal(edge.from_version_ref, evaluator!.headVersionId);
     assert.equal(edge.to_version_ref, artifact!.headVersionId);
     const result = await resolveGoalValidationPg(db, {
-      goalContract: confirmedContract("artifact-ref"),
-      requirementDraft: confirmedRequirementDraft("artifact-ref"),
+      goalContract: confirmedContract("artifact-ref", undefined, ["deterministic"]),
+      requirementDraft: confirmedRequirementDraft("artifact-ref", undefined, ["deterministic"]),
       scope: "general",
       ranker: fixedRanker({
         artifactRef: "artifact.flashcard-deck-contract",
@@ -434,8 +720,8 @@ test("real approved flashcard files sync versioned edges and produce a ready bin
     });
     assert.equal(result.ready, true);
     assert.equal(result.gaps.length, 0);
-    assert.equal(result.bindings[0]!.artifactContractVersionRefs[0], artifact!.headVersionId);
-    assert.equal(result.bindings[0]!.evaluatorProfileVersionRef, evaluator!.headVersionId);
+    assert.equal(result.bindings[0]!.criterionBindings[0]!.artifactContractVersionRef, artifact!.headVersionId);
+    assert.equal(result.bindings[0]!.criterionBindings[0]!.evaluatorProfileVersionRef, evaluator!.headVersionId);
 
     const artifactFile = await readLibraryFile({
       root: libraryRoot,
@@ -516,8 +802,8 @@ test("real approved flashcard files sync versioned edges and produce a ready bin
     assert.equal(genericEdges.rows.find((candidate) => candidate.id === oldGenericEdge.id)?.status, "inactive");
 
     const afterRepin = await resolveGoalValidationPg(db, {
-      goalContract: confirmedContract("artifact-ref"),
-      requirementDraft: confirmedRequirementDraft("artifact-ref"),
+      goalContract: confirmedContract("artifact-ref", undefined, ["deterministic"]),
+      requirementDraft: confirmedRequirementDraft("artifact-ref", undefined, ["deterministic"]),
       scope: "general",
       ranker: fixedRanker({
         artifactRef: "artifact.flashcard-deck-contract",
@@ -528,7 +814,7 @@ test("real approved flashcard files sync versioned edges and produce a ready bin
     });
     assert.equal(afterRepin.ready, true);
     assert.equal(afterRepin.gaps.length, 0);
-    assert.equal(afterRepin.bindings[0]!.artifactContractVersionRefs[0], syncedV2.object.headVersionId);
+    assert.equal(afterRepin.bindings[0]!.criterionBindings[0]!.artifactContractVersionRef, syncedV2.object.headVersionId);
   });
 });
 
@@ -628,7 +914,11 @@ async function withDb(run: (db: SouthstarDb) => Promise<void>): Promise<void> {
   }
 }
 
-function confirmedRequirementDraft(evidenceIntent = "screenshot", semanticTags?: string[]): GoalRequirementDraftV1 {
+function confirmedRequirementDraft(
+  evidenceIntent: string | string[] = "screenshot",
+  semanticTags?: string[],
+  requiredAssurance: GoalRequirementDraftV1["requirements"][number]["acceptanceCriteria"][number]["requiredAssurance"] = ["browser_interaction"],
+): GoalRequirementDraftV1 {
   return finalizeGoalRequirementDraft({
     goalPrompt: "Build an offline article viewer",
     cwd: "/workspace/article",
@@ -642,8 +932,11 @@ function confirmedRequirementDraft(evidenceIntent = "screenshot", semanticTags?:
       userVisibleBehaviors: ["article content is readable"],
       businessRules: ["no network dependency"],
       acceptanceCriteria: [{
-        statement: "The rendered article opens offline and is readable",
-        evidenceIntent: [evidenceIntent],
+        observableClaim: "The rendered article opens offline and is readable",
+        blocking: true,
+        verificationIntent: ["Open the rendered article without network access and inspect readability."],
+        requiredAssurance,
+        evidenceIntent: Array.isArray(evidenceIntent) ? evidenceIntent : [evidenceIntent],
       }],
       expectedOutcomeArtifacts: [{ description: "self-contained HTML article", mediaType: "text/html" }],
       verificationIntent: ["browser interaction"],
@@ -657,8 +950,12 @@ function confirmedRequirementDraft(evidenceIntent = "screenshot", semanticTags?:
   });
 }
 
-function confirmedContract(evidenceIntent = "screenshot", semanticTags?: string[]): GoalContractV1 {
-  const draft = confirmedRequirementDraft(evidenceIntent, semanticTags);
+function confirmedContract(
+  evidenceIntent: string | string[] = "screenshot",
+  semanticTags?: string[],
+  requiredAssurance?: GoalRequirementDraftV1["requirements"][number]["acceptanceCriteria"][number]["requiredAssurance"],
+): GoalContractV1 {
+  const draft = confirmedRequirementDraft(evidenceIntent, semanticTags, requiredAssurance);
   return confirmGoalRequirementDraft(draft, {
     domain: "article",
     intent: "build_offline_article",

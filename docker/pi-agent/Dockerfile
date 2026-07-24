@@ -33,7 +33,9 @@ RUN apt-get update \
 
 COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts
-RUN npx playwright install --with-deps chromium \
+RUN ln -s /app/node_modules/.bin/playwright-cli /usr/local/bin/playwright-cli
+RUN node /app/node_modules/@playwright/cli/node_modules/playwright/cli.js install-deps chromium
+RUN playwright-cli install-browser chromium \
   && chmod -R 755 /ms-playwright \
   && rm -rf /var/lib/apt/lists/*
 

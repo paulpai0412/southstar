@@ -17,9 +17,7 @@ import {
 
 const ROOT = resolve(import.meta.dirname, "../..");
 const LIBRARY_ROOT = resolve(ROOT, "library");
-const MEMBERSHIP_MODULE_PATH = "src/membership.mjs";
-const MEMBERSHIP_TEST_PATH = "tests/membership-subscription.test.mjs";
-const GOAL = "Deliver a production-ready local membership subscription module in the workspace, with access control, billing state, immediate cancellation, idempotent full-refund records, and audit reporting; use only the local payment ledger in the repository and do not deploy or charge external accounts.";
+const GOAL = "Build the smallest useful local vocabulary flashcard system in this workspace. Keep the confirmed requirement list concise: produce exactly two blocking requirements (R1 add/list words with translation and example, R2 run a quiz with persisted answers and session/cumulative accuracy), and do not split these into extra cosmetic or infrastructure requirements. Model the R1 and R2 implementation slices as independent where possible so they can run in parallel over the shared local workspace; each verify slice should depend only on its own implementation. Each requirement must be verifiable with automated tests and a browser-accessible local UI. The product must produce a vocabulary-specific persisted-answer and accuracy evidence artifact contract; generic repository implementation or verification reports do not represent that product outcome. Do not use external services or network integrations.";
 const RUNTIME_BINDINGS = {
   SOUTHSTAR_AGENT_PROVIDERS: "github-copilot",
   SOUTHSTAR_AGENT_MODELS: "gpt-5.3-codex",
@@ -106,9 +104,76 @@ test("33 Chat /southstar executes a real Goal-to-Outcome workflow", { timeout: 6
     await captureSnapshot(page, snapshotRoot, "03-requirements-message-box");
     checkpoint("requirements structured message box rendered open");
 
-    await waitForOpenSouthstarBox(page, "Southstar · Library candidates", 20 * 60 * 1000);
-    const candidateBlock = page.getByTestId("library-import-candidates").last();
-    await candidateBlock.waitFor({ state: "visible", timeout: 60_000 });
+    await resolveRequirementClarifications(page, snapshotRoot, checkpoint);
+
+    const requirements = page.getByTestId("goal-requirements-block").last();
+    const requirementItems = requirements.locator('[data-testid^="goal-requirement-item-"]');
+    const requirementItemCount = await requirementItems.count();
+    assert.ok(requirementItemCount > 0, "Requirements UI must render reviewable requirement items");
+    let reviewedRequirementCount = 0;
+    for (let requirementIndex = 0; requirementIndex < requirementItemCount; requirementIndex += 1) {
+      await requirementItems.nth(requirementIndex).click();
+      const editor = page.getByTestId("sidecar-shell").getByTestId("goal-requirement-editor");
+      await editor.waitFor({ state: "visible", timeout: 30_000 });
+      await editor.getByText(new RegExp(`^R${requirementIndex + 1}\\s·`)).waitFor({ state: "visible", timeout: 30_000 });
+
+      const contractButtons = editor.getByTestId("goal-requirement-open-ui-contract");
+      assert.ok(await contractButtons.count() > 0, `Requirement R${requirementIndex + 1} visual contracts must be opened from the visible sidecar editor`);
+      const contractCount = await contractButtons.count();
+      for (let contractIndex = 0; contractIndex < contractCount; contractIndex += 1) {
+        if (contractIndex > 0) {
+          await requirementItems.nth(requirementIndex).click();
+          await editor.waitFor({ state: "visible", timeout: 30_000 });
+          await editor.getByText(new RegExp(`^R${requirementIndex + 1}\\s·`)).waitFor({ state: "visible", timeout: 30_000 });
+        }
+        await editor.getByTestId("goal-requirement-open-ui-contract").nth(contractIndex).click();
+        const viewer = page.getByTestId("ui-interaction-contract-viewer");
+        await viewer.waitFor({ state: "visible", timeout: 30_000 });
+        const confirmVisualContract = viewer.getByTestId("ui-contract-confirm");
+        checkpoint(`opened visual contract R${requirementIndex + 1} #${contractIndex + 1}; confirm button count=${await confirmVisualContract.count()}`);
+        if (await confirmVisualContract.count() === 0) continue;
+        const visualContractResponse = page.waitForResponse((response) => (
+          response.url().includes("/ui-contracts/") && response.request().method() === "PATCH"
+        ), { timeout: 2 * 60 * 1000 });
+        await confirmVisualContract.click();
+        const patchResponse = await visualContractResponse;
+        assert.equal(patchResponse.status(), 200);
+        const patchBody = await patchResponse.text();
+        const patchResult = JSON.parse(patchBody) as { result?: { confirmable?: boolean; validationIssues?: Array<{ code?: string; path?: string; message?: string }>; uiInteractionContracts?: Array<{ id?: string; status?: string; revision?: number }> } };
+        const patchIssues = Array.isArray(patchResult.result?.validationIssues)
+          ? patchResult.result.validationIssues.map((issue) => `${issue.code ?? "issue"}@${issue.path ?? "?"}`).join(",")
+          : "?";
+        const patchContracts = Array.isArray(patchResult.result?.uiInteractionContracts)
+          ? patchResult.result.uiInteractionContracts.map((contract) => `${contract.id ?? "?"}:${contract.status ?? "?"}:r${contract.revision ?? "?"}`).join(",")
+          : "?";
+        checkpoint(`visual contract R${requirementIndex + 1} #${contractIndex + 1} PATCH ${patchResponse.status()} confirmable=${String(patchResult.result?.confirmable)} issues=${patchIssues || "none"} contracts=${patchContracts}`);
+        await confirmVisualContract.waitFor({ state: "detached", timeout: 30_000 });
+        await page.waitForTimeout(500);
+        checkpoint(`requirements projection after R${requirementIndex + 1} #${contractIndex + 1}: readiness=${await requirements.getByTestId("goal-requirements-readiness-summary").innerText()} confirmDisabled=${await requirements.getByTestId("goal-requirements-confirm").isDisabled().catch(() => true)} needsConfirmation=${await requirements.getByText("Needs confirmation", { exact: true }).count()}`);
+      }
+      reviewedRequirementCount += 1;
+    }
+    assert.equal(reviewedRequirementCount, requirementItemCount, "Every requirement item must be opened and reviewed in the Browser UI");
+    await page.getByTestId("sidecar-shell").getByRole("button", { name: "Hide sidecar" }).click().catch(() => undefined);
+    await captureSnapshot(page, snapshotRoot, "03a-requirements-items-reviewed");
+    checkpoint(`reviewed every Requirement item through the visible Browser UI: ${reviewedRequirementCount}/${requirementItemCount}`);
+
+    const confirmRequirements = requirements.getByTestId("goal-requirements-confirm");
+    await confirmRequirements.waitFor({ state: "visible", timeout: 30_000 });
+    await page.waitForFunction(() => {
+      const button = document.querySelector('[data-testid="goal-requirements-confirm"]');
+      return button instanceof HTMLButtonElement && !button.disabled;
+    }, undefined, { timeout: 30_000 });
+    const requirementConfirmation = page.waitForResponse((response) => (
+      response.url().includes("/confirm-requirements") && response.request().method() === "POST"
+    ), { timeout: 20 * 60 * 1000 });
+    await confirmRequirements.click();
+    const requirementResponse = await requirementConfirmation;
+    assert.equal(requirementResponse.status(), 200, await requirementResponse.text());
+    await captureSnapshot(page, snapshotRoot, "03b-requirements-confirmed");
+    checkpoint("confirmed Requirements through the visible Browser UI button");
+
+    const candidateBlock = await waitForLibraryCandidatesOrError(requirements, page, 20 * 60 * 1000);
     assert.ok(await candidateBlock.locator('input[type="checkbox"]').count() > 0, "Library review must render selectable candidates");
     const libraryImportDraftId = await candidateBlock.getAttribute("data-draft-id");
     assert.match(libraryImportDraftId ?? "", /^library-import-/);
@@ -161,20 +226,40 @@ test("33 Chat /southstar executes a real Goal-to-Outcome workflow", { timeout: 6
     checkpoint(`run created: ${runId}`);
     await assertRunUsesAdvertisedRuntimeBindings(env.db, runId);
     checkpoint("DAG uses the host-advertised Pi provider, model, harness, engine, and local runner image");
-    const liveProgress = page
-      .locator('[data-testid="agent-progress"][data-live-progress="true"]')
-      .filter({ hasText: /southstar_runtime_stream_run_events|task\.|run\.|executor\.|heartbeat/i });
+    await page.getByTestId("mode-operator").click();
+    const operator = page.getByTestId("operator-workspace");
+    await operator.waitFor({ state: "visible", timeout: 60_000 });
+    await captureSnapshot(page, snapshotRoot, "06c-operator-review");
+    const approveRun = operator.getByRole("button", { name: "Approve", exact: true }).first();
+    if (await approveRun.isVisible().catch(() => false)) {
+      const approvalResponse = page.waitForResponse((response) => (
+        response.url().endsWith("/api/operator/command") && response.request().method() === "POST"
+      ), { timeout: 2 * 60 * 1000 });
+      await approveRun.click();
+      assert.equal((await approvalResponse).status(), 200);
+      checkpoint("approved execution from the visible Operator UI");
+      await captureSnapshot(page, snapshotRoot, "06d-execution-approved");
+    } else {
+      checkpoint("Operator UI showed no pending approval; run was already scheduling");
+    }
+    const liveProgress = operator.getByTestId("operator-workflow-progress");
     await liveProgress.waitFor({ state: "visible", timeout: 10 * 60 * 1000 });
-    assert.match(await liveProgress.innerText(), /southstar_runtime_stream_run_events|task\.|run\.|executor\.|heartbeat/i);
+    await page.waitForFunction(() => {
+      const text = document.querySelector('[data-testid="operator-workflow-progress"]')?.textContent ?? "";
+      return /running|queued|scheduled|completed|verifying/i.test(text);
+    }, undefined, { timeout: 10 * 60 * 1000 });
     await captureSnapshot(page, snapshotRoot, "06b-executor-live-progress");
-    checkpoint(`Pi streamed live runtime progress into Chat: ${await liveProgress.innerText()}`);
+    checkpoint(`Operator UI showed live executor progress: ${(await liveProgress.innerText()).slice(0, 500)}`);
     const terminalStatus = await waitForPostgresRunStatus(env.db, runId, ["completed", "failed"], 40 * 60 * 1000);
     checkpoint(`run terminal: ${terminalStatus}`);
     assert.equal(terminalStatus, "completed");
 
     const outcome = await waitForGoalOutcome(env.db, runId, 2 * 60 * 1000);
     assert.equal(outcome.status, "satisfied", JSON.stringify(outcome.payload));
-    await waitForAgentIdle(page, 5 * 60 * 1000);
+    await page.waitForFunction(() => {
+      const text = document.querySelector('[data-testid="operator-workflow-progress"]')?.textContent ?? "";
+      return /completed/i.test(text);
+    }, undefined, { timeout: 5 * 60 * 1000 });
     await captureSnapshot(page, snapshotRoot, "07-goal-outcome-satisfied");
 
     const bodyText = await page.locator("body").innerText();
@@ -205,8 +290,8 @@ test("33 Chat /southstar executes a real Goal-to-Outcome workflow", { timeout: 6
     assert.equal(evidence.evaluatorStatuses.every((status) => status === "passed"), true);
 
     const workspaceFiles = await listWorkspaceFiles(workspace);
-    assert.ok(workspaceFiles.includes(MEMBERSHIP_MODULE_PATH), "membership implementation is required");
-    execFileSync("node", ["--test", MEMBERSHIP_TEST_PATH], { cwd: workspace, stdio: "pipe" });
+    assert.ok(workspaceFiles.some((file) => /src\/.*\.(m?js|ts|html)$/.test(file)), "generated vocabulary source/UI is required");
+    assert.ok(workspaceFiles.some((file) => /tests?\/.*\.(m?js|ts)$/.test(file)), "generated vocabulary tests are required");
 
     await writeFile(join(snapshotRoot, "evidence.json"), JSON.stringify({ runId, workspace, workspaceFiles, evidence }, null, 2), "utf8");
     checkpoint(`real Goal-to-Outcome accepted; artifacts=${evidence.artifactCount} callbacks=${evidence.callbackCount}`);
@@ -238,6 +323,58 @@ async function submitLibraryApproval(page: Page, input: Locator, draftId: string
   await page.getByTestId("chat-mode-panel").getByRole("button", { name: "Send", exact: true }).click();
 }
 
+async function resolveRequirementClarifications(
+  page: Page,
+  snapshotRoot: string,
+  checkpoint: (message: string) => void,
+): Promise<void> {
+  for (let round = 1; round <= 6; round += 1) {
+    const blockerAnswers = page.locator('[data-testid^="goal-requirement-blocker-answer-"]:visible');
+    const openQuestionAnswers = page.locator('[data-testid^="goal-requirement-question-answer-"]:visible');
+    const blockerCount = await blockerAnswers.count();
+    const openQuestionCount = await openQuestionAnswers.count();
+    if (blockerCount === 0 && openQuestionCount === 0) return;
+
+    for (let index = 0; index < blockerCount; index += 1) {
+      const answer = blockerAnswers.nth(index);
+      await answer.fill(clarificationAnswer(await answer.locator("xpath=../..").innerText()));
+    }
+    for (let index = 0; index < openQuestionCount; index += 1) {
+      const answer = openQuestionAnswers.nth(index);
+      await answer.fill(clarificationAnswer(await answer.locator("xpath=../../..").innerText()));
+    }
+
+    const resolve = page.getByTestId("goal-requirement-resolve").last();
+    await resolve.waitFor({ state: "visible", timeout: 30_000 });
+    const revisionResponse = page.waitForResponse((response) => (
+      response.url().includes("/planner-drafts/")
+      && response.url().includes("/revise/stream")
+      && response.request().method() === "POST"
+    ), { timeout: 20 * 60 * 1000 });
+    await resolve.click();
+    assert.equal((await revisionResponse).status(), 200);
+    await page.waitForFunction(() => {
+      const progress = document.querySelector('[data-testid="goal-validation-progress"]');
+      return progress?.getAttribute("data-state") === "error"
+        || Boolean(progress?.getAttribute("data-event"))
+        || Boolean(progress?.textContent?.includes("Saved revision"));
+    }, undefined, { timeout: 2 * 60 * 1000 });
+    const revisionError = page.locator('[data-testid="goal-validation-progress"][data-state="error"]').last();
+    if (await revisionError.isVisible().catch(() => false)) {
+      throw new Error(`Requirement revision stream failed in the visible Browser UI: ${await revisionError.innerText()}`);
+    }
+    await captureSnapshot(page, snapshotRoot, `03${round === 1 ? "b" : `b${round}`}-requirements-rechecked`);
+    checkpoint(`answered Requirement clarifications through Browser UI round ${round}: ${blockerCount + openQuestionCount} input(s)`);
+  }
+  throw new Error("Requirement clarifications did not resolve after six Browser UI rounds");
+}
+
+function clarificationAnswer(question: string): string {
+  if (/refund/i.test(question)) return "B";
+  if (/enforcement|access control/i.test(question)) return "A";
+  return "A";
+}
+
 async function waitForSliceOrNewLibraryDraft(
   page: Page,
   approvedDraftIds: ReadonlySet<string>,
@@ -261,35 +398,27 @@ async function waitForSliceOrNewLibraryDraft(
   throw new Error(`Timed out after ${timeoutMs}ms waiting for a Slice or an additional Library import draft`);
 }
 
+async function waitForLibraryCandidatesOrError(
+  requirements: Locator,
+  page: Page,
+  timeoutMs: number,
+): Promise<Locator> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const candidate = page.getByTestId("library-import-candidates").last();
+    if (await candidate.isVisible().catch(() => false)) return candidate;
+    const error = requirements.locator('[data-testid="goal-validation-progress"][data-state="error"]');
+    if (await error.isVisible().catch(() => false)) {
+      throw new Error(`Requirement confirmation stream failed in the visible Browser UI: ${await error.innerText()}`);
+    }
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 1000));
+  }
+  throw new Error(`Library candidates did not render within ${timeoutMs}ms after UI Requirements confirmation`);
+}
+
 async function prepareWorkspace(): Promise<string> {
   const workspace = await mkdtemp("/tmp/southstar-chat-e2e-workspace-");
-  await mkdir(join(workspace, "tests"), { recursive: true });
   await writeFile(join(workspace, "README.md"), "# Southstar Chat E2E workspace\n", "utf8");
-  await writeFile(join(workspace, MEMBERSHIP_TEST_PATH), `
-import assert from "node:assert/strict";
-import test from "node:test";
-import { LocalPaymentLedger, MembershipService } from "../src/membership.mjs";
-
-test("membership subscription lifecycle is persisted, access-controlled, refundable, and auditable", () => {
-  const ledger = new LocalPaymentLedger();
-  const service = new MembershipService({ ledger });
-
-  assert.equal(service.canAccess("account-a", "premium-course"), false);
-  const subscription = service.subscribe({ accountId: "account-a", planId: "pro", amountCents: 1200 });
-  assert.equal(subscription.status, "active");
-  assert.equal(service.canAccess("account-a", "premium-course"), true);
-
-  const cancellation = service.cancel({ accountId: "account-a", reason: "user-request" });
-  assert.equal(cancellation.status, "cancelled");
-  assert.equal(cancellation.refund.amountCents, 1200);
-  assert.equal(service.canAccess("account-a", "premium-course"), false);
-
-  const secondCancellation = service.cancel({ accountId: "account-a", reason: "user-request" });
-  assert.equal(secondCancellation.refund.id, cancellation.refund.id);
-  assert.equal(ledger.refunds().length, 1);
-  assert.deepEqual(service.auditReport().map((event) => event.type), ["charge", "subscription_activated", "refund", "subscription_cancelled"]);
-});
-`, "utf8");
   execFileSync("git", ["init", "-b", "main"], { cwd: workspace, stdio: "pipe" });
   execFileSync("git", ["config", "user.name", "Southstar E2E"], { cwd: workspace, stdio: "pipe" });
   execFileSync("git", ["config", "user.email", "southstar-e2e@example.invalid"], { cwd: workspace, stdio: "pipe" });
@@ -345,7 +474,18 @@ async function chooseChatCwd(page: Page, workspace: string): Promise<void> {
 
 async function waitForOpenSouthstarBox(page: Page, title: string, timeout: number): Promise<void> {
   const summary = page.locator("summary").filter({ hasText: title }).last();
-  await summary.waitFor({ state: "visible", timeout });
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    if (await summary.isVisible().catch(() => false)) break;
+    const authError = page.getByText(/No API key for provider:/i).last();
+    if (await authError.isVisible().catch(() => false)) {
+      throw new Error(`Chat Browser session is not authenticated for the selected Pi provider: ${await authError.innerText()}`);
+    }
+    await page.waitForTimeout(1_000);
+  }
+  if (!await summary.isVisible().catch(() => false)) {
+    throw new Error(`Timed out after ${timeout}ms waiting for visible ${title}`);
+  }
   const details = summary.locator("..");
   assert.notEqual(await details.getAttribute("open"), null, `${title} must be open by default`);
 }

@@ -1,5 +1,6 @@
 import type { SouthstarDb } from "../db/postgres.ts";
 import { contentHashForPayload } from "../design-library/canonical-json.ts";
+import { findLibraryObjectByKeyForUpdate } from "../design-library/library-graph-store.ts";
 import {
   createLibraryImportDraft,
   loadLibraryImportCandidateDraft,
@@ -7,7 +8,8 @@ import {
 import type { LibraryImportCandidateInstallResult } from "../design-library/importers/library-import-draft-store.ts";
 import type { LibraryImportLlmProvider } from "../design-library/importers/library-llm-import-analyzer.ts";
 import type { LibraryImportSourceFetcher } from "../design-library/importers/library-source-fetcher.ts";
-import type { GoalValidationResolutionV1 } from "../design-library/types.ts";
+import type { GoalValidationResolutionV2 } from "../design-library/types.ts";
+import { criterionValidationCheckKey } from "../design-library/types.ts";
 import { resolveApprovedValidationCandidates } from "./candidate-resolver.ts";
 import {
   getResourceByKeyPg,
@@ -58,9 +60,9 @@ export type GoalValidationLifecycleResult = {
   goalContract: GoalContractV1;
   goalContractHash: string;
   blockers: string[];
-  goalValidationResolution: GoalValidationResolutionV1;
-  validationBindings: GoalValidationResolutionV1["bindings"];
-  validationGaps: GoalValidationResolutionV1["gaps"];
+  goalValidationResolution: GoalValidationResolutionV2;
+  validationBindings: GoalValidationResolutionV2["bindings"];
+  validationGaps: GoalValidationResolutionV2["gaps"];
   libraryImportDraftId?: string;
   invalidated?: {
     validationBindings: boolean;
@@ -147,7 +149,7 @@ export async function resumeInstalledLibraryImportGoalValidationPg(
 export async function assertGoalValidationImportCurrentPg(
   db: SouthstarDb,
   libraryImportDraftId: string,
-  options: { lockForInstall?: boolean } = {},
+  options: { lockForInstall?: boolean; allowInstalledContractReconciliation?: boolean } = {},
 ): Promise<{ linked: boolean; originGoalDraftId?: string }> {
   let importDraft = await getResourceByKeyPg(db, "library_import_draft", libraryImportDraftId);
   if (!importDraft) throw new GoalValidationImportStaleError(libraryImportDraftId, "linked import is missing");
@@ -186,11 +188,16 @@ export async function assertGoalValidationImportCurrentPg(
   const resolution = asRecord(asRecord(planner?.payload).goalValidationResolution);
   const currentResolutionHash = optionalString(resolution.resolutionHash);
   const currentGapHash = Array.isArray(resolution.gaps) ? contentHashForPayload(resolution.gaps) : undefined;
-  if (!current || current.goalContractHash !== expectedContractHash
+  const installedContractReconciliation = options.allowInstalledContractReconciliation
+    && importDraft.status === "installed"
+    && current?.requirementDraft.draftHash === expectedRequirementHash
+    && current?.phase !== "requirements_review";
+  if ((!current || current.goalContractHash !== expectedContractHash
     || current.requirementDraft.draftHash !== expectedRequirementHash
     || current.phase !== "library_review"
     || currentResolutionHash !== expectedResolutionHash
-    || (expectedGapHash !== undefined && currentGapHash !== expectedGapHash)) {
+    || (expectedGapHash !== undefined && currentGapHash !== expectedGapHash))
+    && !installedContractReconciliation) {
     if (importDraft.status === "draft") {
       const stale = JSON.stringify({ staleReason: "goal_validation_resolution_changed", staleAt: new Date().toISOString() });
       await db.query(
@@ -288,7 +295,7 @@ export async function persistGoalValidationResolutionPg(
     draftId: string;
     expectedGoalContractHash: string;
     expectedGoalRequirementDraftHash: string;
-    resolution: GoalValidationResolutionV1;
+    resolution: GoalValidationResolutionV2;
     actor?: string;
   },
 ): Promise<GoalValidationLifecycleResult> {
@@ -304,6 +311,7 @@ export async function persistGoalValidationResolutionPg(
     if (!["validation_resolving", "library_review", "validation_ready"].includes(currentPhase)) {
       throw new Error(`goal validation cannot be resolved in phase ${currentPhase}: ${input.draftId}`);
     }
+    await assertFrozenValidationLibraryBindingsTx(tx, input.resolution);
     const ready = goalValidationResolutionReady(input.resolution);
     const phase = ready ? "validation_ready" as const : "library_review" as const;
     const revisionKey = `${input.draftId}:${input.resolution.resolutionHash}`;
@@ -392,6 +400,38 @@ export async function persistGoalValidationResolutionPg(
   });
 }
 
+async function assertFrozenValidationLibraryBindingsTx(
+  db: SouthstarDb,
+  resolution: GoalValidationResolutionV2,
+): Promise<void> {
+  const refs = new Map<string, { objectKind: "artifact_contract" | "evaluator_profile"; versionRef: string }>();
+  for (const binding of resolution.bindings) {
+    for (const criterionBinding of binding.criterionBindings) {
+      refs.set(criterionBinding.artifactContractRef, {
+        objectKind: "artifact_contract",
+        versionRef: criterionBinding.artifactContractVersionRef,
+      });
+      refs.set(criterionBinding.evaluatorProfileRef, {
+        objectKind: "evaluator_profile",
+        versionRef: criterionBinding.evaluatorProfileVersionRef,
+      });
+    }
+  }
+  for (const objectKey of [...refs.keys()].sort()) {
+    const expected = refs.get(objectKey)!;
+    const object = await findLibraryObjectByKeyForUpdate(db, objectKey);
+    if (!object
+      || object.objectKind !== expected.objectKind
+      || object.status !== "approved"
+      || object.headVersionId !== expected.versionRef) {
+      const version = expected.versionRef.startsWith(`${objectKey}@`)
+        ? expected.versionRef.slice(objectKey.length + 1)
+        : expected.versionRef;
+      throw new Error(`goal_validation_library_binding_stale: ${objectKey}@${version}`);
+    }
+  }
+}
+
 export async function resumeGoalValidationAfterLibraryImportPg(
   db: SouthstarDb,
   input: {
@@ -402,7 +442,9 @@ export async function resumeGoalValidationAfterLibraryImportPg(
     actor?: string;
   },
 ): Promise<GoalValidationLifecycleResult> {
-  await assertGoalValidationImportCurrentPg(db, input.libraryImportDraftId);
+  await assertGoalValidationImportCurrentPg(db, input.libraryImportDraftId, {
+    allowInstalledContractReconciliation: true,
+  });
   const importDraft = await getResourceByKeyPg(db, "library_import_draft", input.libraryImportDraftId);
   if (!importDraft || importDraft.status !== "installed") {
     throw new GoalValidationImportStaleError(input.libraryImportDraftId, `linked import is ${importDraft?.status ?? "missing"}`);
@@ -414,15 +456,33 @@ export async function resumeGoalValidationAfterLibraryImportPg(
   const source = await loadGoalValidationSourcePg(db, originGoalDraftId).catch((error) => {
     throw new GoalValidationImportStaleError(input.libraryImportDraftId, error instanceof Error ? error.message : String(error));
   });
-  if (source.goalContractHash !== originGoalContractHash
+  const installedContractReconciliation = importDraft.status === "installed"
+    && source.requirementDraft.draftHash === originGoalRequirementDraftHash
+    && source.phase !== "requirements_review";
+  if ((source.goalContractHash !== originGoalContractHash && !installedContractReconciliation)
     || source.requirementDraft.draftHash !== originGoalRequirementDraftHash
-    || source.phase !== "library_review") {
+    || (source.phase !== "library_review" && !installedContractReconciliation)) {
     throw new GoalValidationImportStaleError(input.libraryImportDraftId, "the Goal Contract, Requirement revision, or phase no longer matches the import origin");
   }
+  const { confirmGoalRequirementsPg } = await import("./goal-design-draft-service.ts");
+  const confirmed = await confirmGoalRequirementsPg(db, {
+    draftId: originGoalDraftId,
+    expectedDraftHash: source.requirementDraft.draftHash,
+    actor: input.actor,
+    goalContractMetadata: {
+      domain: source.goalContract.domain,
+      intent: source.goalContract.intent,
+      workType: source.goalContract.workType,
+      expectedArtifactRefs: [...source.goalContract.expectedArtifactRefs],
+      requiredCapabilities: [...source.goalContract.requiredCapabilities],
+      assumptions: [...source.goalContract.assumptions],
+      requestedSideEffects: [...source.goalContract.requestedSideEffects],
+    },
+  });
   const result = input.resolver
     ? await resolveAndPersistGoalValidationPg(db, {
       draftId: originGoalDraftId,
-      expectedGoalContractHash: originGoalContractHash,
+      expectedGoalContractHash: confirmed.goalContractHash ?? originGoalContractHash,
       resolver: input.resolver,
       libraryImportLlmProvider: input.libraryImportLlmProvider,
       libraryImportSourceFetcher: input.libraryImportSourceFetcher,
@@ -431,11 +491,28 @@ export async function resumeGoalValidationAfterLibraryImportPg(
     : await resolveInstalledGoalValidationPg({
       db,
       draftId: originGoalDraftId,
-      expectedGoalContractHash: originGoalContractHash,
+      expectedGoalContractHash: confirmed.goalContractHash ?? originGoalContractHash,
       importDraftId: input.libraryImportDraftId,
       actor: input.actor,
     });
-  await insertRuntimeResourceIfAbsentPg(db, {
+  if (result.goalContractHash !== originGoalContractHash
+    || result.goalValidationResolution.resolutionHash !== requiredString(payload.originGoalValidationResolutionHash, "originGoalValidationResolutionHash", input.libraryImportDraftId)) {
+    const nextOrigin = JSON.stringify({
+      originGoalContractHash: result.goalContractHash,
+      originGoalRequirementDraftHash: result.goalRequirementDraftHash,
+      originGoalValidationResolutionHash: result.goalValidationResolution.resolutionHash,
+      originGoalValidationGapHash: contentHashForPayload(result.goalValidationResolution.gaps),
+    });
+    await db.query(
+      `update southstar.runtime_resources
+          set payload_json = payload_json || $2::jsonb,
+              summary_json = summary_json || $2::jsonb,
+              updated_at = now()
+        where resource_type = 'library_import_draft' and resource_key = $1`,
+      [input.libraryImportDraftId, nextOrigin],
+    );
+  }
+  await upsertRuntimeResourcePg(db, {
     resourceType: "goal_validation_resume",
     resourceKey: input.libraryImportDraftId,
     scope: "planner",
@@ -444,8 +521,8 @@ export async function resumeGoalValidationAfterLibraryImportPg(
     payload: {
       libraryImportDraftId: input.libraryImportDraftId,
       originGoalDraftId,
-      originGoalContractHash,
-      originGoalRequirementDraftHash,
+      originGoalContractHash: result.goalContractHash,
+      originGoalRequirementDraftHash: result.goalRequirementDraftHash,
       resolutionHash: result.goalValidationResolution.resolutionHash,
       goalDesignPhase: result.phase,
       ...(result.libraryImportDraftId ? { followUpLibraryImportDraftId: result.libraryImportDraftId } : {}),
@@ -475,7 +552,7 @@ async function resolveInstalledGoalValidationPg(input: {
     throw new Error(`goal_contract_stale: ${input.draftId}`);
   }
   const planner = await getResourceByKeyPg(input.db, "planner_draft", input.draftId);
-  const priorResolution = asRecord(asRecord(planner?.payload).goalValidationResolution) as unknown as GoalValidationResolutionV1;
+  const priorResolution = asRecord(asRecord(planner?.payload).goalValidationResolution) as unknown as GoalValidationResolutionV2;
   if (!priorResolution || !Array.isArray(priorResolution.gaps) || !Array.isArray(priorResolution.bindings)) {
     throw new Error(`goal_validation_resolution_missing: ${input.draftId}`);
   }
@@ -502,15 +579,17 @@ async function resolveInstalledGoalValidationPg(input: {
         });
       }
       const binding = priorBindings.get(rankInput.contractRequirement.id);
-      if (!binding || binding.artifactContractRefs.length === 0) return [];
+      const criterionId = rankInput.contractRequirement.acceptanceCriteria[0]?.id;
+      const criterionBinding = binding?.criterionBindings.find((item) => item.criterionContract.id === criterionId);
+      if (!criterionBinding) return [];
       const recommendation: GoalValidationCandidateRecommendationV1 = {
-        artifactRef: binding.artifactContractRefs[0]!,
-        evaluatorRef: binding.evaluatorProfileRef,
-        verificationMode: binding.verificationMode,
-        procedureRef: binding.criterionChecks[0]?.procedureRef ?? "",
-        expectedEvidenceKinds: binding.requiredEvidenceKinds,
-        artifactVersionRef: binding.artifactContractVersionRefs[0],
-        evaluatorVersionRef: binding.evaluatorProfileVersionRef,
+        artifactRef: criterionBinding.artifactContractRef,
+        evaluatorRef: criterionBinding.evaluatorProfileRef,
+        verificationMode: criterionBinding.verificationMode,
+        procedureRef: criterionBinding.procedureRef,
+        expectedEvidenceKinds: criterionBinding.expectedEvidenceKinds,
+        artifactVersionRef: criterionBinding.artifactContractVersionRef,
+        evaluatorVersionRef: criterionBinding.evaluatorProfileVersionRef,
         reason: "Previously validated binding retained after Library import.",
       };
       return recommendation;
@@ -587,13 +666,67 @@ function goalDesignPhaseFromPayload(payload: Record<string, unknown>): string | 
   return optionalString(payload.goalDesignPhase);
 }
 
-function assertGoalValidationResolutionMatches(source: GoalValidationSource, resolution: GoalValidationResolutionV1): void {
+function assertGoalValidationResolutionMatches(source: GoalValidationSource, resolution: GoalValidationResolutionV2): void {
+  const invalid = (reason: string): never => {
+    throw new Error(`goal_validation_resolution_invalid: ${source.draftId}: ${reason}`);
+  };
+  if (resolution.schemaVersion !== "southstar.goal_validation_resolution.v2") invalid("unsupported schemaVersion");
+  if (!Array.isArray(resolution.previews) || !Array.isArray(resolution.bindings) || !Array.isArray(resolution.gaps)) {
+    invalid("previews, bindings, and gaps must be arrays");
+  }
   if (resolution.goalContractHash !== source.goalContractHash) throw new Error(`goal_validation_contract_hash_mismatch: ${source.draftId}`);
   if (resolution.requirementDraftHash !== source.requirementDraft.draftHash) {
     throw new Error(`goal_validation_requirement_hash_mismatch: ${source.draftId}`);
   }
   const { resolutionHash, ...withoutHash } = resolution;
   if (contentHashForPayload(withoutHash) !== resolutionHash) throw new Error(`goal_validation_resolution_hash_invalid: ${source.draftId}`);
+
+  const requirementsById = new Map(source.goalContract.requirements.map((requirement) => [requirement.id, requirement]));
+  const bindingCountByRequirement = new Map<string, number>();
+  const boundCriterionIds = new Set<string>();
+  const boundCheckKeys = new Set<string>();
+  const coveredAssurances = new Map<string, Set<string>>();
+  const bindingIds = new Set<string>();
+  for (const binding of resolution.bindings) {
+    if (binding.schemaVersion !== "southstar.requirement_validation_binding.v3") invalid(`binding ${binding.id} has an unsupported schemaVersion`);
+    if (bindingIds.has(binding.id)) invalid(`duplicate binding id ${binding.id}`);
+    bindingIds.add(binding.id);
+    const requirement = requirementsById.get(binding.requirementId)
+      ?? invalid(`binding ${binding.id} references unknown requirement ${binding.requirementId}`);
+    bindingCountByRequirement.set(binding.requirementId, (bindingCountByRequirement.get(binding.requirementId) ?? 0) + 1);
+    if (!Array.isArray(binding.criterionBindings) || binding.criterionBindings.length === 0) {
+      invalid(`binding ${binding.id} has no Criterion bindings`);
+    }
+    const expectedCriteria = new Map(requirement.acceptanceCriteria.map((criterion) => [criterion.id, criterion]));
+    for (const criterionBinding of binding.criterionBindings) {
+      const criterion = criterionBinding.criterionContract;
+      const expected = expectedCriteria.get(criterion.id);
+      if (!expected || contentHashForPayload(expected) !== contentHashForPayload(criterion)) {
+        invalid(`binding ${binding.id} changed confirmed Criterion ${criterion.id}`);
+      }
+      const checkKey = criterionValidationCheckKey(criterion.id, criterionBinding.verificationMode);
+      if (boundCheckKeys.has(checkKey)) invalid(`Criterion check ${checkKey} has multiple validation bindings`);
+      boundCheckKeys.add(checkKey);
+      if (criterion.requiredAssurance.length !== 1
+        || new Set(criterion.requiredAssurance).size !== criterion.requiredAssurance.length
+        || criterion.requiredAssurance[0] !== criterionBinding.verificationMode) {
+        invalid(`binding ${binding.id} does not preserve assurance for Criterion ${criterion.id}`);
+      }
+      boundCriterionIds.add(criterion.id);
+      const assuranceCoverage = coveredAssurances.get(criterion.id) ?? new Set<string>();
+      assuranceCoverage.add(criterionBinding.verificationMode);
+      coveredAssurances.set(criterion.id, assuranceCoverage);
+    }
+  }
+  if ([...bindingCountByRequirement.values()].some((count) => count > 1)) invalid("a requirement has multiple validation bindings");
+  const blockingCriteriaBound = source.goalContract.requirements
+    .flatMap((requirement) => requirement.acceptanceCriteria)
+    .filter((criterion) => criterion.blocking)
+    .every((criterion) => criterion.requiredAssurance.length === 1
+      && boundCriterionIds.has(criterion.id)
+      && coveredAssurances.get(criterion.id)?.has(criterion.requiredAssurance[0]!));
+  const derivedReady = !resolution.gaps.some((gap) => gap.blocking) && blockingCriteriaBound;
+  if (resolution.ready !== derivedReady) invalid("ready does not match blocking gaps and canonical bindings");
 }
 
 async function attachGoalValidationImportDraftPg(
@@ -609,7 +742,7 @@ async function attachGoalValidationImportDraftPg(
   const attached = await db.tx(async (tx) => {
     const row = await loadGoalValidationPlannerRowTx(tx, input.draftId);
     const source = goalValidationSourceFromRow(row);
-    const resolution = row.payload_json.goalValidationResolution as GoalValidationResolutionV1 | undefined;
+    const resolution = row.payload_json.goalValidationResolution as GoalValidationResolutionV2 | undefined;
     if (source.goalContractHash !== input.expectedGoalContractHash
       || source.requirementDraft.draftHash !== input.expectedGoalRequirementDraftHash
       || !resolution || resolution.resolutionHash !== input.expectedResolutionHash || source.phase !== "library_review") return undefined;
@@ -644,7 +777,7 @@ async function attachGoalValidationImportDraftPg(
 
 function goalValidationLifecycleResult(
   source: GoalValidationSource,
-  resolution: GoalValidationResolutionV1,
+  resolution: GoalValidationResolutionV2,
   phase: "library_review" | "validation_ready",
   libraryImportDraftId?: string,
 ): GoalValidationLifecycleResult {

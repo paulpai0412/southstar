@@ -57,10 +57,11 @@ export async function validateWorkflowCompositionPlan(
   if (options.goalDesignPackage) {
     validateGoalDesignSlicePlan(plan, options.goalDesignPackage, issues);
   }
-  if (options.goalContract) {
+  if (options.goalContract && options.goalDesignPackage) {
     validateGoalRequirementCoverage(
       options.goalContract,
       plan,
+      options.goalDesignPackage,
       issues,
       options.targetRequirementIds,
     );
@@ -114,10 +115,10 @@ function validateGoalDesignSlicePlan(
     taskIdsBySlice.set(sliceId, tasks);
     const ownedRequirementIds = new Set(slice.requirementIds);
     if (nodeType === "verify" || nodeType === "review") {
-      if (packageValue.schemaVersion === "southstar.goal_design_package.v2") {
+      if (packageValue.schemaVersion === "southstar.goal_design_package.v3") {
         const allowedEvaluatorRefs = new Set(packageValue.validationBindings
           .filter((binding) => task.requirementIds.includes(binding.requirementId))
-          .map((binding) => binding.evaluatorProfileRef));
+          .flatMap((binding) => binding.criterionBindings.map((item) => item.evaluatorProfileRef)));
         if (allowedEvaluatorRefs.size > 0 && !allowedEvaluatorRefs.has(task.evaluatorProfileRef)) {
           issues.push(issue(
             "evaluator_binding_mismatch",
@@ -183,6 +184,7 @@ function validateProducerDependencyArtifactFlow(
 function validateGoalRequirementCoverage(
   goalContract: GoalContractV1,
   plan: WorkflowCompositionPlan,
+  goalDesignPackage: GoalDesignPackage,
   issues: WorkflowCompositionValidationIssue[],
   targetRequirementIds: string[] | undefined,
 ): void {
@@ -238,13 +240,14 @@ function validateGoalRequirementCoverage(
   const coverage = buildGoalRequirementCoverage({
     goalContract,
     composition: plan,
+    goalDesignPackage,
     targetRequirementIds: [...validTargetRequirementIds],
   });
   const coverageByRequirementId = new Map(coverage.entries.map((entry) => [entry.requirementId, entry]));
   const tasksById = new Map(plan.tasks.map((task) => [task.id, task]));
   for (const [requirementIndex, requirement] of goalContract.requirements.entries()) {
     if (!validTargetRequirementIds.has(requirement.id)) continue;
-    if (!requirement.blocking) continue;
+    if (!requirement.acceptanceCriteria.some((criterion) => criterion.blocking)) continue;
     const entry = coverageByRequirementId.get(requirement.id)!;
     const path = `goalContract.requirements.${requirementIndex}`;
     if (entry.producerTaskIds.length === 0) {
@@ -259,6 +262,15 @@ function validateGoalRequirementCoverage(
         "requirement_missing_artifact",
         path,
         `blocking requirement has no producer artifact: ${requirement.id}`,
+      ));
+    }
+    const producerArtifactRefs = new Set(entry.artifactRefs.map(canonicalArtifactRef));
+    for (const criterionBinding of entry.criterionBindings) {
+      if (producerArtifactRefs.has(canonicalArtifactRef(criterionBinding.artifactContractRef))) continue;
+      issues.push(issue(
+        "requirement_missing_artifact",
+        `${path}.acceptanceCriteria`,
+        `producer tasks for ${requirement.id} must emit the frozen Criterion artifact contract: ${criterionBinding.artifactContractRef}`,
       ));
     }
     if (entry.evaluatorTaskIds.length === 0) {
@@ -1078,13 +1090,19 @@ function candidateRefs(packet: CandidatePacket): Set<string> {
   return refs;
 }
 
+function canonicalArtifactRef(ref: string): string {
+  return ref.startsWith("artifact.") ? ref : `artifact.${ref}`;
+}
+
 function goalDesignHostRefs(packageValue: GoalDesignPackage): Set<string> {
   return new Set([
     ...packageValue.slicePlan.slices.flatMap((slice) => slice.expectedArtifactRefs),
-    ...packageValue.validationBindings.flatMap((binding) => [
-      binding.evaluatorProfileRef,
-      ...binding.artifactContractRefs,
-    ]),
+    ...packageValue.validationBindings.flatMap((binding) => (
+      binding.criterionBindings.flatMap((item) => [
+        item.evaluatorProfileRef,
+        item.artifactContractRef,
+      ])
+    )),
   ]);
 }
 
@@ -1092,9 +1110,11 @@ function goalDesignEvaluatorArtifactRefs(packageValue: GoalDesignPackage | undef
   const result = new Map<string, Set<string>>();
   if (!packageValue) return result;
   for (const binding of packageValue.validationBindings) {
-    const refs = result.get(binding.evaluatorProfileRef) ?? new Set<string>();
-    for (const artifactRef of binding.artifactContractRefs) refs.add(artifactRef);
-    result.set(binding.evaluatorProfileRef, refs);
+    for (const item of binding.criterionBindings) {
+      const refs = result.get(item.evaluatorProfileRef) ?? new Set<string>();
+      refs.add(item.artifactContractRef);
+      result.set(item.evaluatorProfileRef, refs);
+    }
   }
   return result;
 }

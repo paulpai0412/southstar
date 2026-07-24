@@ -3,6 +3,7 @@ import {
   EVIDENCE_KINDS,
   EVIDENCE_PACKET_SCHEMA_VERSION,
   type EvidenceKind,
+  type EvidencePacketLineage,
   type EvidencePacket,
 } from "./types.ts";
 
@@ -13,6 +14,7 @@ export type BuildEvidencePacketInput = {
   requiredEvidenceKinds: EvidenceKind[];
   artifact: Record<string, unknown>;
   identityScope?: string;
+  lineage?: EvidencePacketLineage;
   now?: string;
 };
 
@@ -47,10 +49,12 @@ export function buildEvidencePacket(input: BuildEvidencePacketInput): EvidencePa
       input.artifactRef,
       ...(input.identityScope ? [input.identityScope] : []),
       requiredKinds.join(","),
+      ...(input.lineage ? [JSON.stringify(input.lineage)] : []),
     ].join(":"))}`,
     runId: input.runId,
     taskId: input.taskId,
     artifactRef: input.artifactRef,
+    ...(input.lineage ? { lineage: input.lineage } : {}),
     evidenceItems,
     completeness: {
       requiredCount: requiredKinds.length,

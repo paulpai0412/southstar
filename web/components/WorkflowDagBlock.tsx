@@ -50,7 +50,7 @@ export function WorkflowDagBlock({
   onMissionRefresh?: (dag: WorkflowDag) => Promise<GoalMissionReadModel | null>;
   onLibraryGraphNodeSelect?: (node: LibraryGraphChartNode) => void;
 }) {
-  const [expanded, setExpanded] = useState<boolean>(false);
+  const [expanded, setExpanded] = useState<boolean>(dag.expandedByDefault ?? true);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [saveTemplateStatus, setSaveTemplateStatus] = useState<SaveTemplateStatus>({ phase: "idle" });
   const [reviewMode, setReviewMode] = useState(false);
@@ -235,6 +235,7 @@ export function WorkflowDagBlock({
     >
       <button
         onClick={() => setExpanded((value) => !value)}
+        aria-expanded={expanded}
         style={{
           width: "100%",
           display: "flex",
@@ -277,7 +278,7 @@ export function WorkflowDagBlock({
               onOpenDetails={() => onGoalContractSelect?.(dag)}
               onReviseGoal={(choice) => onReviseGoal?.(dag, choice)}
               onApprove={openApprovalForm}
-              approvalPending={approvalPending}
+              approvalPending={approvalStatus.phase === "pending"}
             />
           ) : null}
           {approvalDraft && !approvalComplete ? (

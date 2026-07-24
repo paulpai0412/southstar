@@ -219,12 +219,24 @@ export function alignFixtureCompositionWithGoalDesignPackage(
             planningQuestions: ["What work and evidence are required?"],
           }
         : task.nodePromptSpec;
+      const validationTask = nodePromptSpec?.nodeType === "verify" || nodePromptSpec?.nodeType === "review";
+      const criterionBinding = binding?.criterionBindings.find((candidate) => (
+        task.outputArtifactRefs.includes(candidate.artifactContractRef)
+      )) ?? (validationTask ? binding?.criterionBindings[0] : undefined);
+      const outputArtifactRefs = validationTask && criterionBinding
+        ? [criterionBinding.artifactContractRef]
+        : task.outputArtifactRefs;
       return {
         ...task,
         requirementIds,
+        outputArtifactRefs,
         ...(sliceId ? { sliceId } : {}),
-        ...(nodePromptSpec ? { nodePromptSpec } : {}),
-        ...(binding ? { evaluatorProfileRef: binding.evaluatorProfileRef } : {}),
+        ...(nodePromptSpec
+          ? { nodePromptSpec: { ...nodePromptSpec, expectedOutputs: outputArtifactRefs } }
+          : {}),
+        ...(criterionBinding
+          ? { evaluatorProfileRef: criterionBinding.evaluatorProfileRef }
+          : {}),
       };
     }),
   };

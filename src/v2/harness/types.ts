@@ -6,9 +6,17 @@ export type HarnessRunInput = {
   repairInstruction?: string;
 };
 
+export type HarnessCommandExecution = {
+  ref: string;
+  command: string;
+  status: "passed" | "failed";
+  ok: boolean;
+};
+
 export type HarnessRunResult = {
   artifact: Record<string, unknown>;
   progress: string[];
+  commandExecutions?: HarnessCommandExecution[];
   metrics?: {
     durationMs?: number;
     toolCalls?: number;

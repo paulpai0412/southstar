@@ -1,0 +1,35 @@
+schemaVersion: southstar.library.artifact_contract_file.v1
+id: artifact.quiz-scoring-feedback-evidence
+title: "Quiz Scoring Feedback Evidence"
+scope: "software"
+status: approved
+semanticTags:
+  - "scoring"
+  - "feedback"
+  - "accuracy"
+artifactType: "quiz_scoring_feedback_record"
+mediaTypes:
+  - "application/json"
+  - "image/png"
+  - "text/plain"
+evidenceKinds:
+  - "screenshot"
+  - "command-output"
+  - "test-result"
+validationRules:
+  - "must include per-question correctness judgments linked to a submitted quiz result"
+  - "must include displayed score totals and aggregate correctness summary"
+  - "must include deterministic scoring check outputs that reconcile totals with per-question judgments"
+schemaRef: "southstar.artifact.quiz_scoring_feedback_record.v1"
+requiredFields:
+  - "perQuestionEvaluations"
+  - "scoreTotals"
+  - "uiFeedbackEvidence"
+  - "scoringCheckEvidence"
+provenanceRequirements:
+  - "derived-from-quiz-submission"
+  - "includes-ui-and-deterministic-test-evidence"
+  - "binds-score-summary-to-per-question-judgments"
+importDraftId: "library-import-goal-db33926089a81a581304cec756cb3ca2"
+importCandidateKey: "artifact.quiz-scoring-feedback-evidence"
+importSourcePath: "Confirmed-Goal-validation-gaps.md"

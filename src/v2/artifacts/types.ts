@@ -39,6 +39,8 @@ export type ArtifactRefPayload = {
   status: ArtifactRefStatus;
   contentRef?: ArtifactContentRef;
   contractRefs: string[];
+  /** Exact frozen Artifact Contract version refs used by this instance. */
+  contractVersionRefs?: string[];
   summary: string;
   failedArtifactRefs?: string[];
   evidenceRefs: string[];
@@ -62,6 +64,43 @@ export const EVIDENCE_KINDS = [
 export type EvidenceKind = (typeof EVIDENCE_KINDS)[number];
 
 export type EvidenceItemStatus = "present" | "missing" | "invalid" | "stale";
+
+/**
+ * Immutable lineage for one atomic Criterion assurance check.
+ *
+ * Evidence is not completion evidence merely because it exists in the run. It
+ * must identify the exact frozen check, contract revision, producer instance,
+ * evaluator version, and evaluator attempt that produced it.
+ */
+export type EvidenceCheckLineage = {
+  checkKey: string;
+  requirementId: string;
+  validationBindingId: string;
+  criterionId: string;
+  criterionVersion: number;
+  verificationMode: "deterministic" | "browser_interaction" | "semantic_review" | "human_approval";
+  artifactContractRef: string;
+  artifactContractVersionRef: string;
+  artifactInstanceRefs: string[];
+  procedureRef: string;
+  procedureVersionRef?: string;
+  oracleRef?: string;
+  oracleVersionRef?: string;
+  typedParameters?: Record<string, unknown>;
+  evaluatorTaskId: string;
+  evaluatorAttemptId: string;
+  evaluatorArtifactRef: string;
+  evaluatorProfileRef: string;
+  evaluatorProfileVersionRef: string;
+};
+
+export type EvidencePacketLineage = {
+  goalContractHash: string;
+  evaluatorTaskId: string;
+  evaluatorAttemptId: string;
+  evaluatorArtifactRef: string;
+  checks: EvidenceCheckLineage[];
+};
 
 export type RuntimeArtifactRef = {
   id: string;
@@ -87,6 +126,8 @@ export type EvidencePacket = {
   runId: string;
   taskId: string;
   artifactRef: string;
+  /** Present for evaluator-generated packets; absent only for standalone evidence utility calls. */
+  lineage?: EvidencePacketLineage;
   evidenceItems: Array<{
     kind: EvidenceKind;
     status: EvidenceItemStatus;

@@ -26,7 +26,10 @@ function validInput(overrides: Partial<GoalRequirementDraftInputV1> = {}): GoalR
       userVisibleBehaviors: ["Reader opens the article locally"],
       businessRules: ["No network dependency"],
       acceptanceCriteria: [{
-        statement: "article.html opens while the network is disabled",
+        observableClaim: "article.html opens while the network is disabled",
+        blocking: true,
+        verificationIntent: ["Open the accepted HTML artifact with network access disabled"],
+        requiredAssurance: ["browser_interaction"],
         evidenceIntent: ["url", "screenshot"],
       }],
       expectedOutcomeArtifacts: [{ description: "Offline HTML", mediaType: "text/html" }],
@@ -41,6 +44,15 @@ function validInput(overrides: Partial<GoalRequirementDraftInputV1> = {}): GoalR
     ...overrides,
   };
 }
+
+test("Goal Requirement Draft V1 rows are rejected instead of silently adapted", () => {
+  const draft = finalizeGoalRequirementDraft(validInput());
+  const issues = validateGoalRequirementDraft({
+    ...draft,
+    schemaVersion: "southstar.goal_requirement_draft.v1",
+  } as unknown as GoalRequirementDraftV1);
+  assert.equal(issues.some((issue) => issue.code === "invalid_schema_version"), true);
+});
 
 function validDraft(overrides: Partial<GoalRequirementDraftInputV1> = {}): GoalRequirementDraftV1 {
   return finalizeGoalRequirementDraft({ ...validInput(), ...overrides });
@@ -84,7 +96,10 @@ test("LLM Requirement interpreter returns rich requirements without Library refs
             userVisibleBehaviors: ["Open locally"],
             businessRules: ["No network"],
             acceptanceCriteria: [{
-              statement: "article.html opens with network disabled",
+              observableClaim: "article.html opens with network disabled",
+              blocking: true,
+              verificationIntent: ["Open the accepted HTML artifact with network access disabled"],
+              requiredAssurance: ["browser_interaction"],
               evidenceIntent: ["screenshot"],
             }],
             expectedOutcomeArtifacts: [{ description: "Offline HTML", mediaType: "text/html" }],
@@ -111,10 +126,75 @@ test("LLM Requirement interpreter returns rich requirements without Library refs
   assert.match(prompts[0] ?? "", /Do not return host-owned fields/);
   assert.match(prompts[0] ?? "", /file-diff, test-result, command-output, url, screenshot/);
   assert.match(prompts[0] ?? "", /Do not attach interactionContractRefs to persistence, data integrity, offline operation/);
+  assert.match(prompts[0] ?? "", /select exactly one requiredAssurance class/i);
+  assert.match(prompts[0] ?? "", /exactly one: deterministic \| browser_interaction \| semantic_review \| human_approval/);
   assert.match(prompts[0] ?? "", /openQuestions or blockingInputs.*2-4 concise answer options/i);
   assert.doesNotMatch(prompts[0] ?? "", /evaluatorContracts|slicePlan|agentDefinitionRef/);
   assert.match(draft.requirements[0]!.id, /^req-/);
   assert.equal(draft.requirements[0]!.status, "ready");
+});
+
+test("LLM Requirement interpreter separates independently failing outcomes into atomic Criteria", async () => {
+  let prompt = "";
+  const interpreter = createLlmGoalRequirementDraftInterpreter({
+    model: "inline-atomic-criteria-test",
+    client: {
+      async generateText(input) {
+        prompt = input.prompt;
+        return JSON.stringify({
+          summary: "Create and verify an offline article",
+          requirements: [{
+            title: "Offline article",
+            statement: "The accepted article exists and opens offline",
+            source: "explicit",
+            blocking: true,
+            userVisibleBehaviors: ["Open the article locally"],
+            businessRules: ["No network dependency"],
+            acceptanceCriteria: [
+              {
+                observableClaim: "article.html exists as the accepted HTML artifact",
+                blocking: true,
+                verificationIntent: ["Inspect the accepted artifact path and media type"],
+                requiredAssurance: ["deterministic"],
+                evidenceIntent: ["artifact-ref"],
+              },
+              {
+                observableClaim: "article.html opens while network access is disabled",
+                blocking: true,
+                verificationIntent: ["Open the accepted HTML artifact with network access disabled"],
+                requiredAssurance: ["browser_interaction"],
+                evidenceIntent: ["screenshot"],
+              },
+            ],
+            expectedOutcomeArtifacts: [{ description: "Offline HTML", mediaType: "text/html" }],
+            verificationIntent: ["Verify artifact identity and offline interaction separately"],
+            assumptions: [],
+            openQuestions: [],
+            riskTags: [],
+            interactionContractRefs: [],
+          }],
+          nonGoals: [],
+          blockingInputs: [],
+        });
+      },
+    },
+  });
+
+  const draft = await interpreter.interpret({
+    goalPrompt: "Create article.html and ensure it opens offline",
+    cwd: "/workspace/article",
+    workspaceDiscovery: discovery("/workspace/article"),
+    goalDesignSkill: skill(),
+  });
+
+  assert.match(prompt, /exactly one atomic observable claim/);
+  assert.match(prompt, /select exactly one requiredAssurance class/i);
+  assert.match(prompt, /independent failure reasons, artifact owners, or repair responsibilities must be separate criteria/);
+  assert.deepEqual(
+    draft.requirements[0]!.acceptanceCriteria.map((criterion) => criterion.requiredAssurance),
+    [["deterministic"], ["browser_interaction"]],
+  );
+  assert.equal(new Set(draft.requirements[0]!.acceptanceCriteria.map((criterion) => criterion.id)).size, 2);
 });
 
 test("LLM revision cannot supply host ids, hashes or status", async () => {
@@ -353,6 +433,54 @@ test("LLM revision preserves explicit host mapping for multiple edited requireme
   assert.equal(result.draft.requirements[1]!.statement, "The reader navigates between article sections");
 });
 
+test("LLM revision rejects ambiguous Criterion identity when unmatched counts are not one-to-one", async () => {
+  const input = validInput();
+  const current = validDraft({
+    requirements: [{
+      ...input.requirements[0]!,
+      acceptanceCriteria: [
+        input.requirements[0]!.acceptanceCriteria[0]!,
+        {
+          ...input.requirements[0]!.acceptanceCriteria[0]!,
+          observableClaim: "article.html renders its title with local assets only",
+        },
+      ],
+    }],
+  });
+  const interpreter = createLlmGoalRequirementDraftInterpreter({
+    model: "inline-ambiguous-criterion-revision",
+    client: {
+      async generateText() {
+        return JSON.stringify({
+          kind: "revision",
+          summary: "Collapse two checks into one ambiguous check.",
+          draft: {
+            summary: current.summary,
+            requirements: [{
+              ...input.requirements[0]!,
+              acceptanceCriteria: [{
+                ...input.requirements[0]!.acceptanceCriteria[0]!,
+                observableClaim: "article.html opens offline and renders its title",
+              }],
+            }],
+            nonGoals: [],
+            blockingInputs: [],
+          },
+        });
+      },
+    },
+  });
+
+  await assert.rejects(
+    () => interpreter.revise({
+      currentDraft: current,
+      message: "combine the checks",
+      selectedRequirementId: current.requirements[0]!.id,
+    }),
+    /ambiguous Criterion revision/,
+  );
+});
+
 test("stale host selection returns needs_input without streaming semantic output", async () => {
   let calls = 0;
   const deltas: string[] = [];
@@ -550,11 +678,233 @@ test("Requirement Draft preserves host ids and projects confirmed criteria to Go
     assumptions: [],
     requestedSideEffects: ["workspace-write"],
   });
-  assert.deepEqual(confirmed.requirements[0]!.acceptanceCriteria, [
+  assert.equal(
+    confirmed.requirements[0]!.acceptanceCriteria[0]!.observableClaim,
     "article.html opens while the network is disabled",
-  ]);
+  );
   assert.equal(confirmed.requirements[0]!.id, draft.requirements[0]!.id);
   assert.equal(confirmed.workspace.cwd, "/workspace/article");
+});
+
+test("Requirement confirmation projects every staged Criterion id and version without rematerializing identity", () => {
+  const input = validInput();
+  input.requirements[0]!.acceptanceCriteria = [
+    input.requirements[0]!.acceptanceCriteria[0]!,
+    {
+      observableClaim: "article.html exposes the required metadata while the network is disabled",
+      blocking: true,
+      verificationIntent: ["Inspect the accepted HTML artifact metadata offline"],
+      requiredAssurance: ["deterministic"],
+      evidenceIntent: ["test-result"],
+    },
+  ];
+  const draft = finalizeGoalRequirementDraft(input);
+  const metadata = {
+    domain: "design/article",
+    intent: "create_offline_article",
+    workType: "general" as const,
+    expectedArtifactRefs: [],
+    requiredCapabilities: [],
+    assumptions: [],
+    requestedSideEffects: ["workspace-write"],
+  };
+  const confirmed = confirmGoalRequirementDraft(draft, metadata);
+  assert.deepEqual(
+    confirmed.requirements[0]!.acceptanceCriteria.map(({ id, version }) => ({ id, version })),
+    draft.requirements[0]!.acceptanceCriteria.map(({ id, version }) => ({ id, version })),
+  );
+});
+
+test("Requirement confirmation freezes the complete atomic Criterion contract", () => {
+  const input = validInput();
+  input.requirements[0]!.acceptanceCriteria = [{
+    observableClaim: "article.html opens while the network is disabled",
+    blocking: true,
+    verificationIntent: ["Open the accepted HTML artifact with network access disabled"],
+    requiredAssurance: ["browser_interaction"],
+    evidenceIntent: ["screenshot"],
+  }];
+  const draft = finalizeGoalRequirementDraft(input);
+  const draftCriterion = draft.requirements[0]!.acceptanceCriteria[0]! as unknown as Record<string, unknown>;
+
+  assert.equal(draftCriterion.observableClaim, "article.html opens while the network is disabled");
+  assert.equal(draftCriterion.blocking, true);
+  assert.deepEqual(draftCriterion.verificationIntent, ["Open the accepted HTML artifact with network access disabled"]);
+  assert.deepEqual(draftCriterion.requiredAssurance, ["browser_interaction"]);
+  assert.equal(draftCriterion.version, 1);
+
+  const confirmed = confirmGoalRequirementDraft(draft, {
+    domain: "design/article",
+    intent: "create_offline_article",
+    workType: "general",
+    expectedArtifactRefs: [],
+    requiredCapabilities: [],
+    assumptions: [],
+    requestedSideEffects: ["workspace-write"],
+  });
+  assert.deepEqual(confirmed.requirements[0]!.acceptanceCriteria, [{
+    id: draft.requirements[0]!.acceptanceCriteria[0]!.id,
+    version: 1,
+    observableClaim: "article.html opens while the network is disabled",
+    blocking: true,
+    verificationIntent: ["Open the accepted HTML artifact with network access disabled"],
+    requiredAssurance: ["browser_interaction"],
+  }]);
+});
+
+test("Requirement Draft rejects multiple required assurance checks for one Criterion", () => {
+  const input = validInput();
+  input.requirements[0]!.acceptanceCriteria[0]!.requiredAssurance = [
+    "deterministic",
+    "browser_interaction",
+  ];
+
+  assert.throws(
+    () => finalizeGoalRequirementDraft(input),
+    /exactly one assurance class/i,
+  );
+});
+
+test("first confirmation assigns version one even after the proposal was revised", () => {
+  const first = finalizeGoalRequirementDraft(validInput());
+  const proposed = first.requirements[0]!.acceptanceCriteria[0]!;
+  const revised = reviseGoalRequirementDraft(first, {
+    kind: "update",
+    requirementId: first.requirements[0]!.id,
+    patch: {
+      acceptanceCriteria: [{
+        id: proposed.id,
+        observableClaim: "article.html opens and shows its heading while the network is disabled",
+        blocking: true,
+        verificationIntent: ["Open the accepted HTML artifact offline and inspect its heading"],
+        requiredAssurance: ["browser_interaction"],
+        evidenceIntent: ["screenshot"],
+      }],
+    },
+  });
+  assert.equal(revised.requirements[0]!.acceptanceCriteria[0]!.version, 2);
+
+  const confirmed = confirmGoalRequirementDraft(revised, {
+    domain: "design/article",
+    intent: "create_offline_article",
+    workType: "general",
+    expectedArtifactRefs: [],
+    requiredCapabilities: [],
+    assumptions: [],
+    requestedSideEffects: ["workspace-write"],
+  });
+
+  assert.equal(confirmed.requirements[0]!.acceptanceCriteria[0]!.id, proposed.id);
+  assert.equal(confirmed.requirements[0]!.acceptanceCriteria[0]!.version, 1);
+});
+
+test("reconfirmation advances the canonical Goal Contract and changed Criterion versions", () => {
+  const firstDraft = finalizeGoalRequirementDraft(validInput());
+  const metadata = {
+    domain: "design/article",
+    intent: "create_offline_article",
+    workType: "general" as const,
+    expectedArtifactRefs: [],
+    requiredCapabilities: [],
+    assumptions: [],
+    requestedSideEffects: ["workspace-write"],
+  };
+  const firstContract = confirmGoalRequirementDraft(firstDraft, metadata);
+  const firstCriterion = firstDraft.requirements[0]!.acceptanceCriteria[0]!;
+  const revisedDraft = reviseGoalRequirementDraft(firstDraft, {
+    kind: "update",
+    requirementId: firstDraft.requirements[0]!.id,
+    patch: {
+      acceptanceCriteria: [{
+        id: firstCriterion.id,
+        observableClaim: "article.html opens offline and renders its heading",
+        blocking: true,
+        verificationIntent: ["Open the accepted HTML artifact offline and inspect its heading"],
+        requiredAssurance: ["browser_interaction"],
+        evidenceIntent: ["screenshot"],
+      }],
+    },
+  });
+
+  const revisedContract = confirmGoalRequirementDraft(revisedDraft, metadata, firstContract);
+
+  assert.equal(revisedContract.revision, firstContract.revision + 1);
+  assert.equal(revisedContract.requirements[0]!.acceptanceCriteria[0]!.id, firstCriterion.id);
+  assert.equal(revisedContract.requirements[0]!.acceptanceCriteria[0]!.version, 2);
+});
+
+test("chat revision changes Criterion meaning by incrementing the existing identity", async () => {
+  const current = validDraft();
+  const requirement = current.requirements[0]!;
+  const criterion = requirement.acceptanceCriteria[0]!;
+  const interpreter = createLlmGoalRequirementDraftInterpreter({
+    model: "inline-criterion-revision",
+    client: {
+      async generateText() {
+        const revisedRequirement = structuredClone(validInput().requirements[0]!);
+        revisedRequirement.acceptanceCriteria[0] = {
+          observableClaim: "article.html opens offline and renders its heading",
+          blocking: true,
+          verificationIntent: ["Open the accepted HTML artifact offline and inspect its heading"],
+          requiredAssurance: ["browser_interaction"],
+          evidenceIntent: ["screenshot"],
+        };
+        return JSON.stringify({
+          kind: "revision",
+          summary: "Clarified the Criterion.",
+          draft: {
+            summary: "Clarified offline article",
+            requirements: [revisedRequirement],
+            nonGoals: [],
+            blockingInputs: [],
+          },
+        });
+      },
+    },
+  });
+
+  const result = await interpreter.revise({
+    currentDraft: current,
+    message: "also verify the heading",
+    selectedRequirementId: requirement.id,
+  });
+  assert.equal(result.kind, "revision");
+  if (result.kind !== "revision") assert.fail("expected revision");
+  const revisedCriterion = result.draft.requirements[0]!.acceptanceCriteria[0]!;
+  assert.equal(revisedCriterion.id, criterion.id);
+  assert.equal(revisedCriterion.version, criterion.version + 1);
+});
+
+test("editing one Criterion preserves its canonical id and increments only its version", () => {
+  const firstInput = validInput();
+  firstInput.requirements[0]!.acceptanceCriteria = [{
+    observableClaim: "article.html opens while the network is disabled",
+    blocking: true,
+    verificationIntent: ["Open the accepted HTML artifact with network access disabled"],
+    requiredAssurance: ["browser_interaction"],
+    evidenceIntent: ["screenshot"],
+  }];
+  const first = finalizeGoalRequirementDraft(firstInput);
+  const firstCriterion = first.requirements[0]!.acceptanceCriteria[0]!;
+  const revised = reviseGoalRequirementDraft(first, {
+    kind: "update",
+    requirementId: first.requirements[0]!.id,
+    patch: {
+      acceptanceCriteria: [{
+        id: firstCriterion.id,
+        observableClaim: "article.html opens and renders its heading while the network is disabled",
+        blocking: true,
+        verificationIntent: ["Open the accepted HTML artifact offline and inspect its heading"],
+        requiredAssurance: ["browser_interaction"],
+        evidenceIntent: ["screenshot"],
+      }],
+    },
+  });
+  const revisedCriterion = revised.requirements[0]!.acceptanceCriteria[0]! as unknown as Record<string, unknown>;
+
+  assert.equal(revisedCriterion.id, firstCriterion.id);
+  assert.equal(revisedCriterion.version, 2);
+  assert.equal(revisedCriterion.observableClaim, "article.html opens and renders its heading while the network is disabled");
 });
 
 test("workspace projectRef is optional, preserved when valid, and rejected when malformed", () => {

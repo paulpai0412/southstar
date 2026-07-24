@@ -1,5 +1,5 @@
 import type { SouthstarDb } from "../db/postgres.ts";
-import type { GoalValidationResolutionV1, LibraryObjectSummary } from "../design-library/types.ts";
+import type { GoalValidationResolutionV2, LibraryObjectSummary } from "../design-library/types.ts";
 import type {
   LibraryImportCandidate,
   LibraryImportCandidateCoverageTarget,
@@ -33,7 +33,7 @@ export type GoalValidationResolver = (
     scope?: string;
     progress?: GoalValidationProgressListener;
   },
-) => Promise<GoalValidationResolutionV1>;
+) => Promise<GoalValidationResolutionV2>;
 
 export class GoalValidationProviderNotConfiguredError extends Error {
   readonly code = "goal_validation_provider_not_configured";
@@ -63,7 +63,7 @@ export function goalValidationProposalValidatorFromLibraryLlm(input: {
   provider: LibraryImportLlmProvider;
   goalContract: GoalContractV1;
   requirementDraft: GoalRequirementDraftV1;
-  resolution: GoalValidationResolutionV1;
+  resolution: GoalValidationResolutionV2;
   scope?: string;
   progress?: GoalValidationProgressListener;
 }): LibraryImportProposalValidator {
@@ -156,6 +156,8 @@ function validationCandidatesWithProposal(
       artifactRef,
       linked.sort((left, right) => left.objectKey.localeCompare(right.objectKey)),
     ])),
+    ...(approved.approvedOracleRefs ? { approvedOracleRefs: approved.approvedOracleRefs } : {}),
+    ...(approved.approvedOracleVersionRefs ? { approvedOracleVersionRefs: approved.approvedOracleVersionRefs } : {}),
   };
 }
 
@@ -205,7 +207,7 @@ export function buildGoalValidationImportRequest(input: {
   goalContract: GoalContractV1;
   goalContractHash: string;
   requirementDraft: GoalRequirementDraftV1;
-  resolution: GoalValidationResolutionV1;
+  resolution: GoalValidationResolutionV2;
 }): { payload: Record<string, unknown>; prompt: string; coverageConstraints: LibraryImportCoverageConstraint[] } {
   const gapRequirementIds = new Set(input.resolution.gaps.map((gap) => gap.requirementId));
   const draftById = new Map(input.requirementDraft.requirements.map((requirement) => [requirement.id, requirement]));
@@ -244,7 +246,7 @@ export function buildGoalValidationImportRequest(input: {
       ...(contractRequirement ? { requirementStatement: contractRequirement.statement } : {}),
       criterionStatements: requirement?.acceptanceCriteria
         .filter((criterion) => targetCriterionIds.has(criterion.id))
-        .map((criterion) => ({ criterionId: criterion.id, statement: criterion.statement })) ?? [],
+        .map((criterion) => ({ criterionId: criterion.id, statement: criterion.observableClaim })) ?? [],
       expectedOutcomeArtifacts: requirement?.expectedOutcomeArtifacts ?? [],
       verificationIntent: requirement?.verificationIntent ?? [],
       ...(contractRequirement?.semanticTags ? { semanticTags: [...contractRequirement.semanticTags] } : {}),
@@ -266,7 +268,7 @@ export function buildGoalValidationImportRequest(input: {
         expectedOutcomeArtifacts: draftById.get(requirement.id)?.expectedOutcomeArtifacts ?? [],
         criterionIntent: draftById.get(requirement.id)?.acceptanceCriteria.map((criterion) => ({
           id: criterion.id,
-          statement: criterion.statement,
+          statement: criterion.observableClaim,
           evidenceIntent: criterion.evidenceIntent,
         })) ?? [],
         verificationIntent: draftById.get(requirement.id)?.verificationIntent ?? [],
@@ -277,6 +279,7 @@ export function buildGoalValidationImportRequest(input: {
     prompt: [
       "Create one complete reusable Library candidate proposal that closes the full current set of confirmed blocking Goal validation gaps in the source document.",
       "Do not return a partial batch. Every blocking gapRef must be covered in candidateCoverageTargets before this proposal can be reviewed or installed.",
+      "Create candidateCoverageTargets at Criterion granularity: preserve every supplied criterionId, observable claim, single required assurance, and evidence intent. Never merge multiple Criteria into a broad requirement-only target or use one candidate pair to hide incompatible Criterion evidence requirements.",
       "Candidates may be artifact contracts and evaluator profiles required by those gaps, including their necessary validatesArtifactRefs relationship. Reuse one compatible contract across multiple gaps when its governed evidence shape and procedure genuinely cover them.",
       "Do not create unrelated domain, capability, agent, skill, tool, MCP, workflow, or Goal-specific filename candidates.",
       "Preserve the supplied Requirement and criterion meaning. Do not invent Acceptance Criteria or evidence kinds.",
@@ -293,16 +296,20 @@ async function rankGoalValidationCandidatesWithLlm(
   input: GoalValidationCandidateRankerInputV1,
 ): Promise<GoalValidationCandidateRecommendationV1[]> {
   const prompt = [
-    "Rank only the supplied approved artifact contracts and evaluator profiles for one confirmed Goal Requirement.",
-    "Return exactly one JSON object and no markdown: {\"recommendations\":[{\"artifactRef\":\"artifact.example\",\"evaluatorRef\":\"evaluator.example\",\"verificationMode\":\"deterministic\",\"procedureRef\":\"procedure.example\",\"expectedEvidenceKinds\":[\"test-result\"],\"reason\":\"...\",\"artifactVersionRef\":\"...\",\"evaluatorVersionRef\":\"...\"}]}",
+    "Rank only the supplied approved artifact contracts and evaluator profiles for exactly one confirmed Criterion within one Goal Requirement.",
+    "Return exactly one JSON object and no markdown: {\"recommendations\":[{\"artifactRef\":\"artifact.example\",\"evaluatorRef\":\"evaluator.example\",\"verificationMode\":\"deterministic\",\"procedureRef\":\"procedure.example\",\"typedParameters\":{},\"expectedEvidenceKinds\":[\"test-result\"],\"reason\":\"...\",\"artifactVersionRef\":\"...\",\"evaluatorVersionRef\":\"...\"}]}",
     "Allowed verificationMode values: deterministic, browser_interaction, semantic_review, human_approval.",
-    "Use only refs and versionRefs supplied below. expectedEvidenceKinds must be a subset of the confirmed criterion evidenceIntent values. Return an empty recommendations array when no compatible approved pair exists.",
-    "Compatibility is semantic as well as structural. The artifact schema, required fields, validation rules, evaluator inputs, and selected procedure must be able to verify the Requirement statement and every Acceptance Criterion. Do not select a generic evidence container when the Requirement explicitly demands a domain-specific persisted outcome.",
+    "Use only refs and versionRefs supplied below. Return at most one recommendation for this Criterion. expectedEvidenceKinds must be a subset of this Criterion's evidenceIntent values. Return an empty recommendations array when no compatible approved pair exists.",
+    "This recommendation is for exactly one immutable Criterion identity. Preserve its criterion id/version, requiredAssurance, observableClaim, verificationIntent, and evidence intent; do not combine this Criterion with another Criterion or return a pair that would require cross-Criterion evidence.",
+    "Compatibility is semantic as well as structural. The artifact schema, required fields, validation rules, evaluator inputs, and selected procedure must be able to verify the Requirement statement and this Criterion's observableClaim. Do not select a generic evidence container when the Requirement explicitly demands a domain-specific persisted outcome.",
     "When Requirement.semanticTags is present, both the selected artifact and evaluator must declare semanticTags covering every Requirement tag. A user-approved Library candidate is not automatically compatible with every Goal. Return an empty recommendations array when semantic metadata is missing or does not cover the Requirement.",
+    "If the selected procedure declares parameterSchema, typedParameters must provide only values matching that schema and all required parameters. If it declares an oracleRef/oracleVersionRef, preserve both exact immutable refs; never invent an oracle or parameter value.",
     "Do not create, rename, approve, or repair Library objects. Do not add Requirements or Acceptance Criteria.",
     `GoalContractHash: ${goalContractHash(input.goalContract)}`,
     `Requirement: ${JSON.stringify(input.contractRequirement)}`,
-    `RequirementDraft: ${JSON.stringify(input.requirement)}`,
+    `Criterion: ${JSON.stringify(input.contractRequirement.acceptanceCriteria[0])}`,
+    `CriterionDraft: ${JSON.stringify(input.requirement.acceptanceCriteria[0])}`,
+    `RequirementDraftContext: ${JSON.stringify(input.requirement)}`,
     `ApprovedArtifactCandidates: ${JSON.stringify(input.artifactCandidates)}`,
     `ApprovedEvaluatorCandidatesByArtifact: ${JSON.stringify(input.evaluatorCandidatesByArtifact)}`,
   ].join("\n");
@@ -326,6 +333,9 @@ export function rankGoalValidationCandidatesFromProposal(input: {
 }): GoalValidationCandidateRecommendationV1[] {
   const expectedCriterionIds = new Set(
     input.rankInput.requirement.acceptanceCriteria.map((criterion) => criterion.id),
+  );
+  const requiredAssurance = new Set(
+    input.rankInput.requirement.acceptanceCriteria.flatMap((criterion) => criterion.requiredAssurance),
   );
   const expectedEvidenceKinds = uniqueStrings(
     input.rankInput.requirement.acceptanceCriteria.flatMap((criterion) => criterion.evidenceIntent),
@@ -354,6 +364,7 @@ export function rankGoalValidationCandidatesFromProposal(input: {
         const allowedEvidenceKinds = asStringArray(value.allowedEvidenceKinds);
         return typeof checkKind === "string"
           && modes.includes(checkKind)
+          && requiredAssurance.has(checkKind as GoalValidationCandidateRecommendationV1["verificationMode"])
           && expectedEvidenceKinds.every((kind) => allowedEvidenceKinds.includes(kind));
       });
       if (!procedure || typeof procedure !== "object" || Array.isArray(procedure)) continue;
@@ -390,7 +401,7 @@ function normalizeGoalValidationRecommendation(value: unknown, index: number): G
   }
   const record = value as Record<string, unknown>;
   assertExactKeys(record, new Set([
-    "artifactRef", "evaluatorRef", "verificationMode", "procedureRef", "expectedEvidenceKinds", "reason",
+    "artifactRef", "evaluatorRef", "verificationMode", "procedureRef", "typedParameters", "expectedEvidenceKinds", "reason",
     "artifactVersionRef", "evaluatorVersionRef",
   ]), `Goal validation recommendation ${index}`);
   const verificationMode = requiredString(record.verificationMode, "verificationMode", String(index));
@@ -400,11 +411,17 @@ function normalizeGoalValidationRecommendation(value: unknown, index: number): G
   const evidenceKinds = record.expectedEvidenceKinds === undefined
     ? undefined
     : stringArray(record.expectedEvidenceKinds, `Goal validation recommendation ${index}.expectedEvidenceKinds`);
+  const typedParameters = record.typedParameters === undefined
+    ? undefined
+    : record.typedParameters && typeof record.typedParameters === "object" && !Array.isArray(record.typedParameters)
+      ? record.typedParameters as Record<string, unknown>
+      : (() => { throw new Error(`Goal validation recommendation ${index}.typedParameters must be an object`); })();
   return {
     artifactRef: requiredString(record.artifactRef, "artifactRef", String(index)),
     evaluatorRef: requiredString(record.evaluatorRef, "evaluatorRef", String(index)),
     verificationMode: verificationMode as GoalValidationCandidateRecommendationV1["verificationMode"],
     procedureRef: requiredString(record.procedureRef, "procedureRef", String(index)),
+    ...(typedParameters ? { typedParameters } : {}),
     ...(evidenceKinds ? { expectedEvidenceKinds: evidenceKinds } : {}),
     ...(optionalString(record.reason) ? { reason: optionalString(record.reason) } : {}),
     ...(optionalString(record.artifactVersionRef) ? { artifactVersionRef: optionalString(record.artifactVersionRef) } : {}),

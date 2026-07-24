@@ -9,6 +9,27 @@ export type LibraryImportCandidateKind =
   | "capability"
   | "artifact"
   | "evaluator";
+
+export type VerificationParameterType = "string" | "number" | "boolean" | "string[]" | "object";
+
+export type VerificationParameterSpec = {
+  type: VerificationParameterType;
+  required?: boolean;
+};
+
+export type LibraryVerificationProcedure = {
+  id: string;
+  /** Version of this procedure inside (or referenced by) the evaluator contract. */
+  procedureVersionRef?: string;
+  checkKind: "deterministic" | "browser_interaction" | "semantic_review" | "human_approval";
+  instruction: string;
+  allowedEvidenceKinds: string[];
+  /** Approved Library oracle used to make the procedure's observation reproducible. */
+  oracleRef?: string;
+  oracleVersionRef?: string;
+  /** Typed inputs accepted by the procedure; values are supplied by the frozen binding. */
+  parameterSchema?: Record<string, VerificationParameterSpec>;
+};
 export type LibraryImportEdgeType =
   | "belongs_to_domain"
   | "has_capability"
@@ -59,12 +80,7 @@ export type LibraryImportCandidate = {
   validatesArtifactRefs?: string[];
   requiredInputs?: string[];
   verificationModes?: Array<"deterministic" | "browser_interaction" | "semantic_review" | "human_approval">;
-  verificationProcedures?: Array<{
-    id: string;
-    checkKind: "deterministic" | "browser_interaction" | "semantic_review" | "human_approval";
-    instruction: string;
-    allowedEvidenceKinds: string[];
-  }>;
+  verificationProcedures?: LibraryVerificationProcedure[];
   independencePolicy?: "independent";
   resultSchemaRef?: string;
   failureClassifications?: string[];

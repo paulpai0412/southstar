@@ -1,0 +1,41 @@
+schemaVersion: southstar.library.evaluator_profile_file.v1
+id: evaluator.quiz-session-flow-verifier
+title: "Quiz Session Flow Verifier"
+scope: "software"
+status: approved
+semanticTags:
+  - "quiz"
+  - "assessment"
+  - "learning-flow"
+validatesArtifactRefs:
+  - "artifact.quiz-session-submission-evidence"
+requiredInputs:
+  - "artifact.quiz-session-submission-evidence"
+evidenceKinds:
+  - "screenshot"
+  - "url"
+verificationModes:
+  - "browser_interaction"
+  - "semantic_review"
+verificationProcedures:
+  - id: "verify-quiz-start-with-available-bank"
+    checkKind: "browser_interaction"
+    instruction: "Confirm that when question-bank data exists, the user can start a quiz and view at least one answerable question."
+    allowedEvidenceKinds:
+      - "screenshot"
+      - "url"
+  - id: "verify-quiz-submit-and-result-render"
+    checkKind: "browser_interaction"
+    instruction: "Confirm that entering an answer and submitting produces a completed submission state and a visible result view."
+    allowedEvidenceKinds:
+      - "screenshot"
+      - "url"
+independencePolicy: "independent"
+resultSchemaRef: "southstar.requirement_evaluator_result.v2"
+failureClassifications:
+  - "missing-required-evidence"
+  - "quiz-start-unavailable"
+  - "submission-or-result-transition-missing"
+importDraftId: "library-import-goal-db33926089a81a581304cec756cb3ca2"
+importCandidateKey: "evaluator.quiz-session-flow-verifier"
+importSourcePath: "Confirmed-Goal-validation-gaps.md"

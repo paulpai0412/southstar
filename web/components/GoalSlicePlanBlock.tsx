@@ -19,10 +19,22 @@ type GoalSliceView = {
   mergeReason?: string;
 };
 
+type CriterionBindingView = {
+  artifactContractRef: string;
+  evaluatorProfileRef: string;
+};
+
+type ValidationBindingView = {
+  id: string;
+  requirementId: string;
+  criterionBindings: CriterionBindingView[];
+};
+
 type GoalDesignPackageView = {
   revision?: number;
   packageHash?: string;
   goalContract?: { summary?: string };
+  validationBindings: ValidationBindingView[];
   slicePlan?: { slices?: GoalSliceView[] };
   compositionStrategy?: { mode?: string; rationale?: string };
   templatePolicy?: { mode?: string; templateRef?: string; versionRef?: string };
@@ -74,7 +86,10 @@ export function GoalSlicePlanBlock({
   const phaseKnown = Boolean(phase);
   const frozen = phase === "composing" || phase === "dag_validated";
   const liveRevisionReady = !stagedRevision || liveDraftState === "ready";
-  const coverageGraph = useMemo(() => buildSliceCoverageGraph(slices, requirementContentForGraph), [requirementContentForGraph, slices]);
+  const coverageGraph = useMemo(
+    () => buildSliceCoverageGraph(slices, requirementContentForGraph, pkg),
+    [pkg, requirementContentForGraph, slices],
+  );
 
   useEffect(() => {
     if (block.goalDesignPhase && !stagedRevision) return;
@@ -283,6 +298,9 @@ function goalDesignPackageView(value: unknown): GoalDesignPackageView | null {
     revision: typeof value.revision === "number" ? value.revision : undefined,
     packageHash: typeof value.packageHash === "string" ? value.packageHash : undefined,
     goalContract: isRecord(value.goalContract) ? { summary: typeof value.goalContract.summary === "string" ? value.goalContract.summary : undefined } : undefined,
+    validationBindings: Array.isArray(value.validationBindings)
+      ? value.validationBindings.map(validationBindingView).filter((binding): binding is ValidationBindingView => Boolean(binding))
+      : [],
     slicePlan: { slices },
     compositionStrategy: isRecord(value.compositionStrategy)
       ? {
@@ -298,6 +316,21 @@ function goalDesignPackageView(value: unknown): GoalDesignPackageView | null {
         }
       : undefined,
   };
+}
+
+function validationBindingView(value: unknown): ValidationBindingView | null {
+  if (!isRecord(value) || typeof value.id !== "string" || typeof value.requirementId !== "string" || !Array.isArray(value.criterionBindings)) return null;
+  const criterionBindings = value.criterionBindings
+    .filter(isRecord)
+    .filter((criterionBinding) => (
+      typeof criterionBinding.artifactContractRef === "string"
+      && typeof criterionBinding.evaluatorProfileRef === "string"
+    ))
+    .map((criterionBinding) => ({
+      artifactContractRef: criterionBinding.artifactContractRef as string,
+      evaluatorProfileRef: criterionBinding.evaluatorProfileRef as string,
+    }));
+  return { id: value.id, requirementId: value.requirementId, criterionBindings };
 }
 
 function goalSliceView(value: unknown): GoalSliceView | null {
@@ -319,6 +352,7 @@ function goalSliceView(value: unknown): GoalSliceView | null {
 function buildSliceCoverageGraph(
   slices: GoalSliceView[],
   requirementContent: GoalRequirementsContent | null,
+  pkg: GoalDesignPackageView | null,
 ): CoverageGraphData {
   const nodes = new Map<string, LibraryGraphChartNode>();
   const edges: LibraryGraphChartEdge[] = [];
@@ -357,8 +391,20 @@ function buildSliceCoverageGraph(
       addEdge(sliceKey, ref, "expects artifact");
     }
     for (const ref of slice.evaluatorContractRefs) {
-      addNode({ objectKey: ref, objectKind: "evaluator", status: "proposed", title: `Evaluator ${ref}` });
-      addEdge(sliceKey, ref, "checked by evaluator");
+      const binding = pkg?.validationBindings.find((candidate) => candidate.id === ref);
+      const evaluatorRefs = binding
+        ? [...new Set(binding.criterionBindings.map((criterionBinding) => criterionBinding.evaluatorProfileRef))]
+        : [ref];
+      for (const evaluatorRef of evaluatorRefs) {
+        addNode({
+          objectKey: evaluatorRef,
+          objectKind: "evaluator",
+          status: "proposed",
+          title: `Evaluator ${evaluatorRef}`,
+          ...(binding ? { metadata: { validationBindingId: binding.id, requirementId: binding.requirementId } } : {}),
+        });
+        addEdge(sliceKey, evaluatorRef, "checked by evaluator");
+      }
     }
     for (const dependencyId of slice.dependsOnSliceIds) {
       const dependency = slicesById.get(dependencyId);

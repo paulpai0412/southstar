@@ -7,8 +7,8 @@ import { upsertLibraryObject } from "../../src/v2/design-library/library-graph-s
 import { DeterministicFixtureComposer } from "./fixtures/deterministic-workflow-composer.ts";
 import { goalContractHash, requirementSpecFromGoalContract } from "../../src/v2/orchestration/goal-contract.ts";
 import {
-  finalizeGoalDesignPackageV2,
-  type GoalDesignPackageV2,
+  finalizeGoalDesignPackageV3,
+  type GoalDesignPackageV3,
 } from "../../src/v2/orchestration/goal-design.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 import { softwareGoalContract } from "./fixtures/goal-contract.ts";
@@ -21,10 +21,12 @@ test("compiler builds library-constrained workflow manifest and snapshot from ap
     const goalContract = softwareGoalContract();
     const requirementSpec = requirementSpecFromGoalContract(goalContract);
     const candidatePacket = await resolveWorkflowCandidates(db, { requirementSpec, scope: "software" });
+    const goalDesignPackage = seededValidationPackage(goalContract);
     const composer = new DeterministicFixtureComposer();
     const composition = await composer.compose({
       goalPrompt: "implement calc sum",
       goalContract,
+      goalDesignPackage,
       candidatePacket,
     });
     composition.tasks.find((task) => task.id === "implement-feature")!.workspaceMutation = {
@@ -38,6 +40,7 @@ test("compiler builds library-constrained workflow manifest and snapshot from ap
       goalContract,
       candidatePacket,
       composition,
+      goalDesignPackage,
     });
 
     assert.equal(compiled.workflow.schemaVersion, "southstar.v2");
@@ -59,6 +62,11 @@ test("compiler builds library-constrained workflow manifest and snapshot from ap
     assert.deepEqual((makerTask.promptInputs?.nodePromptSpec as { expectedOutputs?: string[] })?.expectedOutputs, [
       "artifact.implementation_report",
     ]);
+    const implementationPlanContract = compiled.workflow.artifactContracts?.find((entry) => (
+      entry.libraryObjectRef === "artifact.implementation_plan"
+    ));
+    assert.ok(implementationPlanContract);
+    assert.equal(implementationPlanContract.libraryVersionRef, "artifact.implementation_plan@v1");
     assert.match(
       JSON.stringify(makerTask.promptInputs?.nodePromptSpec),
       /Implement Feature/,
@@ -74,7 +82,7 @@ test("compiler builds library-constrained workflow manifest and snapshot from ap
     );
     assert.deepEqual(
       (makerTask.promptInputs?.nodePromptSpec as { acceptanceCriteria?: string[] })?.acceptanceCriteria,
-      goalContract.requirements[0]!.acceptanceCriteria,
+      goalContract.requirements[0]!.acceptanceCriteria.map((criterion) => criterion.observableClaim),
     );
 
     assert.equal(compiled.orchestrationSnapshot.validation.ok, true);
@@ -109,9 +117,11 @@ test("compiler resolves runtime role/profile definitions for deterministic fixtu
     const goalContract = softwareGoalContract();
     const requirementSpec = requirementSpecFromGoalContract(goalContract);
     const candidatePacket = await resolveWorkflowCandidates(db, { requirementSpec, scope: "software" });
+    const goalDesignPackage = seededValidationPackage(goalContract);
     const composition = await new DeterministicFixtureComposer().compose({
       goalPrompt: "implement calc sum",
       goalContract,
+      goalDesignPackage,
       candidatePacket,
     });
 
@@ -121,6 +131,7 @@ test("compiler resolves runtime role/profile definitions for deterministic fixtu
       goalContract,
       candidatePacket,
       composition,
+      goalDesignPackage,
     });
 
     const reviewSpec = compiled.workflow.tasks.find((task) => task.id === "review-spec");
@@ -150,9 +161,11 @@ test("compiler snapshot freezes only selected library version refs", async () =>
     const goalContract = softwareGoalContract();
     const requirementSpec = requirementSpecFromGoalContract(goalContract);
     const candidatePacket = await resolveWorkflowCandidates(db, { requirementSpec, scope: "software" });
+    const goalDesignPackage = seededValidationPackage(goalContract);
     const composition = await new DeterministicFixtureComposer().compose({
       goalPrompt: "implement calc sum",
       goalContract,
+      goalDesignPackage,
       candidatePacket,
     });
 
@@ -194,6 +207,7 @@ test("compiler snapshot freezes only selected library version refs", async () =>
       goalContract,
       candidatePacket: inflatedPacket,
       composition,
+      goalDesignPackage,
     });
 
     assert.equal(
@@ -229,9 +243,11 @@ test("compiler threads explicit scope into workflow domain, task domain, and har
     const goalContract = softwareGoalContract();
     const requirementSpec = requirementSpecFromGoalContract(goalContract);
     const candidatePacket = await resolveWorkflowCandidates(db, { requirementSpec, scope: "research" });
+    const goalDesignPackage = seededValidationPackage(goalContract);
     const composition = await new DeterministicFixtureComposer().compose({
       goalPrompt: "implement calc sum",
       goalContract,
+      goalDesignPackage,
       candidatePacket,
     });
 
@@ -241,6 +257,7 @@ test("compiler threads explicit scope into workflow domain, task domain, and har
       goalContract,
       candidatePacket,
       composition,
+      goalDesignPackage,
       scope: "research",
     });
 
@@ -262,9 +279,11 @@ test("compiler preserves custom workflow scope while using general task domain",
     const goalContract = softwareGoalContract();
     const requirementSpec = requirementSpecFromGoalContract(goalContract);
     const candidatePacket = await resolveWorkflowCandidates(db, { requirementSpec, scope: "software" });
+    const goalDesignPackage = seededValidationPackage(goalContract);
     const composition = await new DeterministicFixtureComposer().compose({
       goalPrompt: "implement calc sum",
       goalContract,
+      goalDesignPackage,
       candidatePacket,
     });
     const compiled = await compileWorkflowComposition(db, {
@@ -273,6 +292,7 @@ test("compiler preserves custom workflow scope while using general task domain",
       goalContract,
       candidatePacket,
       composition,
+      goalDesignPackage,
       manifestDomain: "design/article",
     });
 
@@ -288,7 +308,17 @@ test("compiler freezes approved Library artifact fields, evaluator procedures, c
   const db = await createTestPostgresDb();
   try {
     await seedSoftwareLibraryGraph(db);
-    const goalContract = softwareGoalContract();
+    const baseGoalContract = softwareGoalContract();
+    const goalContract = {
+      ...baseGoalContract,
+      requirements: baseGoalContract.requirements.map((requirement) => ({
+        ...requirement,
+        acceptanceCriteria: requirement.acceptanceCriteria.map((criterion) => ({
+          ...criterion,
+          requiredAssurance: ["browser_interaction"] as const,
+        })),
+      })),
+    };
     const requirement = goalContract.requirements[0]!;
     const artifactRef = "artifact.frozen-output";
     const artifactVersionRef = "artifact.frozen-output@2";
@@ -368,14 +398,26 @@ test("compiler freezes approved Library artifact fields, evaluator procedures, c
     const pipeline = compiled.workflow.evaluatorPipelines?.find((entry) => entry.libraryObjectRef === evaluatorRef);
     assert.ok(pipeline);
     assert.equal(pipeline.libraryVersionRef, evaluatorVersionRef);
-    assert.equal(pipeline.evaluators[0]?.config.criterionId, "criterion-output");
+    assert.equal(pipeline.evaluators[0]?.config.criterionId, requirement.acceptanceCriteria[0]!.id);
     assert.equal(pipeline.evaluators[0]?.config.procedureRef, "procedure.inspect-output");
-    assert.equal(pipeline.evaluators[0]?.config.acceptanceCriterion, requirement.acceptanceCriteria[0]);
+    assert.equal(pipeline.evaluators[0]?.config.acceptanceCriterion, requirement.acceptanceCriteria[0]!.observableClaim);
     const coverage = compiled.goalRequirementCoverage.entries[0]!;
-    assert.deepEqual(coverage.criterionIds, ["criterion-output"]);
-    assert.deepEqual(coverage.acceptanceCriteria, requirement.acceptanceCriteria);
+    assert.deepEqual(coverage.criterionIds, requirement.acceptanceCriteria.map((criterion) => criterion.id));
+    assert.deepEqual(coverage.acceptanceCriteria, requirement.acceptanceCriteria.map((criterion) => criterion.observableClaim));
     assert.deepEqual(coverage.evaluatorProfileVersionRefs, [evaluatorVersionRef]);
     assert.equal(coverage.validationBindingId, "binding-output");
+    assert.deepEqual(coverage.criterionBindings, [{
+      criterionId: requirement.acceptanceCriteria[0]!.id,
+      criterionVersion: requirement.acceptanceCriteria[0]!.version,
+      blocking: true,
+      artifactContractRef: artifactRef,
+      artifactContractVersionRef: artifactVersionRef,
+      evaluatorProfileRef: evaluatorRef,
+      evaluatorProfileVersionRef: evaluatorVersionRef,
+      verificationMode: "browser_interaction",
+      procedureRef: "procedure.inspect-output",
+      expectedEvidenceKinds: ["screenshot"],
+    }]);
     assert.equal(
       compiled.workflow.compiledFrom?.libraryObjectVersionRefs.find((entry) => entry.objectKey === artifactRef)?.versionRef,
       artifactVersionRef,
@@ -520,33 +562,38 @@ function frozenValidationPackage(
     artifactVersionRef: string;
     evaluatorRef: string;
     evaluatorVersionRef: string;
+    verificationMode?: "deterministic" | "browser_interaction";
+    procedureRef?: string;
+    expectedEvidenceKinds?: Array<"test-result" | "screenshot">;
   },
-): GoalDesignPackageV2 {
+): GoalDesignPackageV3 {
   const requirement = goalContract.requirements[0]!;
-  return finalizeGoalDesignPackageV2({
-    schemaVersion: "southstar.goal_design_package.v2",
+  const verificationMode = input.verificationMode ?? "browser_interaction";
+  const expectedEvidenceKinds = input.expectedEvidenceKinds ?? ["screenshot"];
+  return finalizeGoalDesignPackageV3({
+    schemaVersion: "southstar.goal_design_package.v3",
     revision: 1,
     goalContract,
     requirementDraftHash: "requirement-draft-hash",
     validationBindings: [{
-      schemaVersion: "southstar.requirement_validation_binding.v1",
+      schemaVersion: "southstar.requirement_validation_binding.v3",
       id: "binding-output",
       requirementId: requirement.id,
-      criterionIds: ["criterion-output"],
-      acceptanceCriteria: [...requirement.acceptanceCriteria],
-      artifactContractRefs: [input.artifactRef],
-      artifactContractVersionRefs: [input.artifactVersionRef],
-      evaluatorProfileRef: input.evaluatorRef,
-      evaluatorProfileVersionRef: input.evaluatorVersionRef,
-      verificationMode: "browser_interaction",
-      criterionChecks: [{
-        criterionId: "criterion-output",
-        procedureRef: "procedure.inspect-output",
-        expectedEvidenceKinds: ["screenshot"],
+      criterionBindings: [{
+        criterionContract: {
+          ...requirement.acceptanceCriteria[0]!,
+          requiredAssurance: [verificationMode],
+        },
+        artifactContractRef: input.artifactRef,
+        artifactContractVersionRef: input.artifactVersionRef,
+        evaluatorProfileRef: input.evaluatorRef,
+        evaluatorProfileVersionRef: input.evaluatorVersionRef,
+        verificationMode,
+        procedureRef: input.procedureRef ?? "procedure.inspect-output",
+        expectedEvidenceKinds,
+        independence: "independent",
+        failureClassifications: ["output_incomplete"],
       }],
-      requiredEvidenceKinds: ["screenshot"],
-      independence: "independent",
-      failureClassifications: ["output_incomplete"],
     }],
     slicePlan: {
       schemaVersion: "southstar.goal_slice_plan.v1",
@@ -574,6 +621,20 @@ function frozenValidationPackage(
     goalDesignSkillVersionRef: "skill.southstar-goal-design@test",
     workspaceDiscoveryHash: "discovery-hash",
     mode: "review_before_compose",
+  });
+}
+
+function seededValidationPackage(
+  goalContract: ReturnType<typeof softwareGoalContract>,
+): GoalDesignPackageV3 {
+  return frozenValidationPackage(goalContract, {
+    artifactRef: "artifact.implementation_report",
+    artifactVersionRef: "artifact.implementation_report@v1",
+    evaluatorRef: "evaluator.software-feature-quality",
+    evaluatorVersionRef: "evaluator.software-feature-quality@v1",
+    verificationMode: "deterministic",
+    procedureRef: "procedure.software-feature-quality.deterministic",
+    expectedEvidenceKinds: ["test-result"],
   });
 }
 

@@ -1,0 +1,41 @@
+schemaVersion: southstar.library.artifact_contract_file.v1
+id: artifact.note-webapp-session-validation-evidence
+title: "Anonymous Session Note Web App Validation Evidence"
+scope: "software"
+status: approved
+semanticTags:
+  - "note-taking"
+  - "web-app"
+  - "create-view-only"
+  - "session-only"
+  - "anonymous-user"
+artifactType: "note-webapp-session-validation-evidence"
+mediaTypes:
+  - "text/html"
+  - "application/json"
+evidenceKinds:
+  - "screenshot"
+  - "url"
+  - "artifact-ref"
+validationRules:
+  - "Must include URL evidence showing direct entry to the target web app without an authentication gate."
+  - "Must include screenshot evidence for initial page state showing note input and note list regions in one interface."
+  - "Must include screenshot evidence showing a submitted note appearing in the list without a page reload."
+  - "Must include screenshot evidence after explicit reload showing session-only note data is not retained."
+  - "Must include an artifact-ref to replayable interaction/output evidence that links the observed states and assertions."
+schemaRef: "southstar.artifact.note_webapp_session_validation_evidence.v1"
+requiredFields:
+  - "entryUrl"
+  - "initialInterfaceScreenshot"
+  - "postSubmitWithoutReloadScreenshot"
+  - "postReloadScreenshot"
+  - "interactionEvidenceArtifactRef"
+  - "assertionSummary"
+provenanceRequirements:
+  - "Evidence must be captured from a real browser interaction session against the evaluated web app URL."
+  - "All screenshots and URL evidence must originate from the same evaluation run context."
+  - "The interactionEvidenceArtifactRef must resolve to immutable replayable execution evidence for the same run."
+  - "Captured evidence must preserve phase order: initial load, submit/update without reload, then explicit reload check."
+importDraftId: "library-import-goal-bae0614549b37c278f618cd19b434072"
+importCandidateKey: "artifact.note-webapp-session-validation-evidence"
+importSourcePath: "Confirmed-Goal-validation-gaps.md"

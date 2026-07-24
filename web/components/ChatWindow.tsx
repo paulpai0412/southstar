@@ -266,6 +266,28 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
   const goalRequirementContentForViewer = goalRequirementContentOverride
     ?? latestGoalRequirementsContent(messages, streamState.streamingMessage);
 
+  const latestWorkflowDagKey = workflowMode
+    ? (() => {
+        for (let index = messages.length - 1; index >= 0; index -= 1) {
+          const message = messages[index];
+          if (message.role !== "assistant" || !message.content.some((block) => block.type === "workflowDag")) continue;
+          return entryIds[index] ?? `${index}:${message.timestamp ?? ""}`;
+        }
+        return null;
+      })()
+    : null;
+  const latestWorkflowDagFocusedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!latestWorkflowDagKey || latestWorkflowDagFocusedRef.current === latestWorkflowDagKey) return;
+    const targets = scrollContainerRef.current?.querySelectorAll<HTMLElement>('[data-testid="workflow-dag-block"]');
+    const target = targets?.[targets.length - 1];
+    if (!target) return;
+    latestWorkflowDagFocusedRef.current = latestWorkflowDagKey;
+    requestAnimationFrame(() => {
+      target.scrollIntoView({ behavior: "instant", block: "start" });
+    });
+  }, [latestWorkflowDagKey]);
+
   // A staged Slice revision is persisted in the workflow transcript as an
   // assistant state message. On reload the normal chat behavior intentionally
   // restores the transcript bottom, which can leave the actionable revision
@@ -534,7 +556,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
                     onConfirmRequirements={onConfirmRequirements}
                     goalRequirementContentOverride={goalRequirementContentForViewer}
                     goalLibraryImportCandidatesOverride={goalLibraryImportCandidatesOverride}
-                    onGoalValidationResume={onGoalValidationResume}
+                    onGoalValidationResume={goalDesignAlreadyRendered ? undefined : onGoalValidationResume}
                     onGoalContractSelect={onGoalContractSelect}
                     onWorkflowGoalRevise={onWorkflowGoalRevise}
                     onLibraryGraphNodeSelect={onLibraryGraphNodeSelect}

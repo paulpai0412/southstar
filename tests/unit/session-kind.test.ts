@@ -73,6 +73,7 @@ test("filterSessionsByKind separates chat, workflow, and library sessions", () =
   const sessions = [
     { id: "chat-1", kind: "chat" as const },
     { id: "workflow-1", kind: "workflow" as const },
+    { id: "workflow-internal", kind: "workflow" as const, visibility: "internal" as const },
     { id: "library-1", kind: "library" as const },
   ];
 

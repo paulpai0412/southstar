@@ -72,6 +72,9 @@ export type PiSdkPlannerSession = {
   dispose?: () => void;
   subscribe?: (listener: (event: unknown) => void) => () => void;
   on?: (listener: (event: unknown) => void) => () => void;
+  settingsManager?: {
+    setHttpIdleTimeoutMs(timeoutMs: number): void;
+  };
   sessionManager?: {
     appendCustomEntry(customType: string, data?: unknown): unknown;
   };
@@ -92,14 +95,14 @@ export function createPiSdkPlannerClient(options: PiSdkPlannerClientOptions = {}
       const timeoutMs = options.timeoutMs ?? 600_000;
       const deadline = Date.now() + timeoutMs;
       const session = await withPlannerTimeout(
-        (options.createSession ?? createDefaultPiSdkSession)(plannerSessionOptions(options)),
+        createPlannerSession(options, timeoutMs),
         timeoutMs,
         "creating session",
       );
       try {
         markPiSdkPlannerSessionKind(session, options.sessionKind ?? "workflow");
         await withPlannerTimeout(
-          configurePiSdkPlannerSession(session, options.model ?? plannerModelFromEnv()),
+          configurePiSdkPlannerSession(session, options.model ?? plannerModelFromEnv(), timeoutMs),
           remainingPlannerTimeout(deadline),
           "configuring session",
         );
@@ -112,14 +115,14 @@ export function createPiSdkPlannerClient(options: PiSdkPlannerClientOptions = {}
       const timeoutMs = options.timeoutMs ?? 600_000;
       const deadline = Date.now() + timeoutMs;
       const session = await withPlannerTimeout(
-        (options.createSession ?? createDefaultPiSdkSession)(plannerSessionOptions(options)),
+        createPlannerSession(options, timeoutMs),
         timeoutMs,
         "creating session",
       );
       try {
         markPiSdkPlannerSessionKind(session, options.sessionKind ?? "workflow");
         await withPlannerTimeout(
-          configurePiSdkPlannerSession(session, options.model ?? plannerModelFromEnv()),
+          configurePiSdkPlannerSession(session, options.model ?? plannerModelFromEnv(), timeoutMs),
           remainingPlannerTimeout(deadline),
           "configuring session",
         );
@@ -129,6 +132,16 @@ export function createPiSdkPlannerClient(options: PiSdkPlannerClientOptions = {}
       }
     },
   };
+}
+
+async function createPlannerSession(
+  options: PiSdkPlannerClientOptions,
+  timeoutMs: number,
+): Promise<PiSdkPlannerSession> {
+  const sessionOptions = plannerSessionOptions(options);
+  return options.createSession
+    ? options.createSession(sessionOptions)
+    : createDefaultPiSdkSession({ ...sessionOptions, timeoutMs });
 }
 
 function remainingPlannerTimeout(deadline: number): number {
@@ -165,11 +178,23 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-async function createDefaultPiSdkSession(input: { cwd: string; noTools?: "all" | null }): Promise<PiSdkPlannerSession> {
+async function createDefaultPiSdkSession(input: { cwd: string; noTools?: "all" | null; timeoutMs: number }): Promise<PiSdkPlannerSession> {
   const pi = await import("@earendil-works/pi-coding-agent");
+  // Pi's default HTTP idle timeout is 300 seconds, which is shorter than the
+  // Southstar planner deadline. Use an in-memory settings manager so the
+  // runtime deadline applies to this session without mutating the user's
+  // global Pi settings file.
+  const fileSettingsManager = pi.SettingsManager.create(input.cwd, pi.getAgentDir());
+  const settings = structuredClone(
+    (fileSettingsManager as unknown as { settings: Record<string, unknown> }).settings,
+  );
+  settings.httpIdleTimeoutMs = input.timeoutMs;
+  const settingsManager = pi.SettingsManager.inMemory(settings);
   const result = await pi.createAgentSession({
     ...(input.noTools ? { noTools: input.noTools } : {}),
+    agentDir: pi.getAgentDir(),
     cwd: input.cwd,
+    settingsManager,
     sessionStartEvent: {
       mode: "sdk",
       source: "southstar-pi-planner",
@@ -182,7 +207,9 @@ async function createDefaultPiSdkSession(input: { cwd: string; noTools?: "all" |
 async function configurePiSdkPlannerSession(
   session: PiSdkPlannerSession,
   model: { provider: string; modelId: string } | undefined,
+  timeoutMs: number,
 ): Promise<void> {
+  session.settingsManager?.setHttpIdleTimeoutMs(Math.max(1, timeoutMs));
   if (!model || !session.send) return;
   await session.send({ type: "set_model", provider: model.provider, modelId: model.modelId });
 }

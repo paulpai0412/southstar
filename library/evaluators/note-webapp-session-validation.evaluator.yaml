@@ -1,0 +1,42 @@
+schemaVersion: southstar.library.evaluator_profile_file.v1
+id: evaluator.note-webapp-session-validation
+title: "Anonymous Session Note Web App Evaluator"
+scope: "software"
+status: approved
+semanticTags:
+  - "note-taking"
+  - "web-app"
+  - "create-view-only"
+  - "session-only"
+  - "anonymous-user"
+validatesArtifactRefs:
+  - "artifact.note-webapp-session-validation-evidence"
+requiredInputs:
+  - "noteWebAppEvidenceArtifactRef"
+  - "expectedEntryUrl"
+evidenceKinds:
+  - "screenshot"
+  - "url"
+  - "artifact-ref"
+verificationModes:
+  - "browser_interaction"
+verificationProcedures:
+  - id: "browser-note-webapp-session-flow"
+    checkKind: "browser_interaction"
+    instruction: "Validate from provided evidence that users can access the app entry URL without login, see note input and note list on initial page load, submit a note that appears in the list without a page reload, and observe session-only behavior where previously added notes are absent after an explicit reload. Use replayable artifact evidence to confirm sequence integrity."
+    allowedEvidenceKinds:
+      - "screenshot"
+      - "url"
+      - "artifact-ref"
+independencePolicy: "independent"
+resultSchemaRef: "southstar.requirement_evaluator_result.v2"
+failureClassifications:
+  - "missing-required-evidence"
+  - "entry-url-not-accessible"
+  - "initial-interface-missing"
+  - "no-reload-list-update-not-verified"
+  - "session-reset-not-verified"
+  - "inconclusive"
+importDraftId: "library-import-goal-bae0614549b37c278f618cd19b434072"
+importCandidateKey: "evaluator.note-webapp-session-validation"
+importSourcePath: "Confirmed-Goal-validation-gaps.md"

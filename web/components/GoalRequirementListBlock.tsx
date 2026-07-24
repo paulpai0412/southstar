@@ -25,12 +25,14 @@ export function GoalRequirementListBlock({
   block,
   onRequirementSelect,
   onGoalRequirements,
+  onGoalValidationResume,
   onConfirmRequirements,
   onLibraryGraphNodeSelect,
 }: {
   block: GoalRequirementsContent;
   onRequirementSelect?: (selection: GoalRequirementSelection) => void;
   onGoalRequirements?: (content: GoalRequirementsContent) => void;
+  onGoalValidationResume?: (value: unknown) => void;
   onConfirmRequirements?: (confirmation: GoalRequirementsConfirmation) => void | Promise<GoalRequirementsConfirmationResult | void>;
   onLibraryGraphNodeSelect?: (node: LibraryGraphChartNode) => void;
 }) {
@@ -38,6 +40,7 @@ export function GoalRequirementListBlock({
   const [blockerAnswers, setBlockerAnswers] = useState<Record<string, string>>({});
   const [openQuestionAnswers, setOpenQuestionAnswers] = useState<Record<string, string>>({});
   const [blockerResolution, setBlockerResolution] = useState<{ status: "idle" | "submitting" | "resolved" | "error"; message?: string }>({ status: "idle" });
+  const [goalDesignPromoted, setGoalDesignPromoted] = useState(false);
   const [confirmState, setConfirmState] = useState<"idle" | "confirming" | "confirmed" | "error">("idle");
   const [confirmMessage, setConfirmMessage] = useState<string | null>(null);
   const [confirmProgress, setConfirmProgress] = useState<GoalValidationProgressEvent | null>(null);
@@ -46,6 +49,7 @@ export function GoalRequirementListBlock({
     setBlockerAnswers(Object.fromEntries(block.draft.blockingInputs.map((_, index) => [String(index), ""])));
     setOpenQuestionAnswers(Object.fromEntries(block.draft.requirements.flatMap((requirement) => requirement.openQuestions.map((_, index) => [questionAnswerKey(requirement.id, index), ""]))));
     setBlockerResolution({ status: "idle" });
+    setGoalDesignPromoted(false);
     setConfirmState("idle");
     setConfirmMessage(null);
     setConfirmProgress(null);
@@ -83,17 +87,23 @@ export function GoalRequirementListBlock({
 
   useEffect(() => {
     let cancelled = false;
-    void loadAuthoritativeGoalRequirements(block.draftId).then((authoritative) => {
-      if (cancelled || !goalRequirementsContentShouldReplace(block, authoritative)) return;
-      setCurrentBlock(authoritative);
-      onGoalRequirements?.(authoritative);
+    void loadAuthoritativeGoalState(block.draftId).then((authoritative) => {
+      if (cancelled) return;
+      if (authoritative.continuation) {
+        setGoalDesignPromoted(true);
+        onGoalValidationResume?.(authoritative.payload);
+        return;
+      }
+      if (!authoritative.content || !goalRequirementsContentShouldReplace(block, authoritative.content)) return;
+      setCurrentBlock(authoritative.content);
+      onGoalRequirements?.(authoritative.content);
     }).catch(() => {
       // The session replay remains usable when the read model is temporarily unavailable.
     });
     return () => {
       cancelled = true;
     };
-  }, [block.draftId, block.goalRequirementDraftHash, block.draft.revision, onGoalRequirements]);
+  }, [block.draftId, block.goalRequirementDraftHash, block.draft.revision, onGoalRequirements, onGoalValidationResume]);
 
   const draft = currentBlock.draft;
   const coverage = useMemo(() => new Map((currentBlock.coveragePreview ?? []).map((entry) => [entry.requirementId, entry])), [currentBlock.coveragePreview]);
@@ -255,6 +265,8 @@ export function GoalRequirementListBlock({
             ? "Confirm requirements"
             : hasVisualContractIssues
               ? "Review visual contracts first"
+              : goalDesignPromoted
+                ? "Slice Plan is ready below"
               : "Waiting for host readiness",
     };
 
@@ -364,6 +376,27 @@ export function GoalRequirementListBlock({
                 <div data-testid={`goal-requirement-semantic-tags-${requirement.id}`} style={{ color: "var(--text-muted)", fontSize: 11 }}>
                   Semantic coverage: {requirement.semanticTags && requirement.semanticTags.length > 0 ? requirement.semanticTags.join(" · ") : "not recorded; validation will require confirmation before tagged Library reuse"}
                 </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {requirement.acceptanceCriteria.map((criterion, criterionIndex) => (
+                    <div
+                      key={criterion.id}
+                      data-testid={`goal-requirement-criterion-${criterion.id}`}
+                      style={{ border: "1px solid var(--border)", borderRadius: 7, padding: "7px 8px", background: "var(--bg-panel)", textAlign: "left" }}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 5 }}>
+                        <strong style={{ color: "var(--text)", fontSize: 11 }}>C{criterionIndex + 1} · {criterion.observableClaim}</strong>
+                        <span style={miniPillStyle}>{criterion.blocking ? "Required" : "Advisory"}</span>
+                        <span style={miniPillStyle}>v{criterion.version}</span>
+                      </div>
+                      <div style={{ marginTop: 4, color: "var(--text-muted)", fontSize: 10 }}>
+                        Assurance: {(assuranceArray(criterion.requiredAssurance) ?? []).map(formatAssurance).join(" · ") || "not recorded"}
+                      </div>
+                      <div style={{ marginTop: 3, color: "var(--text-dim)", fontSize: 10 }}>
+                        Verification: {stringArray(criterion.verificationIntent).join(" · ") || "not recorded"}
+                      </div>
+                    </div>
+                  ))}
+                </div>
                 <div style={metaRowStyle}>
                   <span style={miniPillStyle}>{requirement.acceptanceCriteria.length} AC</span>
                   <span style={miniPillStyle}>{requirement.status.replaceAll("_", " ")}</span>
@@ -436,13 +469,15 @@ export function GoalRequirementListBlock({
 
       {draft.nonGoals.length > 0 ? <p style={bodyStyle}><strong>Non-goals:</strong> {draft.nonGoals.join(" · ")}</p> : null}
       <footer style={footerStyle}>
-        <div data-testid="goal-validation-progress" data-event={confirmProgress?.event ?? ""} aria-live="polite" style={{ color: confirmState === "error" ? "#f87171" : "var(--text-dim)", fontSize: 11, minWidth: 0, overflowWrap: "anywhere" }}>
+        <div data-testid="goal-validation-progress" data-state={confirmState} data-event={confirmProgress?.event ?? ""} aria-live="polite" style={{ color: confirmState === "error" ? "#f87171" : "var(--text-dim)", fontSize: 11, minWidth: 0, overflowWrap: "anywhere" }}>
           {confirmMessage ?? blockerResolution.message ?? (confirmable
             ? "Host marked this requirement draft confirmable."
             : hasUnresolvedClarifications
             ? "Answer every listed blocker and question, then use Answer & recheck."
-            : hasVisualContractIssues
-              ? "Review each visual contract and confirm it before confirming requirements."
+              : hasVisualContractIssues
+                ? "Review each visual contract and confirm it before confirming requirements."
+                : goalDesignPromoted
+                  ? "Slice Plan is ready below. Continue with Confirm & Compose DAG."
               : "Waiting for host validation readiness.")}
         </div>
         <button
@@ -551,13 +586,26 @@ function blockerRevisionPrompt(answers: Array<{ question: string; answer: string
   ].join("\n");
 }
 
-async function loadAuthoritativeGoalRequirements(draftId: string): Promise<GoalRequirementsContent> {
+type AuthoritativeGoalState = {
+  payload: unknown;
+  content: GoalRequirementsContent | null;
+  continuation: GoalDesignContent | null;
+};
+
+async function loadAuthoritativeGoalState(draftId: string): Promise<AuthoritativeGoalState> {
   const response = await fetch(`/api/workflow/planner-drafts/${encodeURIComponent(draftId)}/orchestration`, { cache: "no-store" });
   const payload = await response.json().catch(() => undefined) as unknown;
   if (!response.ok) throw new Error(errorMessage(payload) ?? `Goal Requirements reconciliation failed with HTTP ${response.status}`);
   const content = goalRequirementsContentFromUnknown(payload);
-  if (!content) throw new Error("Goal Requirements reconciliation returned an invalid draft.");
-  return content;
+  const continuation = goalDesignContinuationFromUnknown(payload);
+  if (!content && !continuation) throw new Error("Goal Requirements reconciliation returned an invalid draft.");
+  return { payload, content, continuation };
+}
+
+async function loadAuthoritativeGoalRequirements(draftId: string): Promise<GoalRequirementsContent> {
+  const authoritative = await loadAuthoritativeGoalState(draftId);
+  if (!authoritative.content) throw new Error("Goal Requirements reconciliation returned a Goal Design continuation.");
+  return authoritative.content;
 }
 
 function questionAnswerKey(requirementId: string, index: number): string {
@@ -649,6 +697,10 @@ export function goalRequirementsContentShouldReplace(
   if (current.draft.revision < incoming.draft.revision) return true;
   if (current.goalRequirementDraftHash !== incoming.goalRequirementDraftHash) return false;
   if (goalRequirementPhaseRank(incoming.status) < goalRequirementPhaseRank(current.status)) return false;
+  // Multiple replayed Goal Requirement blocks can reconcile the same draft in
+  // parallel. A late pre-confirmation response must not restore validation
+  // issues that a newer UI-contract PATCH has already removed.
+  if (current.status === incoming.status && validationProjectionIsStale(current, incoming)) return false;
   if (incoming.status !== current.status) return true;
   return JSON.stringify({
     confirmable: current.confirmable,
@@ -663,6 +715,14 @@ export function goalRequirementsContentShouldReplace(
     coveragePreview: incoming.coveragePreview ?? [],
     libraryImportDraftId: incoming.libraryImportDraftId ?? null,
   });
+}
+
+function validationProjectionIsStale(current: GoalRequirementsContent, incoming: GoalRequirementsContent): boolean {
+  if (current.confirmable && !incoming.confirmable) return true;
+  const currentIssues = new Set((current.validationIssues ?? []).map((issue) => `${issue.path}\u0000${issue.code ?? ""}\u0000${issue.message}`));
+  const incomingIssues = new Set((incoming.validationIssues ?? []).map((issue) => `${issue.path}\u0000${issue.code ?? ""}\u0000${issue.message}`));
+  return currentIssues.size < incomingIssues.size
+    && [...currentIssues].every((issue) => incomingIssues.has(issue));
 }
 
 export function goalRequirementsConfirmationFromUnknown(
@@ -703,7 +763,7 @@ export function goalDesignContinuationFromUnknown(value: unknown): GoalDesignCon
   const continued = isRecord(envelope.continued) ? envelope.continued : envelope;
   const draftId = stringValue(continued.draftId);
   const status = stringValue(continued.status);
-  const phase = stringValue(continued.phase);
+  const phase = stringValue(continued.goalDesignPhase) ?? stringValue(continued.phase);
   const packageHash = stringValue(continued.goalDesignPackageHash);
   if (!draftId || status !== "ready_for_review" || phase !== "slice_review" || !packageHash || !isRecord(continued.goalDesignPackage)) return null;
   return {
@@ -757,12 +817,12 @@ function goalRequirementPhaseRank(status: string): number {
 }
 
 function parseDraft(value: Record<string, unknown>): GoalRequirementDraftView | null {
-  if (value.schemaVersion !== "southstar.goal_requirement_draft.v1" || typeof value.draftHash !== "string" || !Array.isArray(value.requirements)) return null;
+  if (value.schemaVersion !== "southstar.goal_requirement_draft.v2" || typeof value.draftHash !== "string" || !Array.isArray(value.requirements)) return null;
   if (typeof value.revision !== "number" || typeof value.originalPrompt !== "string" || typeof value.summary !== "string") return null;
   const requirements = value.requirements.map(parseRequirement).filter((item): item is GoalRequirementDraftView["requirements"][number] => Boolean(item));
   if (requirements.length !== value.requirements.length) return null;
   return {
-    schemaVersion: "southstar.goal_requirement_draft.v1",
+    schemaVersion: "southstar.goal_requirement_draft.v2",
     revision: value.revision,
     ...(typeof value.parentRevision === "number" ? { parentRevision: value.parentRevision } : {}),
     originalPrompt: value.originalPrompt,
@@ -780,9 +840,30 @@ function parseRequirement(value: unknown): GoalRequirementDraftView["requirement
   if (value.source !== "explicit" && value.source !== "inferred") return null;
   if (typeof value.blocking !== "boolean" || !Array.isArray(value.acceptanceCriteria)) return null;
   const criteria = value.acceptanceCriteria.map((criterion) => {
-    if (!isRecord(criterion) || typeof criterion.id !== "string" || typeof criterion.statement !== "string") return null;
-    return { id: criterion.id, statement: criterion.statement, evidenceIntent: stringArray(criterion.evidenceIntent) };
-  }).filter((criterion): criterion is { id: string; statement: string; evidenceIntent: string[] } => Boolean(criterion));
+    if (
+      !isRecord(criterion)
+      || typeof criterion.id !== "string"
+      || criterion.id.trim().length === 0
+      || !Number.isInteger(criterion.version)
+      || Number(criterion.version) < 1
+      || typeof criterion.observableClaim !== "string"
+      || criterion.observableClaim.trim().length === 0
+      || typeof criterion.blocking !== "boolean"
+    ) return null;
+    const requiredAssurance = assuranceArray(criterion.requiredAssurance);
+    const verificationIntent = nonEmptyStringArray(criterion.verificationIntent);
+    const evidenceIntent = strictStringArray(criterion.evidenceIntent);
+    if (!requiredAssurance || !verificationIntent || !evidenceIntent) return null;
+    return {
+      id: criterion.id,
+      version: criterion.version,
+      observableClaim: criterion.observableClaim,
+      blocking: criterion.blocking,
+      verificationIntent,
+      requiredAssurance,
+      evidenceIntent,
+    };
+  }).filter((criterion): criterion is GoalRequirementDraftView["requirements"][number]["acceptanceCriteria"][number] => Boolean(criterion));
   if (criteria.length !== value.acceptanceCriteria.length) return null;
   const status = value.status;
   if (status !== "needs_clarification" && status !== "ready" && status !== "confirmed" && status !== "superseded") return null;
@@ -865,7 +946,14 @@ function buildRequirementCoverageGraph(
         objectKind: "acceptance_criteria",
         status: blocked ? "blocked" : requirement.status,
         title: `AC ${criterion.id}`,
-        metadata: { statement: criterion.statement, evidenceIntent: criterion.evidenceIntent },
+        metadata: {
+          observableClaim: criterion.observableClaim,
+          blocking: criterion.blocking,
+          version: criterion.version,
+          verificationIntent: criterion.verificationIntent,
+          requiredAssurance: criterion.requiredAssurance,
+          evidenceIntent: criterion.evidenceIntent,
+        },
       });
       addEdge(requirementKey, criterionKey, "has criterion");
     }
@@ -892,6 +980,21 @@ function errorMessage(value: unknown): string | undefined {
 
 function stringValue(value: unknown): string | undefined { return typeof value === "string" && value.length > 0 ? value : undefined; }
 function stringArray(value: unknown): string[] { return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : []; }
+function strictStringArray(value: unknown): string[] | null {
+  return Array.isArray(value) && value.every((item) => typeof item === "string" && item.trim().length > 0) ? value : null;
+}
+function nonEmptyStringArray(value: unknown): string[] | null {
+  const items = strictStringArray(value);
+  return items && items.length > 0 ? items : null;
+}
+function assuranceArray(value: unknown): GoalRequirementDraftView["requirements"][number]["acceptanceCriteria"][number]["requiredAssurance"] | null {
+  const allowed = new Set<string>(["deterministic", "browser_interaction", "semantic_review", "human_approval"]);
+  if (!Array.isArray(value) || value.length === 0 || value.some((item) => typeof item !== "string" || !allowed.has(item))) return null;
+  return value as GoalRequirementDraftView["requirements"][number]["acceptanceCriteria"][number]["requiredAssurance"];
+}
+function formatAssurance(value: string): string {
+  return value.split("_").map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" ");
+}
 function isRecord(value: unknown): value is Record<string, unknown> { return Boolean(value) && typeof value === "object" && !Array.isArray(value); }
 
 const cardStyle = { border: "1px solid rgba(59,130,246,0.24)", borderRadius: 8, background: "rgba(59,130,246,0.045)", padding: 12, marginTop: 10 } as const;

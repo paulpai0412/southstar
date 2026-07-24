@@ -3,7 +3,8 @@ import test from "node:test";
 import { persistTerminalGoalOutcomePg } from "../../src/v2/evaluators/goal-outcome.ts";
 import { recordRuntimeExceptionPg } from "../../src/v2/exceptions/postgres-runtime-exceptions.ts";
 import { runtimeAttemptNumber } from "../../src/v2/executor/attempt-identity.ts";
-import { buildWorkflowUiReadModelPg, hasDegradedProviderHealth } from "../../src/v2/read-models/workflow-ui.ts";
+import { inspectRunPg } from "../../src/v2/inspection/postgres-inspect-run.ts";
+import { buildWorkflowLineageReadModel, buildWorkflowUiReadModelPg, hasDegradedProviderHealth } from "../../src/v2/read-models/workflow-ui.ts";
 import { createSouthstarRuntimeServer } from "../../src/v2/server/http-server.ts";
 import { createWorkflowRunPg, createWorkflowTaskPg, upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../../src/v2/ui-api/postgres-run-api.ts";
@@ -11,6 +12,7 @@ import { DeterministicFixtureComposer, seedDeterministicWorkflowGraph } from "./
 import { fixedGoalInterpreter, softwareGoalContract } from "./fixtures/goal-contract.ts";
 import { canonicalGoalDesignPackageFixture } from "./fixtures/goal-design.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
+import { goalContractHash } from "../../src/v2/orchestration/goal-contract.ts";
 
 test("runtime attempt identity extracts the canonical monotonic attempt number", () => {
   assert.equal(runtimeAttemptNumber("task-build-attempt-2"), 2);
@@ -66,6 +68,199 @@ test("provider health preserves noncanonical identities alongside canonical atte
     updatedAt: "2026-07-11T00:02:00.000Z",
   });
   assert.equal(hasDegradedProviderHealth(observations), false);
+});
+
+test("workflow lineage keeps the latest evaluator attempt instead of letting history overwrite it", () => {
+  const goalContract = softwareGoalContract("latest evaluator attempt wins");
+  const requirement = goalContract.requirements[0]!;
+  const criterion = requirement.acceptanceCriteria[0]!;
+  const coverage = {
+    schemaVersion: "southstar.goal_requirement_coverage.v1" as const,
+    goalContractHash: goalContractHash(goalContract),
+    entries: [{
+      requirementId: requirement.id,
+      producerTaskIds: ["task-producer"],
+      artifactRefs: ["artifact.implementation_report"],
+      evaluatorTaskIds: ["task-evaluator"],
+      evaluatorProfileRefs: ["evaluator.test"],
+      evaluatorProfileVersionRefs: ["evaluator.test@1"],
+      validationBindingId: "binding-test",
+      criterionBindings: [{
+        criterionId: criterion.id,
+        criterionVersion: criterion.version,
+        blocking: true,
+        artifactContractRef: "artifact.implementation_report",
+        artifactContractVersionRef: "artifact.implementation_report@1",
+        evaluatorProfileRef: "evaluator.test",
+        evaluatorProfileVersionRef: "evaluator.test@1",
+        verificationMode: "deterministic" as const,
+        procedureRef: "procedure.test",
+        expectedEvidenceKinds: ["test-result" as const],
+      }],
+      criterionIds: [criterion.id],
+      acceptanceCriteria: [criterion.observableClaim],
+      requiredEvidenceKinds: ["test-result" as const],
+    }],
+  };
+
+  const lineage = buildWorkflowLineageReadModel({
+    graphId: "run-latest-evaluator",
+    mode: "runtime",
+    slicePlan: undefined,
+    workflowTasks: [],
+    nodes: [],
+    edges: [],
+    goalContract,
+    coverage,
+    evaluatorResults: [
+      {
+        schemaVersion: "southstar.requirement_evaluator_result.v2",
+        requirementId: requirement.id,
+        evaluatorTaskId: "task-evaluator",
+        attemptId: "task-evaluator-attempt-2",
+        criteriaResults: [{ criterionId: criterion.id, verificationMode: "deterministic", verdict: "passed", evidenceRefs: ["evidence-latest"] }],
+        evidenceRefs: ["evidence-latest"],
+      },
+      {
+        schemaVersion: "southstar.requirement_evaluator_result.v2",
+        requirementId: requirement.id,
+        evaluatorTaskId: "task-evaluator",
+        attemptId: "task-evaluator-attempt-1",
+        criteriaResults: [{ criterionId: criterion.id, verificationMode: "deterministic", verdict: "blocked", evidenceRefs: ["evidence-old"] }],
+        evidenceRefs: ["evidence-old"],
+      },
+    ],
+    completionStatus: "satisfied",
+  });
+
+  assert.equal(lineage.chain.criteria[0]?.status, "passed");
+  assert.equal(lineage.chain.checks[0]?.status, "passed");
+  assert.deepEqual(lineage.chain.evidence.map((item) => item.ref), ["evidence-latest"]);
+});
+
+test("run inspection does not keep superseded failed tasks as current blockers", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const runId = "run-inspection-superseded-task";
+    await createWorkflowRunPg(db, {
+      id: runId,
+      status: "completed",
+      domain: "software",
+      goalPrompt: "ignore superseded validation failure",
+      workflowManifestJson: JSON.stringify({ schemaVersion: "southstar.v2" }),
+      executionProjectionJson: JSON.stringify({}),
+      snapshotJson: JSON.stringify({}),
+      runtimeContextJson: JSON.stringify({}),
+      metricsJson: JSON.stringify({}),
+    });
+    await createWorkflowTaskPg(db, {
+      id: "task-producer",
+      runId,
+      taskKey: "producer",
+      status: "completed",
+      sortOrder: 0,
+      dependsOn: [],
+    });
+    await createWorkflowTaskPg(db, {
+      id: "task-verify-original",
+      runId,
+      taskKey: "verify-original",
+      status: "failed",
+      sortOrder: 1,
+      dependsOn: [],
+    });
+    await createWorkflowTaskPg(db, {
+      id: "task-verify-retry",
+      runId,
+      taskKey: "verify-retry",
+      status: "completed",
+      sortOrder: 2,
+      dependsOn: [],
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "workflow_dynamic_repair_revision",
+      resourceKey: `workflow-dynamic-repair:${runId}:attempt-1`,
+      runId,
+      scope: "run",
+      status: "applied",
+      payload: {
+        rootFailedTaskId: "task-verify-original",
+        originalFailedTaskId: "task-verify-original",
+        newTaskIds: ["task-verify-retry"],
+      },
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "artifact_ref",
+      resourceKey: "artifact-ref-original-rejected",
+      runId,
+      taskId: "task-verify-original",
+      scope: "artifact",
+      status: "rejected",
+      payload: {
+        runId,
+        taskId: "task-verify-original",
+        artifactRefId: "artifact-ref-original-rejected",
+        attemptId: "task-verify-original-attempt-1",
+        status: "rejected",
+      },
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "artifact_ref",
+      resourceKey: "artifact-ref-retry-accepted",
+      runId,
+      taskId: "task-verify-retry",
+      scope: "artifact",
+      status: "accepted",
+      payload: {
+        runId,
+        taskId: "task-verify-retry",
+        artifactRefId: "artifact-ref-retry-accepted",
+        attemptId: "task-verify-retry-attempt-1",
+        status: "accepted",
+        evaluatorResultRefs: ["evaluator-result-retry"],
+      },
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "artifact_ref",
+      resourceKey: "artifact-ref-producer-accepted",
+      runId,
+      taskId: "task-producer",
+      scope: "artifact",
+      status: "accepted",
+      payload: {
+        runId,
+        taskId: "task-producer",
+        artifactRefId: "artifact-ref-producer-accepted",
+        attemptId: "task-producer-attempt-1",
+        status: "accepted",
+      },
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "evidence_packet",
+      resourceKey: "evidence-retry",
+      runId,
+      taskId: "task-verify-retry",
+      scope: "evaluator",
+      status: "complete",
+      payload: { runId, taskId: "task-verify-retry", attemptId: "task-verify-retry-attempt-1" },
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "stop_condition_result",
+      resourceKey: "stop-retry",
+      runId,
+      scope: "run",
+      status: "passed",
+      payload: { ok: true },
+    });
+
+    const inspection = await inspectRunPg(db, { runId });
+
+    assert.equal(inspection.health, "healthy");
+    assert.equal(inspection.primaryCause, null);
+    assert.deepEqual(inspection.tasks.find((task) => task.taskId === "task-verify-original")?.causes, []);
+  } finally {
+    await db.close();
+  }
 });
 
 test("workflow read model exposes the same answer-first mission for draft and runtime while keeping satisfied outcome degraded health", async () => {
@@ -189,6 +384,17 @@ test("workflow read model exposes the same answer-first mission for draft and ru
       "canonical_requirement_evaluator_result_incompatible: requirement evaluator result mission-evaluator uses southstar.requirement_evaluator_result.v1; expected southstar.requirement_evaluator_result.v2",
     ]);
     assert.equal(runtimeModel.mission!.evaluatorResults.length, 1);
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "requirement_evaluator_result",
+      resourceKey: "mission-evaluator",
+      runId: run.runId,
+      scope: "evaluator",
+      status: "stale",
+      payload: { schemaVersion: "southstar.requirement_evaluator_result.v1", verdict: "passed" },
+    });
+    const staleFilteredModel = await buildWorkflowUiReadModelPg(db, { runId: run.runId });
+    assert.deepEqual(staleFilteredModel.mission!.evaluatorResults, []);
+    assert.deepEqual(staleFilteredModel.mission!.blockers, []);
     assert.equal(runtimeModel.lineage.workflowDag?.mode, "runtime");
     assert.equal(runtimeModel.lineage.workflowDag?.id, run.runId);
     assert.deepEqual(runtimeModel.lineage.workflowDag?.taskIds, runtimeModel.canvasModel.nodes.map((node) => node.id));

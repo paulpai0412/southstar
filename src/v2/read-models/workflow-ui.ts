@@ -37,6 +37,14 @@ type WorkflowUiInput = {
   taskId?: string;
 };
 
+type SelectedEvaluatorCriterion = {
+  verdict: string;
+  criterionEvidenceRefs: string[];
+  resultEvidenceRefs: string[];
+  requirementId?: string;
+  attempt: number;
+};
+
 type ValidationIssue = {
   path: string;
   message: string;
@@ -154,6 +162,22 @@ export type GoalMissionReadModel = {
 };
 
 export type WorkflowLineageReadModel = {
+  /** Rebuildable canonical chain consumed by Goal Journey, previews, and node viewers. */
+  chain: {
+    goal: { id: string; contractHash?: string; title?: string; status: string };
+    requirements: Array<{ id: string; statement: string; blocking: boolean; status: string }>;
+    criteria: Array<{ id: string; version: number; requirementId: string; observableClaim: string; blocking: boolean; status: string }>;
+    checks: Array<{ id: string; criterionId: string; requirementId: string; verificationMode: string; status: string; evidenceKinds: string[] }>;
+    bindings: Array<{ id: string; requirementId: string; checkIds: string[]; status: string }>;
+    slices: Array<{ id: string; requirementIds: string[]; outcome: string; status: string }>;
+    dag: { id: string; mode: "draft" | "runtime"; status: string } | null;
+    tasks: Array<{ id: string; requirementIds: string[]; sliceId?: string; status: string; roleRef?: string }>;
+    producers: Array<{ taskId: string; artifactRefs: string[]; status: string }>;
+    artifacts: Array<{ ref: string; contractRefs: string[]; producerTaskIds: string[]; status: string }>;
+    evidence: Array<{ ref: string; checkIds: string[]; status: string }>;
+    evaluators: Array<{ taskId: string; profileRefs: string[]; checkIds: string[]; status: string }>;
+    completion: { status: string; passedChecks: number; blockingChecks: number; blockers: string[] };
+  };
   slicePlan: {
     revision: number;
     goalContractHash: string;
@@ -195,6 +219,10 @@ export function buildWorkflowLineageReadModel(input: {
   workflowTasks: DraftTaskShape[];
   nodes: WorkflowCanvasNode[];
   edges: WorkflowCanvasEdge[];
+  goalContract?: GoalContractV1;
+  coverage?: GoalRequirementCoverageV1;
+  evaluatorResults?: unknown[];
+  completionStatus?: string;
 }): WorkflowLineageReadModel {
   const taskById = new Map(input.workflowTasks.map((task) => [task.id, task]));
   const tasks = input.nodes.map((node) => {
@@ -213,7 +241,120 @@ export function buildWorkflowLineageReadModel(input: {
       ...(node.agentProfileRef ?? workflowTask?.agentProfileRef ? { agentProfileRef: node.agentProfileRef ?? workflowTask?.agentProfileRef } : {}),
     };
   });
+  const coverageByRequirement = new Map((input.coverage?.entries ?? []).map((entry) => [entry.requirementId, entry]));
+  const selectedCriteria = new Map<string, SelectedEvaluatorCriterion>();
+  const evidenceToChecks = new Map<string, Set<string>>();
+  for (const rawResult of input.evaluatorResults ?? []) {
+    const result = asRecord(rawResult);
+    const requirementId = stringValue(result.requirementId);
+    const attempt = runtimeAttemptNumber(result.attemptId);
+    const resultEvidenceRefs = stringArray(result.evidenceRefs);
+    const criteriaResults = Array.isArray(result.criteriaResults) ? result.criteriaResults : [];
+    for (const rawCriterion of criteriaResults) {
+      const criterion = asRecord(rawCriterion);
+      const criterionId = stringValue(criterion.criterionId);
+      const mode = stringValue(criterion.verificationMode);
+      if (!criterionId) continue;
+      const checkId = mode ? `${criterionId}::${mode}` : criterionId;
+      const candidate: SelectedEvaluatorCriterion = {
+        verdict: stringValue(criterion.verdict) ?? "unknown",
+        criterionEvidenceRefs: stringArray(criterion.evidenceRefs),
+        resultEvidenceRefs,
+        requirementId,
+        attempt,
+      };
+      const previous = selectedCriteria.get(checkId);
+      if (!previous || attempt > previous.attempt) {
+        selectedCriteria.set(checkId, candidate);
+      }
+    }
+  }
+  const resultByCheck = new Map<string, string>();
+  for (const [checkId, selected] of selectedCriteria) {
+    resultByCheck.set(checkId, selected.verdict);
+    for (const evidenceRef of selected.criterionEvidenceRefs) {
+      const checks = evidenceToChecks.get(evidenceRef) ?? new Set<string>();
+      checks.add(checkId);
+      evidenceToChecks.set(evidenceRef, checks);
+    }
+    if (selected.requirementId) {
+      for (const evidenceRef of selected.resultEvidenceRefs) {
+        const checks = evidenceToChecks.get(evidenceRef) ?? new Set<string>();
+        for (const binding of coverageByRequirement.get(selected.requirementId)?.criterionBindings ?? []) {
+          checks.add(`${binding.criterionId}::${binding.verificationMode}`);
+        }
+        evidenceToChecks.set(evidenceRef, checks);
+      }
+    }
+  }
+  const requirements = (input.goalContract?.requirements ?? []).map((requirement) => ({
+    id: requirement.id,
+    statement: requirement.statement,
+    blocking: requirement.blocking,
+    status: coverageByRequirement.has(requirement.id) ? "bound" : "missing",
+  }));
+  const criteria = (input.goalContract?.requirements ?? []).flatMap((requirement) => requirement.acceptanceCriteria.map((criterion) => {
+    const requiredMode = criterion.requiredAssurance.length === 1 ? criterion.requiredAssurance[0] : undefined;
+    const checkStatus = requiredMode ? resultByCheck.get(`${criterion.id}::${requiredMode}`) : undefined;
+    const status = !requiredMode
+      ? "blocked"
+      : checkStatus === "failed" || checkStatus === "blocked"
+      ? "blocked"
+      : checkStatus === "passed"
+        ? "passed"
+        : coverageByRequirement.get(requirement.id)?.criterionBindings.some((binding) => binding.criterionId === criterion.id) ? "bound" : "missing";
+    return { id: criterion.id, version: criterion.version, requirementId: requirement.id, observableClaim: criterion.observableClaim, blocking: criterion.blocking, status };
+  }));
+  const checks = (input.coverage?.entries ?? []).flatMap((entry) => entry.criterionBindings.map((binding) => ({
+    id: `${binding.criterionId}::${binding.verificationMode}`,
+    criterionId: binding.criterionId,
+    requirementId: entry.requirementId,
+    verificationMode: binding.verificationMode,
+    status: resultByCheck.get(`${binding.criterionId}::${binding.verificationMode}`) ?? "pending",
+    evidenceKinds: [...binding.expectedEvidenceKinds],
+  })));
+  const bindings = (input.coverage?.entries ?? []).map((entry) => ({
+    id: entry.validationBindingId ?? `binding:${entry.requirementId}`,
+    requirementId: entry.requirementId,
+    checkIds: entry.criterionBindings.map((binding) => `${binding.criterionId}::${binding.verificationMode}`),
+    status: entry.criterionBindings.length > 0 ? "frozen" : "missing",
+  }));
+  const normalizedSlicePlan = slicePlanFromUnknown(input.slicePlan);
+  const chainSlices = normalizedSlicePlan?.slices.map((slice) => ({ id: slice.id, requirementIds: slice.requirementIds, outcome: slice.outcome, status: "planned" })) ?? [];
+  const producerTaskIds = new Set((input.nodes ?? []).filter((node) => node.nodeType === "implement" || node.kind === "task").map((node) => node.id));
+  const producers = input.workflowTasks.filter((task) => producerTaskIds.has(task.id)).map((task) => ({ taskId: task.id, artifactRefs: task.expectedOutputs ?? [], status: task.status ?? "planned" }));
+  const artifacts = [...new Set((input.coverage?.entries ?? []).flatMap((entry) => entry.artifactRefs))].map((ref) => ({
+    ref,
+    contractRefs: [...new Set((input.coverage?.entries ?? []).flatMap((entry) => entry.criterionBindings.filter((binding) => binding.artifactContractRef === ref).map((binding) => binding.artifactContractRef)))],
+    producerTaskIds: producers.filter((producer) => producer.artifactRefs.includes(ref)).map((producer) => producer.taskId),
+    status: "expected",
+  }));
+  const evidence = [...evidenceToChecks.entries()].map(([ref, checkIds]) => ({ ref, checkIds: [...checkIds].sort(), status: "present" }));
+  const evaluators = (input.coverage?.entries ?? []).flatMap((entry) => entry.evaluatorTaskIds.map((taskId) => ({
+    taskId,
+    profileRefs: [...entry.evaluatorProfileRefs],
+    checkIds: entry.criterionBindings.map((binding) => `${binding.criterionId}::${binding.verificationMode}`),
+    status: input.evaluatorResults?.some((raw) => asRecord(raw).evaluatorTaskId === taskId) ? "evaluated" : "pending",
+  })));
+  const blockingChecks = checks.filter((check) => criteria.find((criterion) => criterion.id === check.criterionId)?.blocking).length;
+  const passedChecks = checks.filter((check) => check.status === "passed").length;
+  const blockers = checks.filter((check) => check.status === "failed" || check.status === "blocked").map((check) => `${check.id}:${check.status}`);
   return {
+    chain: {
+      goal: { id: input.graphId, ...(input.goalContract ? { contractHash: goalContractHash(input.goalContract), title: input.goalContract.summary } : {}), status: input.completionStatus ?? "in_progress" },
+      requirements,
+      criteria,
+      checks,
+      bindings,
+      slices: chainSlices,
+      dag: input.nodes.length > 0 || input.edges.length > 0 ? { id: input.graphId, mode: input.mode, status: input.completionStatus ?? "planned" } : null,
+      tasks: tasks.map((task) => ({ id: task.id, requirementIds: task.requirementIds, ...(task.sliceId ? { sliceId: task.sliceId } : {}), status: task.status, ...(task.roleRef ? { roleRef: task.roleRef } : {}) })),
+      producers,
+      artifacts,
+      evidence,
+      evaluators,
+      completion: { status: input.completionStatus ?? "in_progress", passedChecks, blockingChecks, blockers },
+    },
     slicePlan: slicePlanFromUnknown(input.slicePlan),
     workflowDag: input.nodes.length > 0 || input.edges.length > 0
       ? {
@@ -306,6 +447,7 @@ async function buildRuntimeWorkflowUiReadModel(db: SouthstarDb, runId: string, p
   const runtimeDraftId = stringValue(runtimeContext.draftId);
   const runtimeDraft = runtimeDraftId ? await getResourceByKeyPg(db, "planner_draft", runtimeDraftId) : null;
   const runtimeDraftPayload = asRecord(runtimeDraft?.payload);
+  const mission = await buildGoalMissionReadModelPg(db, { runId });
   const lineage = buildWorkflowLineageReadModel({
     graphId: runId,
     mode: "runtime",
@@ -313,9 +455,9 @@ async function buildRuntimeWorkflowUiReadModel(db: SouthstarDb, runId: string, p
     workflowTasks,
     nodes,
     edges,
+    ...(mission ? { goalContract: mission.goalContract, coverage: mission.coverage, evaluatorResults: mission.evaluatorResults, completionStatus: mission.status.outcome } : {}),
   });
   const librarySummary = agentLibrarySummary(domain, run.workflow_manifest_json);
-  const mission = await buildGoalMissionReadModelPg(db, { runId });
 
   return {
     mission,
@@ -414,6 +556,7 @@ async function buildDraftWorkflowUiReadModel(db: SouthstarDb, draftId: string, p
     workflowTasks,
     nodes,
     edges,
+    ...(mission ? { goalContract: mission.goalContract, coverage: mission.coverage, evaluatorResults: mission.evaluatorResults, completionStatus: mission.status.outcome } : {}),
   });
 
   return {
@@ -540,14 +683,15 @@ async function buildRuntimeGoalMissionReadModels(
   for (const run of runs.rows) {
     const rows = resourcesByRun.get(run.id) ?? [];
     const evaluatorRows = rows.filter(
-      (row) => row.resource_type === "requirement_evaluator_result" || row.resource_type === "evaluator_result",
+      (row) => row.status !== "stale"
+        && (row.resource_type === "requirement_evaluator_result" || row.resource_type === "evaluator_result"),
     );
     const evaluatorResultBlockers = evaluatorRows.flatMap((row) => {
       if (row.resource_type !== "requirement_evaluator_result") return [];
       const diagnostic = requirementEvaluatorResultIncompatibility({ resourceKey: row.resource_key, payload: row.payload_json });
       return diagnostic ? [diagnostic.message] : [];
     });
-    const outcomeResource = rows.find((row) => row.resource_type === "goal_outcome");
+    const outcomeResource = rows.find((row) => row.resource_type === "goal_outcome" && row.status !== "stale");
     const outcomePayload = asRecord(outcomeResource?.payload_json);
     const outcome = outcomeResource
       ? goalOutcomeStatus(outcomeResource.status) ?? goalOutcomeStatus(outcomePayload.outcomeStatus)

@@ -8,7 +8,70 @@ import {
   interpretGoalContractWithLlm,
   requirementSpecFromGoalContract,
   reviseGoalContract,
+  storedGoalContract,
 } from "../../src/v2/orchestration/goal-contract.ts";
+
+function criterion(observableClaim: string) {
+  return {
+    observableClaim,
+    blocking: true,
+    verificationIntent: ["Verify the observable claim against the accepted artifact."],
+    requiredAssurance: ["deterministic" as const],
+  };
+}
+
+test("Goal Contract V1 rows are rejected instead of silently adapted", () => {
+  const contract = finalizeGoalContract({
+    goalPrompt: "Build it",
+    cwd: "/workspace/project",
+    interpretation: interpretation("Build it"),
+  });
+  assert.equal(storedGoalContract({ ...contract, schemaVersion: "southstar.goal_contract.v1" }), undefined);
+});
+
+test("stored Goal Contract rejects invalid hashes, revisions, and duplicate canonical identities", () => {
+  const contract = finalizeGoalContract({
+    goalPrompt: "Build it",
+    cwd: "/workspace/project",
+    interpretation: interpretation("Build it"),
+  });
+  const requirement = contract.requirements[0]!;
+  const acceptanceCriterion = requirement.acceptanceCriteria[0]!;
+
+  assert.equal(storedGoalContract({ ...contract, revision: 0 }), undefined);
+  assert.equal(storedGoalContract({ ...contract, promptHash: "not-the-prompt-hash" }), undefined);
+  assert.equal(storedGoalContract({
+    ...contract,
+    requirements: [requirement, { ...structuredClone(requirement) }],
+  }), undefined);
+  assert.equal(storedGoalContract({
+    ...contract,
+    requirements: [{
+      ...requirement,
+      acceptanceCriteria: [acceptanceCriterion, {
+        ...structuredClone(acceptanceCriterion),
+        observableClaim: "A second claim must not reuse the first canonical identity",
+      }],
+    }],
+  }), undefined);
+  assert.equal(storedGoalContract({
+    ...contract,
+    requirements: [{
+      ...requirement,
+      acceptanceCriteria: [{
+        ...acceptanceCriterion,
+        requiredAssurance: ["deterministic", "browser_interaction"],
+      }],
+    }],
+  }), undefined);
+  assert.equal(storedGoalContract({
+    ...contract,
+    requirements: [{
+      ...requirement,
+      expectedArtifacts: [{ description: "unsafe artifact", path: "../outside.md" }],
+    }],
+  }), undefined);
+});
 
 test("Goal interpreter returns structured vocabulary gaps without repairing into unrelated refs", async () => {
   let attempts = 0;
@@ -31,7 +94,7 @@ test("Goal interpreter returns structured vocabulary gaps without repairing into
             summary: "Deliver membership subscriptions",
             requirements: [{
               statement: "Members can subscribe",
-              acceptanceCriteria: ["A successful purchase activates a subscription"],
+              acceptanceCriteria: [criterion("A successful purchase activates a subscription")],
               blocking: true,
               source: "explicit",
               expectedArtifacts: [{ description: "Subscription verification report" }],
@@ -74,7 +137,10 @@ test("LLM interpretation produces a host-owned GoalContractV1", async () => {
         summary: "Create an offline HTML article from notes.md",
         requirements: [{
           statement: "The result opens without network access",
-          acceptanceCriteria: ["article.html loads with the network disabled"],
+          acceptanceCriteria: [{
+            ...criterion("article.html loads with the network disabled"),
+            requiredAssurance: ["browser_interaction"],
+          }],
           blocking: true,
           source: "explicit",
         }],
@@ -160,7 +226,7 @@ test("Goal Contract drops unsafe optional expected artifact paths", () => {
       ...interpretation("Build it"),
       requirements: [{
         statement: "Build it",
-        acceptanceCriteria: ["Build it"],
+        acceptanceCriteria: [criterion("Build it")],
         blocking: true,
         source: "explicit",
         expectedArtifacts: [{
@@ -230,10 +296,10 @@ test("Goal interpreter decomposes a compound outcome into observable requirement
         workType: "software_feature",
         summary: "Deliver a production-ready membership subscription flow",
           requirements: [
-            { statement: "Authorized members can access subscription-only features", acceptanceCriteria: ["Unauthorized users are denied and authorized members are allowed"], blocking: true, source: "explicit" },
-            { statement: "Members can purchase a subscription and payment state is persisted", acceptanceCriteria: ["A successful payment activates exactly one subscription"], blocking: true, source: "explicit" },
-            { statement: "Members can cancel and receive the configured refund behavior", acceptanceCriteria: ["Cancellation and refund state are observable and idempotent"], blocking: true, source: "explicit" },
-            { statement: "Operators can inspect subscription and audit events", acceptanceCriteria: ["Administrative reporting shows the recorded lifecycle events"], blocking: true, source: "explicit" },
+            { statement: "Authorized members can access subscription-only features", acceptanceCriteria: [criterion("Unauthorized users are denied and authorized members are allowed")], blocking: true, source: "explicit" },
+            { statement: "Members can purchase a subscription and payment state is persisted", acceptanceCriteria: [criterion("A successful payment activates exactly one subscription")], blocking: true, source: "explicit" },
+            { statement: "Members can cancel and receive the configured refund behavior", acceptanceCriteria: [criterion("Cancellation and refund state are observable and idempotent")], blocking: true, source: "explicit" },
+            { statement: "Operators can inspect subscription and audit events", acceptanceCriteria: [criterion("Administrative reporting shows the recorded lifecycle events")], blocking: true, source: "explicit" },
           ],
           expectedArtifactRefs: ["artifact.implementation_report", "artifact.verification_report"],
           requiredCapabilities: ["capability.repo-read", "capability.repo-write", "capability.test-execution"],
@@ -254,6 +320,8 @@ test("Goal interpreter decomposes a compound outcome into observable requirement
   assert.match(prompts[0] ?? "", /safe, reversible local\/test implementation choices/i);
   assert.match(prompts[0] ?? "", /blocking=true for every requirement needed to satisfy the requested outcome/i);
   assert.match(prompts[0] ?? "", /GoalContractInterpretationSchema:/);
+  assert.match(prompts[0] ?? "", /one atomic observable claim with its own blocking state, verification intent, and exactly one required assurance class/i);
+  assert.match(prompts[0] ?? "", /requiredAssurance: \[exactly one of/);
   assert.match(prompts[0] ?? "", /Every array item must be a non-empty string/i);
   assert.match(prompts[0] ?? "", /blockingInputs: string\[\]/);
   assert.match(prompts[0] ?? "", /expectedArtifacts\[\]\.path/i);
@@ -322,7 +390,7 @@ test("Goal interpreter repairs one schema-invalid LLM response", async () => {
           ...interpretation("Build it"),
           requirements: [{
             statement: "Build it",
-            acceptanceCriteria: ["Build it"],
+            acceptanceCriteria: [criterion("Build it")],
             blocking: true,
             source: callCount === 1 ? "user" : "explicit",
           }],
@@ -422,7 +490,7 @@ test("Goal Contract revision keeps ids for unchanged statements", () => {
       ...interpretation("Build it with docs"),
       requirements: [{
         statement: "Build it",
-        acceptanceCriteria: ["Build it with passing tests"],
+        acceptanceCriteria: [criterion("Build it with passing tests")],
         blocking: true,
         source: "explicit",
       }],
@@ -431,6 +499,64 @@ test("Goal Contract revision keeps ids for unchanged statements", () => {
 
   assert.equal(revised.revision, 2);
   assert.equal(revised.requirements[0]!.id, previousContract.requirements[0]!.id);
+});
+
+test("Goal Contract revision versions changed Criteria without replacing canonical identity", () => {
+  const previousContract = finalizeGoalContract({
+    goalPrompt: "Build it",
+    cwd: "/workspace/project",
+    interpretation: interpretation("Build it"),
+  });
+  const previousCriterion = previousContract.requirements[0]!.acceptanceCriteria[0]!;
+  const revised = reviseGoalContract({
+    previousContract,
+    goalPrompt: "Build it with explicit verification",
+    cwd: "/workspace/project",
+    interpretation: {
+      ...interpretation("Build it with explicit verification"),
+      requirements: [{
+        statement: "Build it",
+        acceptanceCriteria: [{
+          ...criterion("Build it with passing verification"),
+          id: previousCriterion.id,
+          version: previousCriterion.version,
+        }],
+        blocking: true,
+        source: "explicit",
+      }],
+    },
+  });
+
+  const revisedCriterion = revised.requirements[0]!.acceptanceCriteria[0]!;
+  assert.equal(revisedCriterion.id, previousCriterion.id);
+  assert.equal(revisedCriterion.version, previousCriterion.version + 1);
+  assert.equal(revisedCriterion.observableClaim, "Build it with passing verification");
+});
+
+test("Goal Contract revision never reuses Criterion identity by array position", () => {
+  const previousContract = finalizeGoalContract({
+    goalPrompt: "Build it",
+    cwd: "/workspace/project",
+    interpretation: interpretation("Build it"),
+  });
+  const previousCriterion = previousContract.requirements[0]!.acceptanceCriteria[0]!;
+  const revised = reviseGoalContract({
+    previousContract,
+    goalPrompt: "Replace the verification contract",
+    cwd: "/workspace/project",
+    interpretation: {
+      ...interpretation("Replace the verification contract"),
+      requirements: [{
+        statement: "Build it",
+        acceptanceCriteria: [criterion("A different observable outcome is verified")],
+        blocking: true,
+        source: "explicit",
+      }],
+    },
+  });
+
+  assert.notEqual(revised.requirements[0]!.acceptanceCriteria[0]!.id, previousCriterion.id);
+  assert.equal(revised.requirements[0]!.acceptanceCriteria[0]!.version, 1);
 });
 
 test("Goal Contract revision carries prior explicit requirements forward", () => {
@@ -447,7 +573,7 @@ test("Goal Contract revision carries prior explicit requirements forward", () =>
       ...interpretation("Also document it"),
       requirements: [{
         statement: "Document it",
-        acceptanceCriteria: ["The usage is documented"],
+        acceptanceCriteria: [criterion("The usage is documented")],
         blocking: true,
         source: "explicit",
       }],
@@ -508,7 +634,7 @@ function interpretation(summary: string) {
     summary,
     requirements: [{
       statement: summary,
-      acceptanceCriteria: [summary],
+      acceptanceCriteria: [criterion(summary)],
       blocking: true,
       source: "explicit" as const,
     }],

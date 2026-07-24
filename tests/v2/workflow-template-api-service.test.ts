@@ -268,7 +268,7 @@ function compoundCompositionPlan(goalContract: ReturnType<typeof subscriptionGoa
       ...structuredClone(producerTemplate.nodePromptSpec!),
       goal: requirement.statement,
       requirements: [requirement.statement],
-      acceptanceCriteria: [...requirement.acceptanceCriteria],
+      acceptanceCriteria: requirement.acceptanceCriteria.map((criterion) => criterion.observableClaim),
     },
   }));
   const verifierTemplate = base.tasks[1]!;
@@ -288,7 +288,9 @@ function compoundCompositionPlan(goalContract: ReturnType<typeof subscriptionGoa
           ...structuredClone(verifierTemplate.nodePromptSpec!),
           goal: "Verify every Goal Contract requirement.",
           requirements: goalContract.requirements.map((requirement) => requirement.statement),
-          acceptanceCriteria: goalContract.requirements.flatMap((requirement) => requirement.acceptanceCriteria),
+          acceptanceCriteria: goalContract.requirements.flatMap((requirement) => (
+            requirement.acceptanceCriteria.map((criterion) => criterion.observableClaim)
+          )),
         },
       },
     ],

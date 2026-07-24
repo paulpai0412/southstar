@@ -28,10 +28,34 @@ export async function buildGraphMetadataCandidatePacket(
   db: SouthstarDb,
   input: { scope: string; requirementSpec?: RequirementSpecV2 },
 ): Promise<GraphMetadataCandidatePacket> {
-  const objects = (await listLibraryObjects(db, { status: "approved" }))
+  const approvedObjects = await listLibraryObjects(db, { status: "approved" });
+  const executableObjects = approvedObjects
     .filter((object) => INCLUDED_KINDS.has(object.objectKind) && isRuntimeProfilePrimitiveCandidate(object));
+  const executableKeys = new Set(executableObjects.map((object) => object.objectKey));
+  const objectsByKey = new Map(approvedObjects.map((object) => [object.objectKey, object]));
+  const activeEdges = await listLibraryEdges(db, { status: "active" });
+  const unavailableSkillRefs = new Set(
+    activeEdges
+      .filter((edge) => {
+        const source = objectsByKey.get(edge.fromObjectKey);
+        const target = objectsByKey.get(edge.toObjectKey);
+        if (source?.objectKind !== "skill_spec" || !target || executableKeys.has(target.objectKey)) return false;
+        if (target.objectKind === "tool_definition") {
+          return ["requires_tool", "allows_tool", "uses"].includes(edge.edgeType);
+        }
+        if (target.objectKind === "mcp_tool_grant") {
+          return ["allows_mcp_grant", "uses"].includes(edge.edgeType);
+        }
+        if (target.objectKind === "instruction_template") {
+          return ["uses_instruction", "uses"].includes(edge.edgeType);
+        }
+        return false;
+      })
+      .map((edge) => edge.fromObjectKey),
+  );
+  const objects = executableObjects.filter((object) => !unavailableSkillRefs.has(object.objectKey));
   const availableKeys = new Set(objects.map((object) => object.objectKey));
-  const edges = (await listLibraryEdges(db, { status: "active" }))
+  const edges = activeEdges
     .filter((edge) => availableKeys.has(edge.fromObjectKey) && availableKeys.has(edge.toObjectKey));
   const requiredRefs = new Set([
     ...(input.requirementSpec?.requiredCapabilities ?? []),

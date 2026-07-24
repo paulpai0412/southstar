@@ -158,7 +158,7 @@ export function UiInteractionContractViewer({
               />
             ) : <div style={mutedStyle}>Select a visible element to edit its label and state rules.</div>}
             {screen ? <ActionInspector screen={screen} saving={saving} onSave={(actionId, actionPatch) => void patch({ kind: "update_action", screenId: screen.id, actionId, patch: actionPatch })} onPreviewState={setScreenState} /> : null}
-            <section style={metaSectionStyle}><div style={sectionTitleStyle}>Criterion bindings</div>{contract.criterionBindings.map((binding) => <div key={binding.criterionId} style={metaItemStyle}><strong>{binding.criterionId}</strong><div>{[...binding.screenIds, ...binding.elementIds, ...binding.actionIds].join(" · ")}</div></div>)}</section>
+            <section style={metaSectionStyle}><div style={sectionTitleStyle}>Criterion bindings</div>{contract.criterionBindings.map((binding) => <div key={binding.criterionId} style={metaItemStyle}><strong>{binding.criterionId} · v{binding.criterionVersion}</strong><div>{[...binding.screenIds, ...binding.elementIds, ...binding.actionIds].join(" · ")}</div></div>)}</section>
             <section style={metaSectionStyle}><div style={sectionTitleStyle}>Flows</div>{contract.flows.map((flow) => <div key={flow.id} style={metaItemStyle}><strong>{flow.id}</strong><div>{flow.steps.join(" → ")}</div><div>{flow.successOutcome}</div></div>)}</section>
           </aside>
         </div>
@@ -211,7 +211,7 @@ function contractPath(selection: UiInteractionContractSelection): string { retur
 function resultFromEnvelope(value: unknown): unknown { return isRecord(value) && "result" in value ? value.result : value; }
 function contractFromEnvelope(value: unknown): UiInteractionContractView | null { return contractFromUnknown(resultFromEnvelope(value)); }
 function contractFromReviewResult(value: unknown, contractId: string): UiInteractionContractView | null { if (!isRecord(value) || !Array.isArray(value.uiInteractionContracts)) return null; return value.uiInteractionContracts.map(contractFromUnknown).find((entry) => entry?.id === contractId) ?? null; }
-function contractFromUnknown(value: unknown): UiInteractionContractView | null { if (!isRecord(value) || value.schemaVersion !== "southstar.ui_interaction_contract.v1" || typeof value.id !== "string" || typeof value.contractHash !== "string" || !Array.isArray(value.screens) || !Array.isArray(value.flows) || !Array.isArray(value.criterionBindings)) return null; return value as unknown as UiInteractionContractView; }
+function contractFromUnknown(value: unknown): UiInteractionContractView | null { if (!isRecord(value) || value.schemaVersion !== "southstar.ui_interaction_contract.v2" || typeof value.id !== "string" || typeof value.contractHash !== "string" || !Array.isArray(value.screens) || !Array.isArray(value.flows) || !Array.isArray(value.criterionBindings)) return null; return value as unknown as UiInteractionContractView; }
 function errorMessage(value: unknown): string | undefined { return isRecord(value) && typeof value.error === "string" ? value.error : isRecord(value) && typeof value.message === "string" ? value.message : undefined; }
 function isRecord(value: unknown): value is Record<string, unknown> { return Boolean(value) && typeof value === "object" && !Array.isArray(value); }
 

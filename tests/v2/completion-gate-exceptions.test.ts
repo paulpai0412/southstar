@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { acceptOrRejectArtifactRefPg } from "../../src/v2/artifacts/artifact-ref-store.ts";
 import type { SouthstarDb } from "../../src/v2/db/postgres.ts";
 import { evaluateRunCompletionGatePg } from "../../src/v2/evaluators/completion-gate.ts";
@@ -7,6 +8,7 @@ import {
   recordRuntimeExceptionPg,
   resolveRuntimeExceptionPg,
 } from "../../src/v2/exceptions/postgres-runtime-exceptions.ts";
+import { criterionValidationCheckKey } from "../../src/v2/design-library/types.ts";
 import { goalContractHash, type GoalContractV1 } from "../../src/v2/orchestration/goal-contract.ts";
 import {
   createWorkflowRunPg,
@@ -96,7 +98,7 @@ test("completion gate blocks coverage derived from a planner draft without canon
 
     assert.equal(result.outcomeStatus, "blocked");
     assert.deepEqual(result.findings, [
-      `canonical_goal_design_package_required: planner draft draft-${runId} does not contain a valid southstar.goal_design_package.v2`,
+      `canonical_goal_design_package_required: planner draft draft-${runId} does not contain a valid southstar.goal_design_package.v3`,
     ]);
     const exception = await db.one<{ payload_json: { providerEvidence: { code: string } } }>(
       "select payload_json from southstar.runtime_resources where resource_type = 'runtime_exception' and run_id = $1",
@@ -295,9 +297,9 @@ test("started recovery execution does not replace logical outcome evidence", asy
 
 async function seedCompletedRunWithAcceptedArtifactRef(db: SouthstarDb, runId: string): Promise<void> {
   const goalContract: GoalContractV1 = {
-    schemaVersion: "southstar.goal_contract.v1",
+    schemaVersion: "southstar.goal_contract.v2",
     originalPrompt: "evaluate runtime exceptions",
-    promptHash: `prompt-${runId}`,
+    promptHash: createHash("sha256").update("evaluate runtime exceptions").digest("hex"),
     revision: 1,
     workspace: { cwd: "/tmp/southstar" },
     domain: "software",
@@ -307,10 +309,17 @@ async function seedCompletedRunWithAcceptedArtifactRef(db: SouthstarDb, runId: s
     requirements: [{
       id: "req-a",
       statement: "The implementation artifact is independently verified",
-      acceptanceCriteria: ["The accepted implementation report passes independent verification"],
+      acceptanceCriteria: [{
+        id: "criterion-a",
+        version: 1,
+        observableClaim: "The accepted implementation report passes independent verification",
+        blocking: true,
+        verificationIntent: ["Verify the accepted report using the independent evaluator."],
+        requiredAssurance: ["deterministic"],
+      }],
       blocking: true,
       source: "explicit",
-      expectedArtifacts: ["artifact.output"],
+      expectedArtifacts: [{ description: "Accepted implementation report" }],
     }],
     expectedArtifactRefs: ["artifact.output"],
     requiredCapabilities: [],
@@ -321,7 +330,14 @@ async function seedCompletedRunWithAcceptedArtifactRef(db: SouthstarDb, runId: s
     requestedSideEffects: [],
   };
   const contractHash = goalContractHash(goalContract);
-  const goalDesignPackage = canonicalGoalDesignPackageFixture(goalContract);
+  const goalDesignPackage = canonicalGoalDesignPackageFixture(goalContract, undefined, {
+    artifactContractRef: "artifact.output",
+    artifactContractVersionRef: "artifact.output@2",
+    evaluatorProfileRef: "evaluator.independent",
+    evaluatorProfileVersionRef: "evaluator.independent@2",
+    procedureRef: "procedure.independent",
+    expectedEvidenceKinds: ["artifact-ref"],
+  });
   const draftId = `draft-${runId}`;
   await upsertRuntimeResourcePg(db, {
     id: draftId,
@@ -359,9 +375,12 @@ async function seedCompletedRunWithAcceptedArtifactRef(db: SouthstarDb, runId: s
           kind: "checker-agent",
           required: true,
           config: {
+            validationBindingId: "binding-req-a",
             criterionId: "criterion-a",
             acceptanceCriterion: "The accepted implementation report passes independent verification",
             expectedEvidenceKinds: ["artifact-ref"],
+            procedureRef: "procedure.independent",
+            verificationMode: "deterministic",
           },
         }],
         onFailure: { defaultStrategy: "request-workflow-revision" },
@@ -408,6 +427,12 @@ async function seedCompletedRunWithAcceptedArtifactRef(db: SouthstarDb, runId: s
     summary: "Artifact for task-a",
     producedAt: "2026-06-21T00:00:00.000Z",
   });
+  await db.query(
+    `update southstar.runtime_resources
+        set payload_json = jsonb_set(payload_json, '{contractVersionRefs}', '["artifact.output@2"]'::jsonb)
+      where run_id = $1 and resource_type = 'artifact_ref' and resource_key = $2`,
+    [runId, artifact.artifactRefId],
+  );
   await upsertRuntimeResourcePg(db, {
     id: `coverage-${runId}`,
     resourceType: "goal_requirement_coverage",
@@ -423,10 +448,23 @@ async function seedCompletedRunWithAcceptedArtifactRef(db: SouthstarDb, runId: s
         requirementId: "req-a",
         producerTaskIds: ["task-a"],
         artifactRefs: ["artifact.output"],
+        artifactContractRefs: ["artifact.output"],
         evaluatorTaskIds: ["task-evaluator"],
         evaluatorProfileRefs: ["evaluator.independent"],
         evaluatorProfileVersionRefs: ["evaluator.independent@2"],
         validationBindingId: "binding-req-a",
+        criterionBindings: [{
+          criterionId: "criterion-a",
+          criterionVersion: 1,
+          blocking: true,
+          artifactContractRef: "artifact.output",
+          artifactContractVersionRef: "artifact.output@2",
+          evaluatorProfileRef: "evaluator.independent",
+          evaluatorProfileVersionRef: "evaluator.independent@2",
+          verificationMode: "deterministic",
+          procedureRef: "procedure.independent",
+          expectedEvidenceKinds: ["artifact-ref"],
+        }],
         criterionIds: ["criterion-a"],
         acceptanceCriteria: ["The accepted implementation report passes independent verification"],
         requiredEvidenceKinds: ["artifact-ref"],
@@ -441,7 +479,35 @@ async function seedCompletedRunWithAcceptedArtifactRef(db: SouthstarDb, runId: s
     taskId: "task-evaluator",
     scope: "evaluator",
     status: "complete",
-    payload: { schemaVersion: "southstar.evidence_packet.v1" },
+    payload: {
+      schemaVersion: "southstar.runtime.evidence_packet.v1",
+      runId,
+      taskId: "task-evaluator",
+      artifactRef: artifact.artifactRefId,
+      lineage: {
+        goalContractHash: contractHash,
+        evaluatorTaskId: "task-evaluator",
+        evaluatorAttemptId: "attempt-1",
+        evaluatorArtifactRef: artifact.artifactRefId,
+        checks: [{
+          checkKey: criterionValidationCheckKey("criterion-a", "deterministic"),
+          requirementId: "req-a",
+          validationBindingId: "binding-req-a",
+          criterionId: "criterion-a",
+          criterionVersion: 1,
+          verificationMode: "deterministic",
+          artifactContractRef: "artifact.output",
+          artifactContractVersionRef: "artifact.output@2",
+          artifactInstanceRefs: [artifact.artifactRefId],
+          procedureRef: "procedure.independent",
+          evaluatorTaskId: "task-evaluator",
+          evaluatorAttemptId: "attempt-1",
+          evaluatorArtifactRef: artifact.artifactRefId,
+          evaluatorProfileRef: "evaluator.independent",
+          evaluatorProfileVersionRef: "evaluator.independent@2",
+        }],
+      },
+    },
   });
   await upsertRuntimeResourcePg(db, {
     id: `requirement-result-${runId}`,
@@ -456,8 +522,10 @@ async function seedCompletedRunWithAcceptedArtifactRef(db: SouthstarDb, runId: s
       requirementId: "req-a",
       validationBindingId: "binding-req-a",
       artifactRefs: [artifact.artifactRefId],
+      evaluatorArtifactRef: artifact.artifactRefId,
       evaluatorId: `evaluator-${runId}`,
       evaluatorTaskId: "task-evaluator",
+      attemptId: "attempt-1",
       evaluatorProfileRef: "evaluator.independent",
       evaluatorProfileVersionRef: "evaluator.independent@2",
       verdict: "passed",

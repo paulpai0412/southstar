@@ -27,7 +27,7 @@ import {
   type CanonicalGoalDesignDraftRejection,
 } from "./canonical-goal-design-draft.ts";
 import {
-  validateGoalDesignPackageV2,
+  validateGoalDesignPackageV3,
   type GoalDesignPackage,
   type GoalSliceDesigner,
   type GoalDesignMode,
@@ -1197,8 +1197,8 @@ function stringArray(value: unknown): string[] {
 function storedGoalDesignPackage(value: unknown): GoalDesignPackage | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const pkg = value as GoalDesignPackage;
-  if (pkg.schemaVersion !== "southstar.goal_design_package.v2") return undefined;
-  const issues = validateGoalDesignPackageV2(pkg);
+  if (pkg.schemaVersion !== "southstar.goal_design_package.v3") return undefined;
+  const issues = validateGoalDesignPackageV3(pkg);
   return issues.length === 0 ? pkg : undefined;
 }
 

@@ -1,5 +1,10 @@
 import type { AnyTaskEnvelope } from "../agent-runner/task-envelope.ts";
-import type { AgentHarness, HarnessRunInput, HarnessRunResult } from "./types.ts";
+import type {
+  AgentHarness,
+  HarnessCommandExecution,
+  HarnessRunInput,
+  HarnessRunResult,
+} from "./types.ts";
 import { unsupportedPiRuntimeToolNames } from "./pi-runtime-tools.ts";
 
 export type PiSdkHarnessSession = {
@@ -7,6 +12,9 @@ export type PiSdkHarnessSession = {
   prompt(text: string): Promise<void>;
   subscribe?: (listener: (event: unknown) => void) => () => void;
   on?: (listener: (event: unknown) => void) => () => void;
+  sessionManager?: {
+    appendCustomEntry(customType: string, data?: unknown): unknown;
+  };
   abort?: () => void | Promise<void>;
   dispose?: () => void | Promise<void>;
 };
@@ -39,10 +47,31 @@ export function createPiSdkAgentHarness(options: PiSdkAgentHarnessOptions = {}):
           sessionInput,
           timeoutMs,
         );
+        session.sessionManager?.appendCustomEntry("southstar.session.kind", { kind: "workflow", visibility: "internal" });
         await configurePiSdkSession(session, sessionInput);
-        const raw = await runPromptAndCollectAssistantText(session, buildHarnessPrompt(input, cwd), timeoutMs, options.onDelta);
+        const observed = await runPromptAndCollectAssistantText(
+          session,
+          buildHarnessPrompt(input, cwd),
+          timeoutMs,
+          options.onDelta,
+        );
         completed = true;
-        return parseHarnessResult(raw, input.envelope);
+        const result = parseHarnessResult(observed.text, input.envelope);
+        if (!browserVerificationRequired(input.envelope)) {
+          return {
+            ...result,
+            commandExecutions: observed.commandExecutions,
+          };
+        }
+        return {
+          ...result,
+          artifact: {
+            ...result.artifact,
+            runtimeCommandExecutions: observed.commandExecutions,
+            commandsRun: observed.commandExecutions,
+          },
+          commandExecutions: observed.commandExecutions,
+        };
       } finally {
         await cleanupPiSdkSession(session, { abort: !completed });
       }
@@ -280,13 +309,16 @@ async function runPromptAndCollectAssistantText(
   prompt: string,
   timeoutMs: number,
   onDelta?: (text: string) => void | Promise<void>,
-): Promise<string> {
+): Promise<{ text: string; commandExecutions: HarnessCommandExecution[] }> {
   let finalText = "";
   let lastStreamedText = "";
+  const pendingBashCommands = new Map<string, string>();
+  const commandExecutions: HarnessCommandExecution[] = [];
   let unsubscribe: (() => void) | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const done = new Promise<string>((resolve, reject) => {
     const listener = (event: unknown) => {
+      captureBashExecutionEvent(event, pendingBashCommands, commandExecutions);
       const text = assistantTextFromEvent(event);
       if (text) {
         finalText = text;
@@ -313,12 +345,47 @@ async function runPromptAndCollectAssistantText(
   try {
     const text = await Promise.race([promptAndDone, timeout]);
     if (!text.trim()) throw new Error("Pi SDK harness returned empty assistant text");
-    return text;
+    return { text, commandExecutions };
   } finally {
     if (timer) clearTimeout(timer);
     promptAndDone.catch(() => undefined);
     unsubscribe?.();
   }
+}
+
+function captureBashExecutionEvent(
+  event: unknown,
+  pendingBashCommands: Map<string, string>,
+  commandExecutions: HarnessCommandExecution[],
+): void {
+  if (!isRecord(event)) return;
+  const toolCallId = typeof event.toolCallId === "string" ? event.toolCallId : undefined;
+  if (!toolCallId) return;
+
+  if (event.type === "tool_execution_start" && event.toolName === "bash" && isRecord(event.args)) {
+    const command = typeof event.args.command === "string" ? event.args.command.trim() : "";
+    if (command) pendingBashCommands.set(toolCallId, command);
+    return;
+  }
+
+  if (event.type !== "tool_execution_end") return;
+  const command = pendingBashCommands.get(toolCallId);
+  if (!command) return;
+  const ok = event.isError !== true;
+  commandExecutions.push({
+    ref: command,
+    command,
+    status: ok ? "passed" : "failed",
+    ok,
+  });
+  pendingBashCommands.delete(toolCallId);
+}
+
+function browserVerificationRequired(envelope: AnyTaskEnvelope): boolean {
+  if (envelope.schemaVersion !== "southstar.task-envelope.v2") return false;
+  return envelope.evaluatorPipeline.evaluators.some((evaluator) => (
+    isRecord(evaluator.config) && evaluator.config.verificationMode === "browser_interaction"
+  ));
 }
 
 function parseHarnessResult(raw: string, envelope: AnyTaskEnvelope): HarnessRunResult {

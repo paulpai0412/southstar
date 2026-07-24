@@ -7,7 +7,7 @@ import {
   parseWorkflowCompositionPlanFromText,
   WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA,
 } from "../../src/v2/orchestration/llm-composer.ts";
-import { finalizeGoalDesignPackageV2 } from "../../src/v2/orchestration/goal-design.ts";
+import { finalizeGoalDesignPackageV3 } from "../../src/v2/orchestration/goal-design.ts";
 import { softwareGoalContract } from "./fixtures/goal-contract.ts";
 
 const GOAL_CONTRACT = softwareGoalContract();
@@ -144,6 +144,32 @@ test("LLM composer receives the host-selected default runtime profile binding", 
   assert.equal(plan.generatedComponentProposals[0]?.agentProfile?.model, "gpt-5.3-codex");
 });
 
+test("LLM composer receives authoritative runtime capabilities for generated profiles", async () => {
+  const prompts: string[] = [];
+  const composer = new LlmWorkflowComposer({
+    model: "test-model",
+    runtimeBindingCapabilities: {
+      images: ["southstar/pi-agent:local"],
+    },
+    client: {
+      async generateText(input) {
+        prompts.push(input.prompt);
+        return JSON.stringify(validPlan());
+      },
+    },
+  });
+
+  await composer.compose({
+    goalPrompt: "implement calc sum",
+    goalContract: GOAL_CONTRACT,
+    candidatePacket: candidatePacket(),
+  });
+
+  assert.match(prompts[0] ?? "", /RuntimeBindingCapabilities \(authoritative\)/);
+  assert.match(prompts[0] ?? "", /"images":\["southstar\/pi-agent:local"\]/);
+  assert.match(prompts[0] ?? "", /execution\.image must be an exact value from RuntimeBindingCapabilities\.images/i);
+});
+
 test("LLM composer applies an explicit packet budget without dropping graph metadata", async () => {
   const prompts: string[] = [];
   const composer = new LlmWorkflowComposer({
@@ -186,7 +212,7 @@ test("LLM composer prompt forbids using Goal Design skill refs as DAG primitives
     goalPrompt: "implement calc sum",
     goalContract: GOAL_CONTRACT,
     candidatePacket: candidatePacket(),
-    goalDesignPackage: goalDesignPackageV2(),
+    goalDesignPackage: goalDesignPackageV3(),
   });
 
   assert.match(prompts[0] ?? "", /ForbiddenGoalDesignRefs:/);
@@ -197,7 +223,7 @@ test("LLM composer prompt forbids using Goal Design skill refs as DAG primitives
   assert.match(prompts[0] ?? "", /GoalDesignPackage is a planning constraint, not a selectable Library primitive/i);
 });
 
-test("LLM composer freezes V2 validation binding evaluator and artifact refs", async () => {
+test("LLM composer freezes V3 Criterion validation binding evaluator and artifact refs", async () => {
   const prompts: string[] = [];
   const composer = new LlmWorkflowComposer({
     model: "test-model",
@@ -209,7 +235,7 @@ test("LLM composer freezes V2 validation binding evaluator and artifact refs", a
       },
     },
   });
-  const goalDesignPackage = goalDesignPackageV2();
+  const goalDesignPackage = goalDesignPackageV3();
 
   await composer.compose({
     goalPrompt: "implement calc sum",
@@ -219,8 +245,13 @@ test("LLM composer freezes V2 validation binding evaluator and artifact refs", a
   });
 
   assert.match(prompts[0] ?? "", /FrozenValidationBindings are authoritative and immutable/i);
-  assert.match(prompts[0] ?? "", new RegExp(goalDesignPackage.validationBindings[0]!.evaluatorProfileRef));
-  assert.match(prompts[0] ?? "", new RegExp(goalDesignPackage.validationBindings[0]!.evaluatorProfileVersionRef));
+  assert.match(prompts[0] ?? "", /frozen Criterion binding/i);
+  assert.match(prompts[0] ?? "", /matching frozen artifactContractRef/i);
+  assert.match(prompts[0] ?? "", /producer task must emit.*frozen artifactContractRef/i);
+  assert.match(prompts[0] ?? "", /preserve Criterion granularity in nodePromptSpec/i);
+  assert.match(prompts[0] ?? "", /required assurance.*procedure.*expected evidence kinds/i);
+  assert.match(prompts[0] ?? "", new RegExp(goalDesignPackage.validationBindings[0]!.criterionBindings[0]!.evaluatorProfileRef));
+  assert.match(prompts[0] ?? "", new RegExp(goalDesignPackage.validationBindings[0]!.criterionBindings[0]!.evaluatorProfileVersionRef));
   assert.match(prompts[0] ?? "", /Do not use a validation binding id as evaluatorProfileRef/i);
   assert.match(prompts[0] ?? "", /do not replace or invent evaluator profile or artifact refs/i);
 });
@@ -663,34 +694,31 @@ function candidatePacket(): CandidatePacket {
   };
 }
 
-function goalDesignPackageV2() {
+function goalDesignPackageV3() {
   const requirement = GOAL_CONTRACT.requirements[0]!;
   const artifactRef = GOAL_CONTRACT.expectedArtifactRefs[0]!;
   const bindingId = "binding.main";
-  return finalizeGoalDesignPackageV2({
-    schemaVersion: "southstar.goal_design_package.v2",
+  return finalizeGoalDesignPackageV3({
+    schemaVersion: "southstar.goal_design_package.v3",
     revision: 1,
     goalContract: GOAL_CONTRACT,
     requirementDraftHash: "confirmed-requirement-draft-hash",
     validationBindings: [{
-      schemaVersion: "southstar.requirement_validation_binding.v1",
+      schemaVersion: "southstar.requirement_validation_binding.v3",
       id: bindingId,
       requirementId: requirement.id,
-      criterionIds: ["criterion-main"],
-      acceptanceCriteria: [...requirement.acceptanceCriteria],
-      artifactContractRefs: [artifactRef],
-      artifactContractVersionRefs: [`${artifactRef}@v2`],
-      evaluatorProfileRef: "evaluator.frozen-main",
-      evaluatorProfileVersionRef: "evaluator.frozen-main@v3",
-      verificationMode: "deterministic",
-      criterionChecks: [{
-        criterionId: "criterion-main",
+      criterionBindings: requirement.acceptanceCriteria.map((criterion) => ({
+        criterionContract: { ...criterion },
+        artifactContractRef: artifactRef,
+        artifactContractVersionRef: `${artifactRef}@v2`,
+        evaluatorProfileRef: "evaluator.frozen-main",
+        evaluatorProfileVersionRef: "evaluator.frozen-main@v3",
+        verificationMode: criterion.requiredAssurance[0]!,
         procedureRef: "procedure.run-tests",
-        expectedEvidenceKinds: ["test_result"],
-      }],
-      requiredEvidenceKinds: ["test_result"],
-      independence: "independent",
-      failureClassifications: ["implementation_gap"],
+        expectedEvidenceKinds: ["test-result"],
+        independence: "independent" as const,
+        failureClassifications: ["implementation_gap"],
+      })),
     }],
     slicePlan: {
       schemaVersion: "southstar.goal_slice_plan.v1",

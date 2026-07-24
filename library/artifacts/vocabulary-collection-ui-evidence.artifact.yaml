@@ -1,0 +1,33 @@
+schemaVersion: southstar.library.artifact_contract_file.v1
+id: artifact.vocabulary-collection-ui-evidence
+title: "Vocabulary Collection UI Evidence"
+scope: "software"
+status: approved
+semanticTags:
+  - "vocabulary"
+  - "word-list"
+  - "data-entry"
+artifactType: "vocabulary_collection_state"
+mediaTypes:
+  - "application/json"
+  - "image/png"
+evidenceKinds:
+  - "screenshot"
+  - "url"
+validationRules:
+  - "must capture a persisted vocabulary collection snapshot after a create-entry action"
+  - "must include evidence for both submission interaction and resulting collection visibility"
+  - "must include required-field validation outcomes when submission is rejected"
+schemaRef: "southstar.artifact.vocabulary_collection_state.v1"
+requiredFields:
+  - "collectionSnapshot"
+  - "entryMutation"
+  - "validationFeedback"
+  - "evidence"
+provenanceRequirements:
+  - "derived-from-browser-interaction"
+  - "captures-post-action-ui-state"
+  - "includes-reachable-url-evidence"
+importDraftId: "library-import-goal-db33926089a81a581304cec756cb3ca2"
+importCandidateKey: "artifact.vocabulary-collection-ui-evidence"
+importSourcePath: "Confirmed-Goal-validation-gaps.md"

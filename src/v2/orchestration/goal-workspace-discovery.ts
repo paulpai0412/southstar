@@ -40,12 +40,21 @@ export async function discoverGoalWorkspace(
   let bytes = 0;
   let truncated = false;
 
-  async function addPath(absolutePath: string): Promise<void> {
+  async function addPath(absolutePath: string, rootPath = false): Promise<void> {
     if (entries.length >= maxEntries) {
       truncated = true;
       return;
     }
-    const info = await lstat(absolutePath);
+    let info;
+    try {
+      info = await lstat(absolutePath);
+    } catch (error) {
+      if (!rootPath && skippableDiscoveryError(error)) {
+        truncated = true;
+        return;
+      }
+      throw error;
+    }
     if (info.isSymbolicLink()) return;
     const rel = toRelative(root, absolutePath);
     if (rel && secretLooking(rel)) return;
@@ -53,12 +62,30 @@ export async function discoverGoalWorkspace(
       const name = basename(absolutePath);
       if (SKIP_DIRS.has(name)) return;
       if (rel) entries.push({ path: rel, kind: "directory" });
-      const children = (await readdir(absolutePath)).sort();
+      let children: string[];
+      try {
+        children = (await readdir(absolutePath)).sort();
+      } catch (error) {
+        if (!rootPath && skippableDiscoveryError(error)) {
+          truncated = true;
+          return;
+        }
+        throw error;
+      }
       for (const child of children) await addPath(join(absolutePath, child));
       return;
     }
     if (!info.isFile()) return;
-    const documentBytes = await readFile(absolutePath);
+    let documentBytes: Buffer;
+    try {
+      documentBytes = await readFile(absolutePath);
+    } catch (error) {
+      if (!rootPath && skippableDiscoveryError(error)) {
+        truncated = true;
+        return;
+      }
+      throw error;
+    }
     if (documentBytes.includes(0)) return;
     const entry = {
       path: rel,
@@ -81,7 +108,7 @@ export async function discoverGoalWorkspace(
     if (PROJECT_FILES.has(name)) projectMetadata.push(document);
   }
 
-  await addPath(root);
+  await addPath(root, true);
   const snapshot = {
     schemaVersion: "southstar.workspace_goal_discovery.v1" as const,
     cwd: root,
@@ -94,6 +121,11 @@ export async function discoverGoalWorkspace(
     ...snapshot,
     discoveryHash: contentHashForPayload(snapshot),
   };
+}
+
+function skippableDiscoveryError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return code === "EACCES" || code === "EPERM" || code === "ENOENT";
 }
 
 function toRelative(root: string, absolutePath: string): string {

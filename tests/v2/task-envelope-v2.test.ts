@@ -14,6 +14,18 @@ test("TaskEnvelopeV2 carries resolved runtime inputs and renders prompt from Con
     evidenceKinds: ["command-output", "test-result", "url", "screenshot", "artifact-ref"],
   }];
   const evaluatorPipeline = softwareFeatureQualityPipeline();
+  evaluatorPipeline.evaluators = [{
+    id: "browser-criterion",
+    kind: "checker-agent",
+    required: true,
+    config: {
+      criterionId: "criterion-quiz",
+      acceptanceCriterion: "The quiz flow works in the browser.",
+      verificationMode: "browser_interaction",
+      instruction: "Open the rendered app and complete the frozen user journey.",
+      expectedEvidenceKinds: ["command-output", "screenshot"],
+    },
+  }];
   const envelope = buildTaskEnvelopeV2({
     runId: "run-env2",
     workflowId: "wf-env2",
@@ -96,6 +108,12 @@ test("TaskEnvelopeV2 carries resolved runtime inputs and renders prompt from Con
   assert.match(envelope.agentPrompt, /A cited URL record must include/);
   assert.match(envelope.agentPrompt, /A cited screenshot record must include/);
   assert.match(envelope.agentPrompt, /A cited artifact-ref record must include/);
+  assert.match(envelope.agentPrompt, /Procedure: Open the rendered app and complete the frozen user journey\./);
+  assert.match(envelope.agentPrompt, /execute direct playwright-cli commands in this runtime/);
+  assert.match(envelope.agentPrompt, /reported-only or shell-chained commands do not count/);
+  assert.match(envelope.agentPrompt, /Run each playwright-cli command as its own direct bash tool call/);
+  assert.match(envelope.agentPrompt, /playwright-cli open <url> --browser chromium/);
+  assert.match(envelope.agentPrompt, /screenshot evidence requires a successful playwright-cli screenshot command/);
   assert.doesNotMatch(JSON.stringify(envelope), /do-not-leak/);
 });
 

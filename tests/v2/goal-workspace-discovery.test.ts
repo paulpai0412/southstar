@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -62,6 +62,26 @@ test("workspace discovery marks truncation when limits are reached", async () =>
     assert.equal(discovery.truncated, true);
     assert.equal(discovery.entries.length, 1);
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("workspace discovery skips unreadable descendants and records an incomplete snapshot", async () => {
+  const root = await mkdtemp(join(tmpdir(), "southstar-goal-discovery-"));
+  const privateDir = join(root, "private");
+  try {
+    await writeFile(join(root, "AGENTS.md"), "# Instructions\n\nReadable.");
+    await mkdir(privateDir);
+    await writeFile(join(privateDir, "hidden.txt"), "must not be discovered");
+    await chmod(privateDir, 0o000);
+
+    const discovery = await discoverGoalWorkspace(root);
+
+    assert.equal(discovery.truncated, true);
+    assert.equal(discovery.entries.some((entry) => entry.path === "private/hidden.txt"), false);
+    assert.equal(discovery.instructionDocuments[0]?.path, "AGENTS.md");
+  } finally {
+    await chmod(privateDir, 0o700).catch(() => undefined);
     await rm(root, { recursive: true, force: true });
   }
 });

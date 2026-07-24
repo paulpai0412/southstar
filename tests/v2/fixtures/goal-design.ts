@@ -2,8 +2,8 @@ import { createHash } from "node:crypto";
 import type { SouthstarDb } from "../../../src/v2/db/postgres.ts";
 import { contentHashForPayload } from "../../../src/v2/design-library/canonical-json.ts";
 import {
-  finalizeGoalDesignPackageV2,
-  type GoalDesignPackageV2,
+  finalizeGoalDesignPackageV3,
+  type GoalDesignPackageV3,
 } from "../../../src/v2/orchestration/goal-design.ts";
 import { goalContractHash, type GoalContractV1 } from "../../../src/v2/orchestration/goal-contract.ts";
 import { upsertRuntimeResourcePg } from "../../../src/v2/stores/postgres-runtime-store.ts";
@@ -12,7 +12,7 @@ export interface CanonicalGoalDesignLineageFixture {
   draftId: string;
   goalContract: GoalContractV1;
   goalContractHash: string;
-  goalDesignPackage: GoalDesignPackageV2;
+  goalDesignPackage: GoalDesignPackageV3;
   runtimeContext: {
     draftId: string;
     goalContractHash: string;
@@ -26,7 +26,7 @@ export function canonicalNonBlockingGoalDesignLineageFixture(
   cwd = "/workspace",
 ): CanonicalGoalDesignLineageFixture {
   const goalContract: GoalContractV1 = {
-    schemaVersion: "southstar.goal_contract.v1",
+    schemaVersion: "southstar.goal_contract.v2",
     originalPrompt,
     promptHash: createHash("sha256").update(originalPrompt).digest("hex"),
     revision: 1,
@@ -38,7 +38,14 @@ export function canonicalNonBlockingGoalDesignLineageFixture(
     requirements: [{
       id: "req-runtime-fixture",
       statement: originalPrompt,
-      acceptanceCriteria: ["The runtime behavior under test is observed."],
+      acceptanceCriteria: [{
+        id: "criterion-runtime-fixture",
+        version: 1,
+        observableClaim: "The runtime behavior under test is observed.",
+        blocking: false,
+        verificationIntent: ["Observe the runtime behavior under test."],
+        requiredAssurance: ["deterministic"],
+      }],
       blocking: false,
       source: "explicit",
       expectedArtifacts: [],
@@ -100,33 +107,39 @@ export async function persistCanonicalGoalDesignLineageFixture(
 export function canonicalGoalDesignPackageFixture(
   goalContract: GoalContractV1,
   requirementDraftHash = contentHashForPayload({ goalContract }),
-): GoalDesignPackageV2 {
-  const requirements = goalContract.requirements.filter((requirement) => requirement.blocking);
+  options: {
+    artifactContractRef?: string;
+    artifactContractVersionRef?: string;
+    evaluatorProfileRef?: string;
+    evaluatorProfileVersionRef?: string;
+    procedureRef?: string;
+    expectedEvidenceKinds?: Array<"file-diff" | "test-result" | "command-output" | "url" | "screenshot" | "human-approval" | "artifact-ref" | "workspace-snapshot" | "policy-decision">;
+  } = {},
+): GoalDesignPackageV3 {
+  const requirements = goalContract.requirements.filter((requirement) => (
+    requirement.acceptanceCriteria.some((criterion) => criterion.blocking)
+  ));
   const validationBindings = requirements.map((requirement, requirementIndex) => {
-    const criterionIds = requirement.acceptanceCriteria.map((_, criterionIndex) =>
-      `criterion-${requirementIndex + 1}-${criterionIndex + 1}`
-    );
-    const artifactRef = "artifact.implementation_report";
-    const evaluatorRef = "evaluator.software-feature-quality";
+    const artifactRef = options.artifactContractRef ?? "artifact.implementation_report";
+    const evaluatorRef = options.evaluatorProfileRef ?? "evaluator.software-feature-quality";
+    const artifactVersionRef = options.artifactContractVersionRef ?? `${artifactRef}@test`;
+    const evaluatorVersionRef = options.evaluatorProfileVersionRef ?? `${evaluatorRef}@test`;
     return {
-      schemaVersion: "southstar.requirement_validation_binding.v1" as const,
+      schemaVersion: "southstar.requirement_validation_binding.v3" as const,
       id: `binding-${requirementIndex + 1}`,
       requirementId: requirement.id,
-      criterionIds,
-      acceptanceCriteria: [...requirement.acceptanceCriteria],
-      artifactContractRefs: [artifactRef],
-      artifactContractVersionRefs: [`${artifactRef}@test`],
-      evaluatorProfileRef: evaluatorRef,
-      evaluatorProfileVersionRef: `${evaluatorRef}@test`,
-      verificationMode: "deterministic" as const,
-      criterionChecks: criterionIds.map((criterionId) => ({
-        criterionId,
-        procedureRef: "procedure.test",
-        expectedEvidenceKinds: ["test-result"],
+      criterionBindings: requirement.acceptanceCriteria.map((criterion) => ({
+        criterionContract: { ...criterion },
+        artifactContractRef: artifactRef,
+        artifactContractVersionRef: artifactVersionRef,
+        evaluatorProfileRef: evaluatorRef,
+        evaluatorProfileVersionRef: evaluatorVersionRef,
+        verificationMode: criterion.requiredAssurance[0]!,
+        procedureRef: options.procedureRef ?? "procedure.test",
+        expectedEvidenceKinds: options.expectedEvidenceKinds ?? ["test-result"],
+        independence: "independent" as const,
+        failureClassifications: ["implementation_gap"],
       })),
-      requiredEvidenceKinds: ["test-result"],
-      independence: "independent" as const,
-      failureClassifications: ["implementation_gap"],
     };
   });
   const slices = validationBindings.map((binding, index) => {
@@ -135,16 +148,16 @@ export function canonicalGoalDesignPackageFixture(
       id: `slice-${index + 1}`,
       requirementIds: [requirement.id],
       outcome: requirement.statement,
-      stateOrArtifactOwner: binding.artifactContractRefs[0]!,
+      stateOrArtifactOwner: binding.criterionBindings[0]!.artifactContractRef,
       mutationBoundary: `requirement ${requirement.id}`,
-      expectedArtifactRefs: [...binding.artifactContractRefs],
+      expectedArtifactRefs: [...new Set(binding.criterionBindings.map((item) => item.artifactContractRef))],
       evaluatorContractRefs: [binding.id],
       dependsOnSliceIds: [],
       dependencyArtifactRefs: [],
     };
   });
-  return finalizeGoalDesignPackageV2({
-    schemaVersion: "southstar.goal_design_package.v2",
+  return finalizeGoalDesignPackageV3({
+    schemaVersion: "southstar.goal_design_package.v3",
     revision: 1,
     goalContract,
     requirementDraftHash,

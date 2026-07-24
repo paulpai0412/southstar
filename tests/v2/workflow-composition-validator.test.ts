@@ -10,7 +10,7 @@ import {
 } from "../../src/v2/orchestration/goal-requirement-coverage.ts";
 import { requirementSpecFromGoalContract, type GoalContractV1 } from "../../src/v2/orchestration/goal-contract.ts";
 import {
-  finalizeGoalDesignPackageV2,
+  finalizeGoalDesignPackageV3,
 } from "../../src/v2/orchestration/goal-design.ts";
 import { classifyWorkflowCompositionTask } from "../../src/v2/orchestration/workflow-node-classifier.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
@@ -18,7 +18,11 @@ import { articleGoalContract, softwareGoalContract, subscriptionGoalContract } f
 
 test("stored Goal Requirement Coverage parser rejects malformed persisted projections", () => {
   const contract = softwareGoalContract();
-  const coverage = buildGoalRequirementCoverage({ goalContract: contract, composition: validComposition() });
+  const coverage = buildGoalRequirementCoverage({
+    goalContract: contract,
+    composition: validComposition(contract),
+    goalDesignPackage: validGoalDesignPackageV3(contract),
+  });
 
   assert.deepEqual(storedGoalRequirementCoverage(coverage), coverage);
   assert.equal(storedGoalRequirementCoverage({
@@ -76,7 +80,7 @@ test("composer tasks must belong to the authoritative Slice Plan", async () => {
 
     const validation = await validateWorkflowCompositionPlan(db, packet, plan, {
       goalContract,
-      goalDesignPackage: validGoalDesignPackageV2(goalContract),
+      goalDesignPackage: validGoalDesignPackageV3(goalContract),
     });
 
     assert.equal(validation.ok, false);
@@ -95,9 +99,9 @@ test("composer verify and review tasks cannot replace a frozen V2 evaluator prof
       requirementSpec: requirementSpecFromGoalContract(goalContract),
       scope: "software",
     });
-    const packageValue = validGoalDesignPackageV2(goalContract);
+    const packageValue = validGoalDesignPackageV3(goalContract);
     const plan = validComposition(goalContract);
-    for (const taskValue of plan.tasks) taskValue.sliceId = "slice-main";
+    for (const taskValue of plan.tasks) taskValue.sliceId = "slice-1";
     plan.tasks.find((taskValue) => taskValue.id === "verify-feature")!.evaluatorProfileRef = "evaluator.software-feature-quality";
 
     const validation = await validateWorkflowCompositionPlan(db, packet, plan, {
@@ -292,20 +296,33 @@ test("coverage maps every blocking requirement to producer and independent evalu
   const coverage = buildGoalRequirementCoverage({
     goalContract,
     composition: articleCompositionWithRequirementIds(goalContract),
+    goalDesignPackage: validGoalDesignPackageV3(goalContract),
   });
 
   assert.deepEqual(coverage.entries[0], {
     requirementId: goalContract.requirements[0]!.id,
     producerTaskIds: ["task-build-article"],
     artifactRefs: ["artifact.article_html"],
-    artifactContractRefs: [],
+    artifactContractRefs: ["artifact.article_html"],
     evaluatorTaskIds: ["task-verify-article"],
-    evaluatorProfileRefs: ["evaluator.article-browser-quality"],
-    evaluatorProfileVersionRefs: [],
-    validationBindingId: undefined,
-    criterionIds: [],
-    acceptanceCriteria: [],
-    requiredEvidenceKinds: ["artifact-ref", "screenshot", "url"],
+    evaluatorProfileRefs: ["evaluator.software-verification-quality"],
+    evaluatorProfileVersionRefs: ["evaluator.software-verification-quality@test"],
+    validationBindingId: "binding-1",
+    criterionBindings: [{
+      criterionId: goalContract.requirements[0]!.acceptanceCriteria[0]!.id,
+      criterionVersion: goalContract.requirements[0]!.acceptanceCriteria[0]!.version,
+      blocking: true,
+      artifactContractRef: "artifact.article_html",
+      artifactContractVersionRef: "artifact.article_html@test",
+      evaluatorProfileRef: "evaluator.software-verification-quality",
+      evaluatorProfileVersionRef: "evaluator.software-verification-quality@test",
+      verificationMode: goalContract.requirements[0]!.acceptanceCriteria[0]!.requiredAssurance[0],
+      procedureRef: "procedure.run-tests",
+      expectedEvidenceKinds: ["test-result"],
+    }],
+    criterionIds: [goalContract.requirements[0]!.acceptanceCriteria[0]!.id],
+    acceptanceCriteria: [goalContract.requirements[0]!.acceptanceCriteria[0]!.observableClaim],
+    requiredEvidenceKinds: ["test-result"],
   });
 });
 
@@ -336,7 +353,7 @@ test("coverage rejects a producer as its only evaluator", async () => {
       db,
       packet,
       selfEvaluatingComposition(goalContract),
-      { scope: "software", goalContract },
+      { scope: "software", goalContract, goalDesignPackage: validGoalDesignPackageV3(goalContract) },
     );
 
     assert.equal(validation.ok, false);
@@ -380,6 +397,7 @@ test("coverage rejects an evaluator that can only reach a producer transitively"
     const validation = await validateWorkflowCompositionPlan(db, packet, composition, {
       scope: "software",
       goalContract,
+      goalDesignPackage: validGoalDesignPackageV3(goalContract),
     });
 
     assert.equal(
@@ -410,6 +428,7 @@ test("coverage does not exempt implementation work merely because its name says 
     const validation = await validateWorkflowCompositionPlan(db, packet, composition, {
       scope: "software",
       goalContract,
+      goalDesignPackage: validGoalDesignPackageV3(goalContract),
     });
 
     assert.equal(
@@ -447,6 +466,7 @@ test("coverage exempts only an explicit general coordination slot", async () => 
     const validation = await validateWorkflowCompositionPlan(db, packet, composition, {
       scope: "software",
       goalContract,
+      goalDesignPackage: validGoalDesignPackageV3(goalContract),
     });
 
     assert.equal(
@@ -464,7 +484,11 @@ test("coverage exempts only an explicit general coordination slot", async () => 
 test("compound requirements form parallel producer branches and a dependent verification wave", () => {
   const goalContract = subscriptionGoalContract();
   const composition = subscriptionCompositionWithRequirementIds(goalContract);
-  const coverage = buildGoalRequirementCoverage({ goalContract, composition });
+  const coverage = buildGoalRequirementCoverage({
+    goalContract,
+    composition,
+    goalDesignPackage: validGoalDesignPackageV3(goalContract),
+  });
   const producerTasks = composition.tasks.filter((task) => task.nodePromptSpec?.nodeType === "implement");
   const verifier = composition.tasks.find((task) => task.id === "task-verify-subscription");
 
@@ -492,7 +516,11 @@ test("planning artifacts do not count as observable outcome producers", () => {
   };
   composition.tasks.unshift(planTask);
 
-  const coverage = buildGoalRequirementCoverage({ goalContract, composition });
+  const coverage = buildGoalRequirementCoverage({
+    goalContract,
+    composition,
+    goalDesignPackage: validGoalDesignPackageV3(goalContract),
+  });
 
   assert.equal(coverage.entries.every((entry) => !entry.producerTaskIds.includes(planTask.id)), true);
 });
@@ -511,7 +539,11 @@ test("producer dependencies require declared upstream artifact flow", async () =
     producers[1]!.dependsOn = [producers[0]!.id];
     producers[1]!.inputArtifactRefs = [];
 
-    const validation = await validateWorkflowCompositionPlan(db, packet, composition, { scope: "software", goalContract });
+    const validation = await validateWorkflowCompositionPlan(db, packet, composition, {
+      scope: "software",
+      goalContract,
+      goalDesignPackage: validGoalDesignPackageV3(goalContract),
+    });
 
     assert.equal(validation.issues.some((issue) => issue.code === "producer_dependency_without_artifact_flow"), true);
   } finally {
@@ -534,6 +566,7 @@ test("target requirement scope rejects empty, unknown, and out-of-scope requirem
     const emptyScope = await validateWorkflowCompositionPlan(db, packet, composition, {
       scope: "software",
       goalContract,
+      goalDesignPackage: validGoalDesignPackageV3(goalContract),
       targetRequirementIds: [],
     });
     assert.equal(emptyScope.issues.some((issue) => issue.code === "target_requirement_scope_empty"), true);
@@ -541,6 +574,7 @@ test("target requirement scope rejects empty, unknown, and out-of-scope requirem
     const unknownScope = await validateWorkflowCompositionPlan(db, packet, composition, {
       scope: "software",
       goalContract,
+      goalDesignPackage: validGoalDesignPackageV3(goalContract),
       targetRequirementIds: ["requirement.unknown"],
     });
     assert.equal(unknownScope.issues.some((issue) => issue.code === "unknown_target_requirement_id"), true);
@@ -548,6 +582,7 @@ test("target requirement scope rejects empty, unknown, and out-of-scope requirem
     const billingScope = await validateWorkflowCompositionPlan(db, packet, composition, {
       scope: "software",
       goalContract,
+      goalDesignPackage: validGoalDesignPackageV3(goalContract),
       targetRequirementIds: [billingRequirementId],
     });
     assert.equal(billingScope.issues.some((issue) => issue.code === "requirement_outside_target_scope"), true);
@@ -575,17 +610,48 @@ test("validator reports unknown and incomplete blocking requirement coverage", a
     const validation = await validateWorkflowCompositionPlan(db, packet, composition, {
       scope: "software",
       goalContract,
+      goalDesignPackage: validGoalDesignPackageV3(goalContract),
     });
 
     for (const code of [
       "unknown_requirement_id",
-      "requirement_missing_artifact",
-      "requirement_missing_evaluator",
-      "requirement_missing_evidence",
+    "requirement_missing_artifact",
+    "requirement_missing_evaluator",
       "task_without_requirement_coverage",
     ]) {
       assert.equal(validation.issues.some((issue) => issue.code === code), true, `missing ${code}`);
     }
+  } finally {
+    await db.close();
+  }
+});
+
+test("validator rejects a producer that does not emit the frozen Criterion artifact contract", async () => {
+  const db = await createTestPostgresDb();
+  const goalContract = softwareGoalContract();
+  try {
+    await seedSoftwareLibraryGraph(db);
+    const packet = await resolveWorkflowCandidates(db, {
+      requirementSpec: requirementSpecFromGoalContract(goalContract),
+      scope: "software",
+    });
+    const goalDesignPackage = validGoalDesignPackageV3(goalContract);
+    goalDesignPackage.validationBindings[0]!.criterionBindings[0]!.artifactContractRef = "artifact.verification_report";
+    goalDesignPackage.validationBindings[0]!.criterionBindings[0]!.artifactContractVersionRef = "artifact.verification_report@v1";
+
+    const validation = await validateWorkflowCompositionPlan(db, packet, validComposition(goalContract), {
+      scope: "software",
+      goalContract,
+      goalDesignPackage,
+    });
+
+    assert.equal(
+      validation.issues.some((issue) => (
+        issue.code === "requirement_missing_artifact"
+        && issue.message.includes("frozen Criterion artifact contract")
+      )),
+      true,
+    );
   } finally {
     await db.close();
   }
@@ -678,54 +744,61 @@ function validComposition(goalContract = softwareGoalContract()): WorkflowCompos
   };
 }
 
-function validGoalDesignPackageV2(goalContract: GoalContractV1) {
-  const requirement = goalContract.requirements[0]!;
+function validGoalDesignPackageV3(goalContract: GoalContractV1) {
   const artifactRefs = goalContract.expectedArtifactRefs;
-  return finalizeGoalDesignPackageV2({
-    schemaVersion: "southstar.goal_design_package.v2",
+  const requirements = goalContract.requirements.filter((requirement) => (
+    requirement.acceptanceCriteria.some((criterion) => criterion.blocking)
+  ));
+  const validationBindings = requirements.map((requirement, requirementIndex) => ({
+    schemaVersion: "southstar.requirement_validation_binding.v3" as const,
+    id: `binding-${requirementIndex + 1}`,
+    requirementId: requirement.id,
+    criterionBindings: requirement.acceptanceCriteria.map((criterion, criterionIndex) => {
+      const artifactRef = artifactRefs[requirementIndex] ?? artifactRefs[criterionIndex] ?? artifactRefs[0]!;
+      return {
+        criterionContract: { ...criterion },
+        artifactContractRef: artifactRef,
+        artifactContractVersionRef: `${artifactRef}@test`,
+        evaluatorProfileRef: "evaluator.software-verification-quality",
+        evaluatorProfileVersionRef: "evaluator.software-verification-quality@test",
+        verificationMode: criterion.requiredAssurance[0]!,
+        procedureRef: "procedure.run-tests",
+        expectedEvidenceKinds: ["test-result"],
+        independence: "independent" as const,
+        failureClassifications: ["implementation_gap"],
+      };
+    }),
+  }));
+  return finalizeGoalDesignPackageV3({
+    schemaVersion: "southstar.goal_design_package.v3",
     revision: 1,
     goalContract,
     requirementDraftHash: "confirmed-requirement-draft-hash",
-    validationBindings: [{
-      schemaVersion: "southstar.requirement_validation_binding.v1",
-      id: "binding-main",
-      requirementId: requirement.id,
-      criterionIds: ["criterion-main"],
-      acceptanceCriteria: [...requirement.acceptanceCriteria],
-      artifactContractRefs: artifactRefs,
-      artifactContractVersionRefs: artifactRefs.map((ref) => `${ref}@test`),
-      evaluatorProfileRef: "evaluator.software-verification-quality",
-      evaluatorProfileVersionRef: "evaluator.software-verification-quality@test",
-      verificationMode: "deterministic",
-      criterionChecks: [{
-        criterionId: "criterion-main",
-        procedureRef: "procedure.run-tests",
-        expectedEvidenceKinds: ["test_result"],
-      }],
-      requiredEvidenceKinds: ["test_result"],
-      independence: "independent",
-      failureClassifications: ["implementation_gap"],
-    }],
+    validationBindings,
     slicePlan: {
       schemaVersion: "southstar.goal_slice_plan.v1",
       goalContractHash: "host-filled",
       revision: 1,
-      slices: [{
-        id: "slice-main",
-        requirementIds: [requirement.id],
-        outcome: goalContract.summary,
-        stateOrArtifactOwner: artifactRefs[0]!,
-        mutationBoundary: "single cohesive implementation boundary",
-        expectedArtifactRefs: artifactRefs,
-        evaluatorContractRefs: ["binding-main"],
-        dependsOnSliceIds: [],
-        dependencyArtifactRefs: [],
-      }],
+      slices: validationBindings.map((binding, index) => {
+        const requirement = requirements[index]!;
+        const expectedArtifactRefs = [...new Set(binding.criterionBindings.map((criterion) => criterion.artifactContractRef))];
+        return {
+          id: `slice-${index + 1}`,
+          requirementIds: [requirement.id],
+          outcome: requirement.statement,
+          stateOrArtifactOwner: expectedArtifactRefs[0]!,
+          mutationBoundary: `requirement ${requirement.id}`,
+          expectedArtifactRefs,
+          evaluatorContractRefs: [binding.id],
+          dependsOnSliceIds: [],
+          dependencyArtifactRefs: [],
+        };
+      }),
     },
     compositionStrategy: {
       mode: "single-run",
-      sliceIds: ["slice-main"],
-      rationale: "single requirement slice",
+      sliceIds: validationBindings.map((_, index) => `slice-${index + 1}`),
+      rationale: "one canonical validation boundary per blocking requirement",
     },
     templatePolicy: { mode: "auto" },
     goalDesignSkillRef: "skill.southstar-goal-design",

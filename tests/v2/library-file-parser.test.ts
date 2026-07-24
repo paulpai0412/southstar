@@ -36,6 +36,36 @@ Builds React interfaces.
   assert.deepEqual(parsed.file.frontmatter.capabilityRefs, ["capability.react-ui"]);
 });
 
+test("parses quoted array items that contain a colon", () => {
+  const artifact = parseLibraryFileContent({
+    path: "library/artifacts/colon-in-provenance.artifact.yaml",
+    content: `schemaVersion: southstar.library.artifact_contract_file.v1
+id: artifact.colon-in-provenance
+title: Colon in Provenance
+scope: software
+status: approved
+artifactType: evidence
+mediaTypes:
+  - application/json
+evidenceKinds:
+  - artifact-ref
+validationRules:
+  - rule.evidence
+schemaRef: schema.evidence.v1
+requiredFields:
+  - summary
+provenanceRequirements:
+  - "Preserve phase order: load, submit, reload"
+`,
+  });
+  assert.equal(artifact.ok, true);
+  if (!artifact.ok) throw new Error("expected artifact parse success");
+  assert.deepEqual(
+    artifact.file.frontmatter.provenanceRequirements,
+    ["Preserve phase order: load, submit, reload"],
+  );
+});
+
 test("parses tool yaml file", () => {
   const parsed = parseLibraryFileContent({
     path: "library/tools/workspace-write.tool.yaml",

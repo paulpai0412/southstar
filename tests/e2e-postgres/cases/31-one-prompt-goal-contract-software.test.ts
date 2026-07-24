@@ -71,7 +71,7 @@ test("31 one prompt goal contract: membership software goal completes with froze
     await syncCase31LibraryGraph(env.db);
     server = await createRealRuntimeServer({ db: env.db, infra });
 
-    const result = await api<RunGoalResult>(server.port, "/api/v2/run-goal", {
+    let result = await api<RunGoalResult>(server.port, "/api/v2/run-goal", {
       method: "POST",
       headers: { accept: "text/event-stream" },
       body: JSON.stringify({
@@ -81,6 +81,112 @@ test("31 one prompt goal contract: membership software goal completes with froze
         goalDesignMode: "auto_until_blocked",
       }),
     }, requests);
+    const usedCanonicalConfirmation = result.draftStatus === "requirements_review";
+    let usedCanonicalRequirementRevision = false;
+    if (usedCanonicalConfirmation) {
+      let staged = await getResourceByKeyPg(env.db, "planner_draft", result.draftId);
+      let stagedPayload = staged?.payload as Record<string, unknown> | undefined;
+      let stagedDraft = stagedPayload?.goalRequirementDraft as Record<string, unknown> | undefined;
+      let expectedDraftHash = typeof stagedPayload?.goalRequirementDraftHash === "string"
+        ? stagedPayload.goalRequirementDraftHash
+        : undefined;
+      assert.ok(expectedDraftHash, "requirements_review draft must persist goalRequirementDraftHash");
+      const blockingInputs = Array.isArray(stagedDraft?.blockingInputs)
+        ? stagedDraft.blockingInputs.filter((value): value is string => typeof value === "string")
+        : [];
+      const openQuestions = Array.isArray(stagedDraft?.requirements)
+        ? stagedDraft.requirements.flatMap((requirement) => {
+          if (!requirement || typeof requirement !== "object" || Array.isArray(requirement)) return [];
+          const questions = (requirement as Record<string, unknown>).openQuestions;
+          return Array.isArray(questions) ? questions.filter((value): value is string => typeof value === "string") : [];
+        })
+        : [];
+      if (blockingInputs.length > 0 || openQuestions.length > 0) {
+        usedCanonicalRequirementRevision = true;
+        checkpoint(`revising requirements blockers=${blockingInputs.length} openQuestions=${openQuestions.length}`);
+        const revision = await api<{ kind?: string; draftId?: string; goalRequirementDraftHash?: string }>(
+          server.port,
+          `/api/v2/planner/drafts/${encodeURIComponent(result.draftId)}/revise/stream`,
+          {
+            method: "POST",
+            headers: { accept: "text/event-stream" },
+            body: JSON.stringify({
+              prompt: [
+                "Resolve every currently listed Requirement clarification using these explicit user decisions:",
+                "- Scope is the current local repository workspace only.",
+                "- Use only the local payment ledger already present in the repository.",
+                "- Do not deploy, contact external services, charge external accounts, or use production credentials.",
+                "Apply these decisions without changing the user's goal or removing acceptance criteria. Return a revision with no remaining blockingInputs or openQuestions; do not ask a follow-up question.",
+              ].join("\n"),
+              expectedDraftHash,
+              selectedRequirementIds: Array.isArray(stagedDraft?.requirements)
+                ? stagedDraft.requirements.flatMap((requirement) => {
+                  if (!requirement || typeof requirement !== "object" || Array.isArray(requirement)) return [];
+                  const id = (requirement as Record<string, unknown>).id;
+                  return typeof id === "string" ? [id] : [];
+                })
+                : [],
+            }),
+          },
+          requests,
+        );
+        assert.notEqual(revision.kind, "needs_input", "Requirement revision unexpectedly requested another clarification");
+        staged = await getResourceByKeyPg(env.db, "planner_draft", result.draftId);
+        stagedPayload = staged?.payload as Record<string, unknown> | undefined;
+        stagedDraft = stagedPayload?.goalRequirementDraft as Record<string, unknown> | undefined;
+        expectedDraftHash = typeof stagedPayload?.goalRequirementDraftHash === "string"
+          ? stagedPayload.goalRequirementDraftHash
+          : undefined;
+        assert.ok(expectedDraftHash, "Requirement revision must persist a new goalRequirementDraftHash");
+        assert.deepEqual(stagedDraft?.blockingInputs, [], "Requirement revision must resolve blockingInputs");
+        assert.equal(
+          Array.isArray(stagedDraft?.requirements)
+            && stagedDraft.requirements.every((requirement) =>
+              requirement && typeof requirement === "object" && !Array.isArray(requirement)
+              && Array.isArray((requirement as Record<string, unknown>).openQuestions)
+              && ((requirement as Record<string, unknown>).openQuestions as unknown[]).length === 0
+            ),
+          true,
+          "Requirement revision must resolve openQuestions",
+        );
+      }
+      checkpoint("confirming requirements through SSE");
+      const confirmedRequirements = await api<{
+        status: string;
+        goalDesignPackageHash?: string;
+        goalDesignPackage?: unknown;
+        validationGaps?: unknown;
+        blockers?: unknown;
+      }>(server.port, `/api/v2/planner/drafts/${encodeURIComponent(result.draftId)}/confirm-requirements/stream`, {
+        method: "POST",
+        headers: { accept: "text/event-stream" },
+        body: JSON.stringify({ expectedDraftHash }),
+      }, requests);
+      if (confirmedRequirements.status !== "ready_for_review") {
+        const failedDraft = await getResourceByKeyPg(env.db, "planner_draft", result.draftId);
+        const failedPayload = failedDraft?.payload as Record<string, unknown> | undefined;
+        const failedSummary = failedDraft?.summary as Record<string, unknown> | undefined;
+        throw new Error(`Case31 requirement confirmation ${confirmedRequirements.status}: ${JSON.stringify({
+          draftId: result.draftId,
+          response: confirmedRequirements,
+          summaryStatus: failedSummary?.status,
+          summaryValidationIssues: failedSummary?.validationIssues,
+          validationGaps: (failedPayload?.goalValidationResolution as Record<string, unknown> | undefined)?.gaps,
+          goalRequirementDraft: failedPayload?.goalRequirementDraft,
+          libraryImportDraftId: failedPayload?.libraryImportDraftId,
+        }, null, 2)}`);
+      }
+      assert.equal(confirmedRequirements.status, "ready_for_review");
+      const expectedPackageHash = confirmedRequirements.goalDesignPackageHash
+        ?? (confirmedRequirements.goalDesignPackage as { packageHash?: unknown } | undefined)?.packageHash;
+      assert.equal(typeof expectedPackageHash, "string");
+      checkpoint("confirming goal design through SSE");
+      result = await api<RunGoalResult>(server.port, `/api/v2/planner/drafts/${encodeURIComponent(result.draftId)}/confirm-goal-design`, {
+        method: "POST",
+        headers: { accept: "text/event-stream" },
+        body: JSON.stringify({ expectedPackageHash }),
+      }, requests);
+    }
     if (result.draftStatus !== "validated") {
       const invalidDraft = await getResourceByKeyPg(env.db, "planner_draft", result.draftId);
       const payload = invalidDraft?.payload as Record<string, unknown> | undefined;
@@ -200,7 +306,14 @@ test("31 one prompt goal contract: membership software goal completes with froze
     assert.equal((outcome?.payload as Record<string, unknown>).schemaVersion, "southstar.goal_outcome.v1");
 
     assert.deepEqual(await loadRunLibrarySnapshotPg(env.db, runId), frozenSnapshot);
-    assert.deepEqual(requests, [{ method: "POST", path: "/api/v2/run-goal" }]);
+    assert.deepEqual(requests, [
+      { method: "POST", path: "/api/v2/run-goal" },
+      ...(usedCanonicalConfirmation ? [
+        ...(usedCanonicalRequirementRevision ? [{ method: "POST", path: `/api/v2/planner/drafts/${result.draftId}/revise/stream` }] : []),
+        { method: "POST", path: `/api/v2/planner/drafts/${result.draftId}/confirm-requirements/stream` },
+        { method: "POST", path: `/api/v2/planner/drafts/${result.draftId}/confirm-goal-design` },
+      ] : []),
+    ]);
     assert.equal(requests.some((request) => FORBIDDEN_INGRESS.has(request.path)), false);
     assert.equal(run.workflow_manifest_json.tasks.some((task) =>
       [...task.toolGrantRefs ?? [], ...task.vaultLeasePolicyRefs ?? []].some((ref) => /deploy|production|secret|vault|real.payment/i.test(ref))

@@ -1,0 +1,40 @@
+schemaVersion: southstar.library.evaluator_profile_file.v1
+id: evaluator.vocabulary-collection-ui-verifier
+title: "Vocabulary Collection UI Verifier"
+scope: "software"
+status: approved
+semanticTags:
+  - "vocabulary"
+  - "word-list"
+  - "data-entry"
+validatesArtifactRefs:
+  - "artifact.vocabulary-collection-ui-evidence"
+requiredInputs:
+  - "artifact.vocabulary-collection-ui-evidence"
+evidenceKinds:
+  - "screenshot"
+  - "url"
+verificationModes:
+  - "browser_interaction"
+  - "semantic_review"
+verificationProcedures:
+  - id: "verify-entry-persisted-and-visible"
+    checkKind: "browser_interaction"
+    instruction: "Confirm that a valid vocabulary submission is followed by immediate visibility of the new entry in the rendered collection at the captured URL."
+    allowedEvidenceKinds:
+      - "screenshot"
+      - "url"
+  - id: "verify-required-field-error-feedback"
+    checkKind: "semantic_review"
+    instruction: "Confirm that blank required inputs prevent submission and display understandable field-level validation feedback in UI evidence."
+    allowedEvidenceKinds:
+      - "screenshot"
+independencePolicy: "independent"
+resultSchemaRef: "southstar.requirement_evaluator_result.v2"
+failureClassifications:
+  - "missing-required-evidence"
+  - "entry-not-visible-after-submit"
+  - "missing-required-field-feedback"
+importDraftId: "library-import-goal-db33926089a81a581304cec756cb3ca2"
+importCandidateKey: "evaluator.vocabulary-collection-ui-verifier"
+importSourcePath: "Confirmed-Goal-validation-gaps.md"

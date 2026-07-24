@@ -79,7 +79,11 @@ test("workflow candidates exclude approved primitives that cannot materialize at
       objectKind: "skill_spec",
       status: "approved",
       headVersionId: "skill.placeholder-ui@1",
-      state: { scope: "engineering", title: "Placeholder UI" },
+      state: {
+        scope: "engineering",
+        title: "Placeholder UI",
+        body: "# Placeholder UI\n\nUse the review tool.",
+      },
     });
     await upsertLibraryObject(db, {
       objectKey: "skill.goal-design-sop",
@@ -267,12 +271,6 @@ async function seedGraph(db: Awaited<ReturnType<typeof createTestPostgresDb>>) {
     fromObjectKey: "skill.react-ui",
     edgeType: "requires_tool",
     toObjectKey: "tool.workspace-write",
-    scope: "engineering",
-  });
-  await upsertLibraryEdge(db, {
-    fromObjectKey: "skill.react-ui",
-    edgeType: "allows_mcp_grant",
-    toObjectKey: "mcp.filesystem-workspace",
     scope: "engineering",
   });
   await upsertLibraryObject(db, {
