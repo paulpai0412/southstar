@@ -551,7 +551,7 @@ async function nextDispatchAttemptId(db: SouthstarDb, runId: string, taskId: str
 async function claimRunnableTask(
   db: SouthstarDb,
   input: { runId: string; taskId: string; sessionId: string; maxParallelTasks: number; manifest: SouthstarWorkflowManifest },
-): Promise<"claimed" | "parallel-limit" | "status-changed" | "workspace-conflict"> {
+): Promise<"claimed" | "parallel-limit" | "status-changed" | "workspace-conflict" | "workspace-contract-missing"> {
   return await db.tx(async (tx) => {
     await tx.query("select id from southstar.workflow_runs where id = $1 for update", [input.runId]);
     const task = await tx.maybeOne<{ status: string }>(
@@ -584,7 +584,18 @@ async function claimRunnableTask(
         workspaceMutation: manifestTasks.get(row.id)?.workspaceMutation,
       })),
     );
-    if (!workspaceDecision.allowed) return "workspace-conflict";
+    if (!workspaceDecision.allowed) {
+      if (workspaceDecision.strategy === "missing_contract") {
+        await blockMissingWorkspaceContract(tx, {
+          runId: input.runId,
+          taskId: input.taskId,
+          sessionId: input.sessionId,
+          reason: workspaceDecision.reason ?? "workspaceMutation metadata is required",
+        });
+        return "workspace-contract-missing";
+      }
+      return "workspace-conflict";
+    }
 
     await tx.query(
       "update southstar.workflow_tasks set status = 'claimed', root_session_id = $1, updated_at = now() where run_id = $2 and id = $3",
@@ -675,12 +686,17 @@ async function latestProvisionedHandBinding(db: SouthstarDb, runId: string, task
   );
   if (!row) return null;
   const payload = asRecord(row.payload_json);
+  const providerId = stringValue(payload.providerId);
+  const handName = stringValue(payload.handName);
+  if (!providerId || !handName) {
+    throw new Error(`provisioned hand binding ${row.id} is missing providerId or handName`);
+  }
   return {
     id: row.id,
-    providerId: stringValue(payload.providerId) ?? "tork",
+    providerId,
     runId,
     taskId,
-    handName: stringValue(payload.handName) ?? "workspace",
+    handName,
     status: row.status as HandBinding["status"],
     createdAt: new Date(row.created_at).toISOString(),
     payload,
@@ -827,6 +843,29 @@ async function blockTaskDispatchPreparation(
     actorType: "orchestrator",
     idempotencyKey: `${input.recoveryKey}:dispatch-blocked`,
     payload: { reason: "tool_proxy_violation", error: input.errorMessage },
+  });
+}
+
+async function blockMissingWorkspaceContract(
+  db: SouthstarDb,
+  input: { runId: string; taskId: string; sessionId: string; reason: string },
+): Promise<void> {
+  await db.query(
+    "update southstar.workflow_tasks set status = 'blocked', updated_at = now(), completed_at = coalesce(completed_at, now()) where run_id = $1 and id = $2 and status = 'pending'",
+    [input.runId, input.taskId],
+  );
+  await appendHistoryEventOnce(db, {
+    runId: input.runId,
+    taskId: input.taskId,
+    sessionId: input.sessionId,
+    eventType: "task.contract_blocked",
+    actorType: "orchestrator",
+    idempotencyKey: `workspace-contract:${input.runId}:${input.taskId}`,
+    payload: {
+      contract: "workspaceMutation",
+      reason: input.reason,
+      migration: "legacy-contract-migration",
+    },
   });
 }
 

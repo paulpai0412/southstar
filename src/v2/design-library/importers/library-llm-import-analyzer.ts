@@ -752,11 +752,6 @@ function strictStringArray(value: unknown, label: string): string[] {
   return [...new Set(normalized)];
 }
 
-function stringArray(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((item) => typeof item === "string" && item.trim().length > 0 ? [item.trim()] : []);
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

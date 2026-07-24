@@ -6,7 +6,7 @@ export type WorkspaceTaskConcurrencyState = {
   workspaceMutation?: WorkspaceMutationSpec;
 };
 
-export type WorkspaceClaimStrategy = "parallel_read" | "parallel_append" | "parallel_isolated" | "serialized_write" | "legacy_unclassified";
+export type WorkspaceClaimStrategy = "parallel_read" | "parallel_append" | "parallel_isolated" | "serialized_write" | "missing_contract";
 
 export type WorkspaceClaimDecision = {
   allowed: boolean;
@@ -19,20 +19,36 @@ const ACTIVE_STATUSES = new Set(["claimed", "queued", "running"]);
 /**
  * Decide whether a pending task may claim a slot while other tasks are active.
  * Explicit shared writes are serialized, append-only writes are parallel only
- * when their namespaces are disjoint, and legacy tasks without metadata keep
- * the old scheduler behavior.
+ * when their namespaces are disjoint. Missing mutation metadata blocks the
+ * claim so persisted legacy manifests cannot silently run under an unknown
+ * concurrency policy.
  */
 export function decideWorkspaceClaim(
   candidate: WorkspaceTaskConcurrencyState,
   activeTasks: WorkspaceTaskConcurrencyState[],
 ): WorkspaceClaimDecision {
   const candidateMutation = candidate.workspaceMutation;
-  if (!candidateMutation) return { allowed: true, strategy: "legacy_unclassified" };
+  if (!candidateMutation) {
+    return {
+      allowed: false,
+      strategy: "missing_contract",
+      reason: `task ${candidate.id} is missing workspaceMutation metadata`,
+    };
+  }
 
-  const active = activeTasks.filter((task) => task.id !== candidate.id && ACTIVE_STATUSES.has(task.status) && task.workspaceMutation);
+  const active = activeTasks.filter((task) => task.id !== candidate.id && ACTIVE_STATUSES.has(task.status));
+  const activeMissingContract = active.find((task) => !task.workspaceMutation);
+  if (activeMissingContract) {
+    return {
+      allowed: false,
+      strategy: "missing_contract",
+      reason: `active task ${activeMissingContract.id} is missing workspaceMutation metadata`,
+    };
+  }
+  const activeWithMutation = active.filter((task): task is WorkspaceTaskConcurrencyState & { workspaceMutation: WorkspaceMutationSpec } => Boolean(task.workspaceMutation));
   if (candidateMutation.mode === "read_only") {
-    const conflictingWriter = active.find((task) => {
-      const mutation = task.workspaceMutation!;
+    const conflictingWriter = activeWithMutation.find((task) => {
+      const mutation = task.workspaceMutation;
       return mutation.mode !== "read_only"
         && mutation.isolation !== "git_worktree"
         && resourcesOverlap(candidateMutation, mutation);
@@ -47,8 +63,8 @@ export function decideWorkspaceClaim(
     return { allowed: true, strategy: "parallel_read" };
   }
 
-  const conflictingTask = active.find((task) => {
-    const mutation = task.workspaceMutation!;
+  const conflictingTask = activeWithMutation.find((task) => {
+    const mutation = task.workspaceMutation;
     return mutation.mode !== "read_only" && resourcesOverlap(candidateMutation, mutation);
   });
   if (conflictingTask) {

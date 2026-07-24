@@ -1,7 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createFakeHandProvider } from "../support/fake-hand-provider.ts";
-import { createHandProviderRegistry } from "../../src/v2/hands/registry.ts";
 import { createTorkHandProvider } from "../../src/v2/hands/tork-hand-provider.ts";
 import type { ExecutorSubmitRequest } from "../../src/v2/executor/provider.ts";
 import type { SouthstarWorkflowManifest } from "../../src/v2/manifests/types.ts";
@@ -53,23 +52,6 @@ test("HandProvider fake execute marks binding failed when configured to fail", a
   assert.equal(result.ok, false);
   assert.equal(binding.status, "failed");
   assert.equal(result.output, "fake hand failed: inspect");
-});
-
-test("HandProvider registry selects registered provider and throws for missing", () => {
-  const registry = createHandProviderRegistry([createFakeHandProvider({ providerId: "fake-hand" })]);
-  assert.equal(registry.get("fake-hand").providerId, "fake-hand");
-  assert.throws(() => registry.get("missing"), /hand provider not registered: missing/);
-});
-
-test("HandProvider registry rejects duplicate provider ids", () => {
-  assert.throws(
-    () =>
-      createHandProviderRegistry([
-        createFakeHandProvider({ providerId: "fake-hand" }),
-        createFakeHandProvider({ providerId: "fake-hand" }),
-      ]),
-    /duplicate hand provider registered: fake-hand/,
-  );
 });
 
 test("Tork hand provider reports missing workflow input", async () => {
@@ -128,7 +110,7 @@ test("Tork hand provider submits workflow through executor provider", async () =
   });
   const workflow = workflowManifest();
 
-  const result = await provider.execute(binding, { name: "submit", input: { workflow } });
+  const result = await provider.execute(binding, { name: "submit", input: { workflow, attemptId: "attempt-1" } });
 
   assert.equal(result.ok, true);
   assert.equal(result.output, "tork-job-1");
@@ -171,7 +153,7 @@ test("Tork hand provider converts submit failures into failed hand results", asy
     resources: { tokenRef: "vault-token-1" },
   });
 
-  const result = await provider.execute(binding, { name: "submit", input: { workflow: workflowManifest() } });
+  const result = await provider.execute(binding, { name: "submit", input: { workflow: workflowManifest(), attemptId: "attempt-1" } });
 
   assert.equal(result.ok, false);
   assert.equal(binding.status, "failed");

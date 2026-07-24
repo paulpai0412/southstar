@@ -1,5 +1,4 @@
 import { createPostgresSessionStore } from "../session/postgres-session-store.ts";
-import type { SessionCheckpoint } from "../session/types.ts";
 import type { RuntimeServerContext } from "./runtime-context.ts";
 import type { ApiEnvelope } from "./types.ts";
 

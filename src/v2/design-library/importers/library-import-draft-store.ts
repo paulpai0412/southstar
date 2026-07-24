@@ -22,7 +22,6 @@ import type { LibraryGraphSyncResult } from "../files/library-file-store.ts";
 import {
   getResourceByKeyPg,
   insertRuntimeResourceIfAbsentPg,
-  upsertRuntimeResourcePg,
   type RuntimeResourceRecord,
 } from "../../stores/postgres-runtime-store.ts";
 import { contentHashForPayload } from "../canonical-json.ts";
@@ -526,7 +525,7 @@ export async function installLibraryImportCandidates(
     const ontologyAnalysis = input.llmProvider
       ? await analyzeLibraryImportOntologyResultWithLlm({
         candidates: selectedCandidates,
-        scope: selectedCandidates[0]?.scope ?? "general",
+        scope: selectedCandidateScope(selectedCandidates),
         llmProvider: input.llmProvider,
         requestPrompt: typeof draft.payload.requestPrompt === "string" ? draft.payload.requestPrompt : undefined,
         sourceRepoPath: typeof draft.payload.sourceRepoPath === "string" ? draft.payload.sourceRepoPath : undefined,
@@ -948,6 +947,17 @@ function selectLibraryImportCandidates(
   return selected;
 }
 
+function selectedCandidateScope(candidates: LibraryImportCandidate[]): string {
+  const scopes = new Set(
+    candidates.map((candidate) => candidate.scope.trim()).filter((scope) => scope.length > 0),
+  );
+  if (scopes.size === 0) throw new Error("selected Library import candidates require an explicit scope");
+  if (scopes.size > 1) {
+    throw new Error(`selected Library import candidates must share one scope: ${[...scopes].sort().join(", ")}`);
+  }
+  return [...scopes][0]!;
+}
+
 function selectLibraryImportCandidateEdges(
   proposedEdges: LibraryImportProposedEdge[],
   input: { selectedObjectKeys: Set<string>; existingObjectKeys?: Set<string>; selectedEdgeIds?: string[] },
@@ -1019,10 +1029,17 @@ async function loadLibraryImportOntologyExistingGraph(
 }
 
 function scopeForImportedEdge(edge: LibraryImportProposedEdge, selectedCandidates: LibraryImportCandidate[]): string {
-  return selectedCandidates.find((candidate) => candidate.objectKey === edge.fromObjectKey)?.scope
-    ?? selectedCandidates.find((candidate) => candidate.objectKey === edge.toObjectKey)?.scope
-    ?? selectedCandidates[0]?.scope
-    ?? "global";
+  const scope = selectedCandidateScope(selectedCandidates);
+  const endpointScopes = [edge.fromObjectKey, edge.toObjectKey]
+    .map((objectKey) => selectedCandidates.find((candidate) => candidate.objectKey === objectKey)?.scope.trim())
+    .filter((candidateScope): candidateScope is string => Boolean(candidateScope));
+  if (endpointScopes.length === 0) {
+    throw new Error(`library import ontology edge has no selected candidate endpoint: ${edge.fromObjectKey} -> ${edge.toObjectKey}`);
+  }
+  if (endpointScopes.some((candidateScope) => candidateScope !== scope)) {
+    throw new Error(`library import ontology edge crosses selected candidate scopes: ${edge.fromObjectKey} -> ${edge.toObjectKey}`);
+  }
+  return scope;
 }
 
 function stringFromState(state: Record<string, unknown>, key: string): string | undefined {
@@ -1465,11 +1482,6 @@ function optionalStrictString(value: unknown, label: string): string | undefined
   if (value === undefined) return undefined;
   if (typeof value !== "string" || value.trim().length === 0) throw new Error(`${label} must be a non-empty string`);
   return value;
-}
-
-function stringArray(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((item) => typeof item === "string" && item.length > 0 ? [item] : []);
 }
 
 function positiveInteger(value: unknown): number | undefined {

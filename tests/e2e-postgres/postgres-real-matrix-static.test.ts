@@ -21,7 +21,6 @@ const implementedCases = [
   "09-regression-rollback.test.ts",
   "10-managed-brain-crash-wake.test.ts",
   "11-managed-hand-reprovision.test.ts",
-  "12-managed-credential-isolation.test.ts",
   "13-managed-per-task-tork-runtime.test.ts",
   "14-tork-queue-timeout-recovery.test.ts",
   "15-tork-running-hang-recovery.test.ts",

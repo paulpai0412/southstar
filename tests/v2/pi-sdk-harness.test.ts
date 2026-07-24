@@ -1,9 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createPiSdkAgentHarness } from "../../src/v2/harness/pi-sdk-harness.ts";
-import type { TaskEnvelope, TaskEnvelopeV2 } from "../../src/v2/agent-runner/task-envelope.ts";
+import type { TaskEnvelopeV2 } from "../../src/v2/agent-runner/task-envelope.ts";
 
-test("Pi SDK agent harness sends TaskEnvelope prompt and parses assistant artifact JSON", async () => {
+test("Pi SDK agent harness sends the v2 task prompt and parses assistant artifact JSON", async () => {
   const prompts: string[] = [];
   const deltas: string[] = [];
   const listeners: Array<(event: unknown) => void> = [];
@@ -34,12 +34,12 @@ test("Pi SDK agent harness sends TaskEnvelope prompt and parses assistant artifa
   });
 
   const result = await harness.run({
-    envelope: envelope(),
+    envelope: envelopeV2(),
     attempt: 2,
     repairInstruction: "include commandsRun",
   });
 
-  assert.match(prompts[0], /TaskEnvelope/);
+  assert.match(prompts[0], /Rendered prompt from ContextPacket/);
   assert.match(prompts[0], /include commandsRun/);
   assert.deepEqual(result.artifact, { summary: "implemented", commandsRun: ["npm test"], risks: ["low"] });
   assert.deepEqual(result.progress, ["read repo", "edited cli", "ran tests"]);
@@ -191,7 +191,7 @@ test("Pi SDK agent harness marks runner sessions as internal workflow sessions",
     }),
   });
 
-  await harness.run({ envelope: envelope(), attempt: 1 });
+  await harness.run({ envelope: envelopeV2(), attempt: 1 });
 
   assert.deepEqual(metadata, [{
     customType: "southstar.session.kind",
@@ -219,7 +219,7 @@ test("Pi SDK agent harness canonicalizes bare assistant artifact JSON", async ()
     }),
   });
 
-  const result = await harness.run({ envelope: envelope(), attempt: 1 });
+  const result = await harness.run({ envelope: envelopeV2(), attempt: 1 });
 
   assert.deepEqual(result.artifact, { summary: "planned", commandsRun: [], risks: ["none"] });
   assert.deepEqual(result.progress, ["pi-agent returned artifact"]);
@@ -781,39 +781,6 @@ test("Pi SDK agent harness bounds session creation with the harness timeout", as
 
   assert.equal(outcome, "Pi SDK harness timed out while creating session after 5ms");
 });
-
-function envelope(): TaskEnvelope {
-  return {
-    schemaVersion: "southstar.task-envelope.v1",
-    runId: "run-1",
-    workflowId: "workflow-1",
-    task: {
-      id: "task-1",
-      name: "Implement",
-      domain: "software",
-      dependsOn: [],
-      execution: {
-        engine: "tork",
-        image: "image",
-        command: ["southstar-agent-runner"],
-        env: {},
-        mounts: [],
-        timeoutSeconds: 60,
-        infraRetry: { maxAttempts: 1 },
-      },
-      rootSession: { validator: "schema-evaluator-v1", maxRepairAttempts: 2 },
-      subagents: [{ id: "impl", harnessId: "pi", prompt: "implement", requiredArtifacts: ["implementation-report"] }],
-    },
-    rootSession: { id: "session-root", validator: "schema-evaluator-v1", maxRepairAttempts: 2 },
-    subagents: [{ id: "impl", harnessId: "pi", prompt: "implement", requiredArtifacts: ["implementation-report"] }],
-    memory: { items: [], capturedAt: "now" },
-    skills: [],
-    vaultLeases: [],
-    mcpGrants: [],
-    artifactContracts: ["implementation-report"],
-    artifactContract: { artifactTypes: ["implementation-report"], requiredFields: ["summary", "commandsRun", "risks"] },
-  };
-}
 
 function envelopeV2(): TaskEnvelopeV2 {
   return {

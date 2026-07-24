@@ -516,7 +516,6 @@ function workflowDagToCanvasModel(dag: WorkflowDag, selectedNodeId: string | nul
     dependsOn: dependsOnByNode.get(node.id) ?? [],
     roleRef: node.role,
     agentProfileRef: node.profileRef,
-    artifactKind: "implementation_report",
     requirementIds: node.requirementIds ?? [],
     sliceId: node.sliceId ?? null,
     purpose: node.purpose ?? null,

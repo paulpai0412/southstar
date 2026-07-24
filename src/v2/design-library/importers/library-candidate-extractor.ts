@@ -76,11 +76,14 @@ export type LibraryImportCandidate = {
   validationRules?: string[];
   schemaRef?: string;
   requiredFields?: string[];
+  evidenceFields?: string[];
   provenanceRequirements?: string[];
   validatesArtifactRefs?: string[];
   requiredInputs?: string[];
   verificationModes?: Array<"deterministic" | "browser_interaction" | "semantic_review" | "human_approval">;
   verificationProcedures?: LibraryVerificationProcedure[];
+  evaluators?: Array<{ id: string; kind: string; config: Record<string, unknown>; required: boolean }>;
+  onFailure?: { defaultStrategy: string };
   independencePolicy?: "independent";
   resultSchemaRef?: string;
   failureClassifications?: string[];

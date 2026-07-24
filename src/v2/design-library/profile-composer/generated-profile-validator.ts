@@ -22,16 +22,15 @@ export async function validateGeneratedNodeProfile(
   input: GeneratedNodeProfileInput,
 ): Promise<GeneratedProfileValidationResult> {
   const issues: GeneratedProfileValidationResult["issues"] = [];
-  await requireObject(db, input.agentRef, "agentRef", "agent_definition", input.scope, issues);
+  await requireObject(db, input.agentRef, "agentRef", "agent_definition", issues);
 
   for (const [index, skillRef] of input.skillRefs.entries()) {
-    await requireObject(db, skillRef, `skillRefs.${index}`, "skill_spec", input.scope, issues);
+    await requireObject(db, skillRef, `skillRefs.${index}`, "skill_spec", issues);
     const requiredTools = await approvedLinkedRefsByEdgeTypes(
       db,
       skillRef,
       ["requires_tool", "allows_tool", "uses"],
       "tool_definition",
-      input.scope,
     );
     for (const toolRef of requiredTools) {
       if (!input.toolGrantRefs.includes(toolRef)) {
@@ -47,7 +46,6 @@ export async function validateGeneratedNodeProfile(
       skillRef,
       ["allows_mcp_grant", "uses"],
       "mcp_tool_grant",
-      input.scope,
     );
     for (const mcpRef of requiredMcp) {
       if (!input.mcpGrantRefs.includes(mcpRef)) {
@@ -63,7 +61,6 @@ export async function validateGeneratedNodeProfile(
       skillRef,
       ["uses_instruction", "uses"],
       "instruction_template",
-      input.scope,
     );
     for (const instructionRef of requiredInstructions) {
       if (!input.instructionRefs.includes(instructionRef)) {
@@ -77,13 +74,13 @@ export async function validateGeneratedNodeProfile(
   }
 
   for (const [index, toolRef] of input.toolGrantRefs.entries()) {
-    await requireObject(db, toolRef, `toolGrantRefs.${index}`, "tool_definition", input.scope, issues);
+    await requireObject(db, toolRef, `toolGrantRefs.${index}`, "tool_definition", issues);
   }
   for (const [index, mcpRef] of input.mcpGrantRefs.entries()) {
-    await requireObject(db, mcpRef, `mcpGrantRefs.${index}`, "mcp_tool_grant", input.scope, issues);
+    await requireObject(db, mcpRef, `mcpGrantRefs.${index}`, "mcp_tool_grant", issues);
   }
   for (const [index, instructionRef] of input.instructionRefs.entries()) {
-    await requireObject(db, instructionRef, `instructionRefs.${index}`, "instruction_template", input.scope, issues);
+    await requireObject(db, instructionRef, `instructionRefs.${index}`, "instruction_template", issues);
   }
 
   return { ok: issues.length === 0, issues };
@@ -94,7 +91,6 @@ async function approvedLinkedRefsByEdgeTypes(
   fromObjectKey: string,
   edgeTypes: readonly LibraryEdgeType[],
   expectedKind: LibraryDefinitionKind,
-  scope: string,
 ): Promise<string[]> {
   const refs = new Set<string>();
   for (const edgeType of edgeTypes) {
@@ -113,7 +109,6 @@ async function requireObject(
   objectKey: string,
   path: string,
   expectedKind: LibraryDefinitionKind,
-  scope: string,
   issues: GeneratedProfileValidationResult["issues"],
 ): Promise<void> {
   const object = await findLibraryObjectByKey(db, objectKey);
@@ -124,5 +119,4 @@ async function requireObject(
   if (object.objectKind !== expectedKind) {
     issues.push({ code: "wrong_kind_ref", path, message: `${objectKey} must be ${expectedKind}` });
   }
-  void scope;
 }

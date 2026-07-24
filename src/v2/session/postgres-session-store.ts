@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { SouthstarDb } from "../db/postgres.ts";
 import { assertManagedAgentSessionEventType } from "../meta-harness/taxonomy.ts";
 import { appendHistoryEventPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
-import type { CheckpointInput, EventSliceQuery, SessionCheckpoint, SessionEvent, SessionStore } from "./types.ts";
+import type { EventSliceQuery, SessionCheckpoint, SessionEvent, SessionStore } from "./types.ts";
 
 type WorkflowHistoryRow = {
   id: string;

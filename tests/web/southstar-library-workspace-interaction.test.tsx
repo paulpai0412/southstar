@@ -137,6 +137,7 @@ test("LibraryFileViewer exposes graph-first tabs, one Save & Sync action, editor
     for (const tab of ["Edges", "Preview", "Edit", "Validate", "Usage"]) {
       await page.getByRole("button", { name: tab }).waitFor();
     }
+    await page.locator('[data-testid="library-graph-unavailable"]').waitFor();
     await page.getByRole("button", { name: "Edit" }).click();
     await page.locator('[data-testid="library-file-editor"]').waitFor();
     await page.locator('[data-testid="library-file-save-sync"]').waitFor();
@@ -903,6 +904,7 @@ test("step graph virtual nodes open the shared file viewer with node content and
     createRoot(document.getElementById("root")).render(<Harness />);
   `, async (page) => {
     await page.getByTestId("select-step-node").click();
+    await page.waitForFunction(() => document.querySelector('[data-testid="library-node-content"]')?.textContent?.includes("Persist the review"));
     await assertText(page, '[data-testid="library-node-content"]', "Persist the review");
     await assertText(page, '[data-testid="library-node-content"]', "The review must be persisted.");
     assert.equal(await page.locator('[data-testid="library-graph-chart"]').count(), 1);
@@ -1313,7 +1315,7 @@ test("LibraryWorkspace opens object detail sidecar for graph objects without sou
     await assertText(page, '[data-testid="library-file-preview"]', "Verify implementation behavior");
     await page.getByRole("button", { name: "Edges" }).click();
     await page.locator('[data-testid="library-graph-chart"]').waitFor();
-    await assertText(page, '[data-testid="library-graph-chart"]', "skill.software-verification");
+    await assertText(page, '[data-testid="library-graph-chart"]', "Software Verification");
   }, async (page) => {
     await page.route("**/api/library/**", async (route) => {
       const request = route.request();
@@ -1340,6 +1342,25 @@ test("LibraryWorkspace opens object detail sidecar for graph objects without sou
                   }],
                 }],
               }],
+            },
+          }),
+        });
+        return;
+      }
+
+      if (url.pathname === "/api/library/graph") {
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            ok: true,
+            result: {
+              activeScope: "software",
+              availableScopes: ["software"],
+              nodes: [
+                { objectKey: "agent.software-checker", objectKind: "agent_definition", status: "approved", title: "Checker" },
+                { objectKey: "skill.software-verification", objectKind: "skill_spec", status: "approved", title: "Software Verification" },
+              ],
+              edges: [{ fromObjectKey: "agent.software-checker", edgeType: "uses", toObjectKey: "skill.software-verification" }],
             },
           }),
         });

@@ -180,7 +180,7 @@ flowchart TD
 ## 8. 主要程式碼索引
 
 - Session store：`src/v2/session/postgres-session-store.ts`
-- Session 型別：`src/v2/session-graph/types.ts`
+- Session 型別：`src/v2/session/types.ts`
 - Run 建立：`src/v2/ui-api/postgres-run-api.ts`
 - Runnable task materialization / context assembly / submit：`src/v2/scheduler/runnable-task-scheduler.ts`
 - Callback ingestion：`src/v2/executor/postgres-tork-callback.ts`

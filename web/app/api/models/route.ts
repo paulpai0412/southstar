@@ -24,7 +24,6 @@ function compareModelEntries(
 }
 
 export async function GET(req: Request) {
-  const nameMap = new Map<string, string>();
   let modelList: { id: string; name: string; provider: string }[] = [];
   let defaultModel: { provider: string; modelId: string } | null = null;
   const thinkingLevels: Record<string, string[]> = {};
@@ -54,7 +53,6 @@ export async function GET(req: Request) {
     })).sort(compareModelEntries);
     for (const m of available) {
       const key = `${m.provider}:${m.id}`;
-      nameMap.set(key, m.name);
       thinkingLevels[key] = getSupportedThinkingLevels(m);
       if (m.thinkingLevelMap) thinkingLevelMaps[key] = m.thinkingLevelMap;
     }
@@ -65,7 +63,9 @@ export async function GET(req: Request) {
     if (provider && modelId && available.some((m) => m.provider === provider && m.id === modelId)) {
       defaultModel = { provider, modelId };
     }
-  } catch { /* return empty */ }
+  } catch {
+    return Response.json({ error: "Model registry is unavailable" }, { status: 503 });
+  }
 
-  return Response.json({ models: Object.fromEntries(nameMap), modelList, defaultModel, thinkingLevels, thinkingLevelMaps });
+  return Response.json({ modelList, defaultModel, thinkingLevels, thinkingLevelMaps });
 }

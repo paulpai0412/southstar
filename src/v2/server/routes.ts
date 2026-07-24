@@ -34,7 +34,7 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
 
     if (request.method === "GET" && url.pathname === "/api/v2/agent-library") {
       return json("agent-library", await buildAgentLibraryReadModelPg(context.db, {
-        domain: url.searchParams.get("domain") ?? undefined,
+        domain: requiredQueryParam(url, "domain"),
       }));
     }
 
@@ -450,7 +450,7 @@ function validatedCallbackResultPg(body: unknown): PostgresTaskRunCallbackResult
     rootSessionId: requiredString(body.rootSessionId, "rootSessionId"),
     ok: typeof body.ok === "boolean" ? body.ok : false,
     attempts: typeof body.attempts === "number" && Number.isFinite(body.attempts) ? body.attempts : 1,
-    attemptId: typeof body.attemptId === "string" ? body.attemptId : undefined,
+    attemptId: requiredString(body.attemptId, "attemptId"),
     artifact: isRecord(body.artifact) ? body.artifact : {},
     metrics: isRecord(body.metrics) ? body.metrics : {},
     events: Array.isArray(body.events) ? body.events.map(validateCallbackEvent) : [],

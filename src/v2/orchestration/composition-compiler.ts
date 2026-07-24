@@ -43,7 +43,6 @@ import {
 } from "./goal-contract.ts";
 import type { GoalDesignPackage } from "./goal-design.ts";
 import { runtimeBindingCapabilitiesFromEnv, type RuntimeBindingCapabilities } from "./runtime-binding-capabilities.ts";
-import { classifyWorkflowCompositionTask } from "./workflow-node-classifier.ts";
 import { acceptWorkflowComposition } from "./manifest-acceptance.ts";
 
 export type CompileWorkflowCompositionInput = {
@@ -93,12 +92,12 @@ export async function compileWorkflowComposition(
   const goalDomain = nonEmptyString(input.goalContract.domain)
     ?? nonEmptyString(input.goalDesignPackage?.goalContract.domain);
   const explicitScope = nonEmptyString(input.scope);
-  const libraryScope = explicitScope ?? goalDomain ?? "all";
-  const manifestDomain = nonEmptyString(input.manifestDomain)
-    ?? explicitScope
-    ?? goalDomain
-    ?? domainForManifestFallback(libraryScope);
-  const taskDomain = workflowTaskDomain(manifestDomain);
+  const libraryScope = required(explicitScope ?? goalDomain, "workflow composition requires an explicit Library scope or goal domain");
+  const manifestDomain = required(
+    nonEmptyString(input.manifestDomain) ?? explicitScope ?? goalDomain,
+    "workflow composition requires an explicit manifest domain",
+  );
+  const taskDomain = manifestDomain;
   const validation = await validateWorkflowCompositionPlan(db, input.candidatePacket, input.composition, {
     scope: libraryScope,
     goalContract: input.goalContract,
@@ -177,7 +176,7 @@ export async function compileWorkflowComposition(
     const promptTemplateRef = normalizeInstructionRef(
       task.instructionRefs[0] ?? `instruction.${profile.promptTemplateRef}`,
     );
-    const nodePromptSpec = nodePromptSpecForTask(input.goalPrompt, input.goalContract, task);
+    const nodePromptSpec = nodePromptSpecForTask(input.goalContract, task);
     return {
       id: task.id,
       name: task.name,
@@ -201,7 +200,7 @@ export async function compileWorkflowComposition(
       ...(task.workspacePolicyRef ? { workspacePolicyRef: task.workspacePolicyRef } : {}),
       ...(task.workspaceMutation ? { workspaceMutation: task.workspaceMutation } : {}),
       execution: {
-        engine: execution.engine ?? "tork",
+        engine: execution.engine,
         image: execution.image,
         command: execution.command,
         env: execution.env,
@@ -325,80 +324,20 @@ export async function compileWorkflowComposition(
 }
 
 function nodePromptSpecForTask(
-  goalPrompt: string,
   goalContract: GoalContractV1,
   task: WorkflowCompositionTask,
 ): WorkflowNodePromptSpec {
   const linkedRequirements = goalContract.requirements.filter((requirement) => task.requirementIds.includes(requirement.id));
-  if (task.nodePromptSpec) {
-    return linkedRequirements.length === 0
-      ? task.nodePromptSpec
-      : {
-          ...task.nodePromptSpec,
-          requirements: linkedRequirements.map((requirement) => requirement.statement),
-          acceptanceCriteria: linkedRequirements.flatMap((requirement) => (
-            requirement.acceptanceCriteria.map((criterion) => criterion.observableClaim)
-          )),
-        };
-  }
-  const nodeType = classifyWorkflowCompositionTask(task);
-  return {
-    nodeType,
-    goal: `${titleFromTask(task)}: ${task.responsibility}`,
-    requirements: linkedRequirements.length > 0
-      ? linkedRequirements.map((requirement) => requirement.statement)
-      : [`Advance the workflow goal: ${goalPrompt}`],
-    boundaries: ["Work only on this task's declared responsibility and artifacts."],
-    nonGoals: ["Do not perform unrelated work outside this task."],
-    deliverableDocuments: deliverableDocumentsForNodeType(nodeType),
-    expectedOutputs: [...task.outputArtifactRefs],
-    testCases: [],
-    acceptanceCriteria: linkedRequirements.length > 0
-      ? linkedRequirements.flatMap((requirement) => (
+  const nodePromptSpec = required(task.nodePromptSpec, `missing nodePromptSpec for ${task.id}`);
+  return linkedRequirements.length === 0
+    ? nodePromptSpec
+    : {
+        ...nodePromptSpec,
+        requirements: linkedRequirements.map((requirement) => requirement.statement),
+        acceptanceCriteria: linkedRequirements.flatMap((requirement) => (
           requirement.acceptanceCriteria.map((criterion) => criterion.observableClaim)
-        ))
-      : task.outputArtifactRefs.length > 0
-        ? task.outputArtifactRefs.map((artifactRef) => `Produce ${artifactRef} with clear evidence.`)
-        : [`Complete ${task.id} and report evidence.`],
-    ...(nodeType === "implement" ? { implementationScope: [task.responsibility] } : {}),
-    ...(nodeType === "verify" ? { verificationChecks: ["Verify the declared task outputs and report evidence."] } : {}),
-    ...(nodeType === "plan" ? { planningQuestions: ["What has to change to satisfy the goal?"], decisionCriteria: ["The plan is scoped, ordered, and testable."] } : {}),
-    ...(nodeType === "review" ? { reviewChecklist: ["Check quality, risk, and missing evidence."], riskCriteria: ["Identify regressions or unverified behavior."] } : {}),
-    ...(nodeType === "summary" ? { summarySections: ["completed work", "verification", "risks"], handoffCriteria: ["A downstream reader can understand final state and next steps."] } : {}),
-    failureReportContract: "If blocked, return the blocker, evidence, and the next repair action.",
-  };
-}
-
-function deliverableDocumentsForNodeType(nodeType: WorkflowNodePromptSpec["nodeType"]): WorkflowNodePromptSpec["deliverableDocuments"] {
-  if (nodeType === "plan") {
-    return [{ kind: "design", title: "Design or implementation plan", required: true, format: "markdown", description: "Describe scope, approach, risks, and ordered implementation steps." }];
-  }
-  if (nodeType === "implement") {
-    return [
-      { kind: "implementation", title: "Implementation notes", required: true, format: "markdown", description: "Summarize changed behavior, files touched, and important decisions." },
-      { kind: "test", title: "Test evidence", required: true, format: "markdown", description: "List tests or checks run and their outcomes." },
-    ];
-  }
-  if (nodeType === "verify") {
-    return [{ kind: "verification", title: "Verification report", required: true, format: "markdown", description: "Record verification checks, results, failures, and evidence." }];
-  }
-  if (nodeType === "repair") {
-    return [{ kind: "implementation", title: "Repair notes", required: true, format: "markdown", description: "Describe repaired defects, preserved behavior, and re-verification needs." }];
-  }
-  if (nodeType === "review") {
-    return [{ kind: "acceptance", title: "Review and acceptance report", required: true, format: "markdown", description: "Assess quality, risk, and whether acceptance criteria are met." }];
-  }
-  if (nodeType === "summary") {
-    return [{ kind: "summary", title: "Workflow summary", required: true, format: "markdown", description: "Summarize completed work, accepted artifacts, verification, and handoff notes." }];
-  }
-  return [];
-}
-
-function titleFromTask(task: WorkflowCompositionTask): string {
-  return task.name || task.id
-    .split("-")
-    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
-    .join(" ");
+        )),
+      };
 }
 
 type ResolvedRuntimeRoles = {
@@ -418,12 +357,10 @@ async function resolveRuntimeRoles(db: SouthstarDb, plan: WorkflowCompositionPla
     if (byAgentRef.has(task.agentDefinitionRef)) continue;
     const agent = await findLibraryObjectByKey(db, task.agentDefinitionRef);
     const agentState = required(agent?.state, `library object not found for ${task.agentDefinitionRef}`);
-    const runtimeRole = agentState.runtimeRole === undefined
-      ? synthesizeRuntimeRoleFromTask(task)
-      : parseRuntimeRole(
-        agentState.runtimeRole,
-        `agent definition ${task.agentDefinitionRef} state.runtimeRole`,
-      );
+    const runtimeRole = parseRuntimeRole(
+      agentState.runtimeRole,
+      `agent definition ${task.agentDefinitionRef} state.runtimeRole`,
+    );
     byAgentRef.set(task.agentDefinitionRef, runtimeRole);
     byRoleId.set(runtimeRole.id, runtimeRole);
   }
@@ -472,9 +409,9 @@ async function resolveRuntimeArtifactContracts(
     const state = object.state;
     const contract: ArtifactContract = {
       id: normalizeArtifactRef(artifactRef),
-      artifactType: optionalStringAt(state.artifactType) ?? normalizeArtifactRef(artifactRef),
-      requiredFields: optionalStringArrayAt(state.requiredFields) ?? ["summary"],
-      evidenceFields: optionalStringArrayAt(state.evidenceFields) ?? ["summary"],
+      artifactType: stringAt(state.artifactType, `${artifactRef}.artifactType`),
+      requiredFields: stringArrayAt(state.requiredFields, `${artifactRef}.requiredFields`),
+      evidenceFields: stringArrayAt(state.evidenceFields, `${artifactRef}.evidenceFields`),
       libraryObjectRef: object.objectKey,
       libraryVersionRef,
     };
@@ -490,11 +427,19 @@ async function resolveRuntimeEvaluatorPipelines(
   const pipelines = new Map<string, EvaluatorPipelineDefinition>();
   for (const evaluatorRef of uniqueSorted(plan.tasks.map((task) => task.evaluatorProfileRef))) {
     const object = await findLibraryObjectByKey(db, evaluatorRef);
-    const state = object?.state ?? {};
+    if (!object) throw new Error(`missing Library evaluator profile: ${evaluatorRef}`);
+    if (object.objectKind !== "evaluator_profile") {
+      throw new Error(`Library evaluator profile kind mismatch for ${evaluatorRef}: got ${object.objectKind}`);
+    }
+    if (object.status !== "approved") throw new Error(`Library evaluator profile is not approved: ${evaluatorRef}`);
+    const libraryVersionRef = required(object.headVersionId, `missing immutable version for ${evaluatorRef}`);
+    const state = object.state;
     const pipeline: EvaluatorPipelineDefinition = {
       id: normalizeEvaluatorRef(evaluatorRef),
       evaluators: parseEvaluatorSteps(state.evaluators),
       onFailure: parseEvaluatorOnFailure(state.onFailure),
+      libraryObjectRef: object.objectKey,
+      libraryVersionRef,
     };
     pipelines.set(pipeline.id, pipeline);
   }
@@ -516,7 +461,7 @@ export async function compileGoalDesignArtifactContracts(
         id: normalizeArtifactRef(artifactRef),
         artifactType: stringAt(state.artifactType, `${artifactRef}.artifactType`),
         requiredFields: stringArrayAt(state.requiredFields, `${artifactRef}.requiredFields`),
-        evidenceFields: optionalStringArrayAt(state.evidenceFields) ?? [],
+        evidenceFields: stringArrayAt(state.evidenceFields, `${artifactRef}.evidenceFields`),
         mediaTypes: stringArrayAt(state.mediaTypes, `${artifactRef}.mediaTypes`),
         validationRules: stringArrayAt(state.validationRules, `${artifactRef}.validationRules`),
         evidenceKinds: stringArrayAt(state.evidenceKinds, `${artifactRef}.evidenceKinds`),
@@ -790,38 +735,35 @@ function defaultStopConditions(evaluatorPipelines: EvaluatorPipelineDefinition[]
   }];
 }
 
-function optionalStringAt(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-function optionalStringArrayAt(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const strings = value.filter((item): item is string => typeof item === "string" && item.length > 0);
-  return strings.length > 0 ? strings : undefined;
-}
-
 function parseEvaluatorSteps(value: unknown): EvaluatorStepDefinition[] {
-  if (!Array.isArray(value)) return [];
-  return value
-    .filter(isRecord)
-    .map((record, index): EvaluatorStepDefinition => {
-      const kind = optionalStringAt(record.kind) ?? "schema";
-      return {
-        id: optionalStringAt(record.id) ?? `evaluator-${index + 1}`,
-        kind: isEvaluatorStepKind(kind) ? kind : "schema",
-        config: isRecord(record.config) ? record.config : {},
-        required: typeof record.required === "boolean" ? record.required : true,
-      };
-    });
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error("evaluator profile requires a non-empty evaluators array");
+  }
+  return value.map((raw, index): EvaluatorStepDefinition => {
+    const record = required(isRecord(raw) ? raw : null, `evaluator profile evaluators.${index}`);
+    const kind = stringAt(record.kind, `evaluator profile evaluators.${index}.kind`);
+    if (!isEvaluatorStepKind(kind)) {
+      throw new Error(`invalid evaluator step kind at evaluator profile evaluators.${index}.kind`);
+    }
+    if (typeof record.required !== "boolean") {
+      throw new Error(`expected boolean at evaluator profile evaluators.${index}.required`);
+    }
+    return {
+      id: stringAt(record.id, `evaluator profile evaluators.${index}.id`),
+      kind,
+      config: required(isRecord(record.config) ? record.config : null, `evaluator profile evaluators.${index}.config`),
+      required: record.required,
+    };
+  });
 }
 
 function parseEvaluatorOnFailure(value: unknown): EvaluatorPipelineDefinition["onFailure"] {
-  const record = isRecord(value) ? value : {};
-  const strategy = optionalStringAt(record.defaultStrategy);
-  if (isEvaluatorFailureStrategy(strategy)) {
-    return { defaultStrategy: strategy };
+  const record = required(isRecord(value) ? value : null, "evaluator profile requires onFailure");
+  const strategy = stringAt(record.defaultStrategy, "evaluator profile onFailure.defaultStrategy");
+  if (!isEvaluatorFailureStrategy(strategy)) {
+    throw new Error("invalid evaluator profile onFailure.defaultStrategy");
   }
-  return { defaultStrategy: "ask-human" };
+  return { defaultStrategy: strategy };
 }
 
 function validatedGeneratedAgentProfiles(plan: WorkflowCompositionPlan): Set<string> {
@@ -939,28 +881,6 @@ function harnessKindForRef(ref: string): SouthstarWorkflowManifest["harnessDefin
   if (ref === "codex") return "codex";
   if (ref === "claude-code") return "claude-code";
   return "custom";
-}
-
-function workflowTaskDomain(value: string): WorkflowTaskDefinition["domain"] {
-  return value === "software" || value === "research" || value === "data-analysis" || value === "general"
-    ? value
-    : "general";
-}
-
-function domainForManifestFallback(scope: string): string {
-  return scope === "all" ? "general" : scope;
-}
-
-function synthesizeRuntimeRoleFromTask(task: WorkflowCompositionTask): RoleDefinition {
-  return {
-    id: roleIdFromAgentRef(task.agentDefinitionRef),
-    responsibility: task.responsibility,
-    defaultAgentProfileRef: task.agentProfileRef,
-    allowedAgentProfileRefs: [task.agentProfileRef],
-    artifactInputs: task.inputArtifactRefs.map(normalizeArtifactRef),
-    artifactOutputs: task.outputArtifactRefs.map(normalizeArtifactRef),
-    stopAuthority: "can-suggest",
-  };
 }
 
 function parseRuntimeRole(value: unknown, path: string): RoleDefinition {
@@ -1110,10 +1030,6 @@ function normalizeEvaluatorRef(evaluatorRef: string): string {
 
 function normalizeRuntimeId(value: string): string {
   return value.replace(/[^a-zA-Z0-9_-]+/g, "-") || "criterion";
-}
-
-function roleIdFromAgentRef(agentRef: string): string {
-  return agentRef.replace(/^agent\./, "").replace(/[^a-zA-Z0-9_-]+/g, "-") || "generated-agent";
 }
 
 function titleFromRef(ref: string): string {

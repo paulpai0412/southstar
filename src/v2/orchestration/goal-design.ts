@@ -1067,11 +1067,6 @@ function stringArray(value: unknown, path: string): string[] {
   return array(value, path).map((entry, index) => string(entry, `${path}.${index}`));
 }
 
-function integer(value: unknown, path: string): number {
-  if (!Number.isInteger(value)) throw new Error(`${path} must be an integer`);
-  return value as number;
-}
-
 function string(value: unknown, path: string): string {
   if (!nonEmpty(value)) throw new Error(`${path} must be a non-empty string`);
   return value;
@@ -1079,8 +1074,4 @@ function string(value: unknown, path: string): string {
 
 function nonEmpty(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
-}
-
-function fail(message: string): never {
-  throw new Error(message);
 }

@@ -1201,7 +1201,6 @@ function validateAgentProfile(value: unknown, path: string, issues: WorkflowComp
   for (const field of ["workerKind", "provider", "model", "thinkingLevel", "harnessRef", "instruction", "promptTemplateRef", "contextPolicyRef", "sessionPolicyRef"]) {
     if (value[field] !== undefined) requireString(value[field], `${path}.${field}`, issues);
   }
-  const image = isRecord(value.execution) ? value.execution.image : undefined;
   for (const field of ["memoryScopes", "agentsMdRefs", "vaultLeasePolicyRefs"]) {
     if (value[field] !== undefined) requireStringArray(value[field], `${path}.${field}`, issues);
   }

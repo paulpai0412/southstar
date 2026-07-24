@@ -4,9 +4,8 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import type { AgentHarness, HarnessRunInput, HarnessRunResult } from "../harness/types.ts";
 import { createPiSdkAgentHarness } from "../harness/pi-sdk-harness.ts";
-import { createBuiltinAgentHarness } from "../harness/builtin-agent-harness.ts";
 import { runTaskEnvelope, type TaskRunResult, type TaskRunnerRuntimeFault } from "./task-runner.ts";
-import { refreshTaskEnvelopeV2Prompt, type AnyTaskEnvelope } from "./task-envelope.ts";
+import { refreshTaskEnvelopeV2Prompt, type TaskEnvelopeV2 } from "./task-envelope.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -17,7 +16,7 @@ export async function runAgentRunnerCli(
   try {
     await prepareWorkspaceIdentity();
     const options = parseAgentRunnerArgs(argv);
-    const envelope = JSON.parse(await readFile(options.envelopePath, "utf8")) as AnyTaskEnvelope;
+    const envelope = JSON.parse(await readFile(options.envelopePath, "utf8")) as TaskEnvelopeV2;
     const refreshedEnvelope = options.contextRefreshUrl
       ? await refreshEnvelopeContext(options.contextRefreshUrl, envelope)
       : envelope;
@@ -134,6 +133,8 @@ export function parseAgentRunnerArgs(argv: string[], env: Record<string, string 
     ?? env.SOUTHSTAR_HARNESS_ENDPOINT
     ?? env.PI_HARNESS_ENDPOINT;
   if (!envelopePath) throw new Error("--envelope or SOUTHSTAR_ENVELOPE_PATH is required");
+  const attemptId = flagValue(argv, "--attempt-id") ?? env.SOUTHSTAR_ATTEMPT_ID;
+  if (!attemptId) throw new Error("--attempt-id or SOUTHSTAR_ATTEMPT_ID is required");
   const requiredFields = flagValue(argv, "--required-fields")?.split(",").map((field) => field.trim()).filter(Boolean);
   return {
     envelopePath,
@@ -146,7 +147,7 @@ export function parseAgentRunnerArgs(argv: string[], env: Record<string, string 
     heartbeatUrl: flagValue(argv, "--heartbeat-url") ?? env.SOUTHSTAR_HEARTBEAT_URL,
     liveEventUrl: flagValue(argv, "--live-event-url") ?? env.SOUTHSTAR_LIVE_EVENT_URL,
     heartbeatIntervalMs: numberFromEnv(flagValue(argv, "--heartbeat-interval-ms") ?? env.SOUTHSTAR_HEARTBEAT_INTERVAL_MS) ?? 10_000,
-    attemptId: flagValue(argv, "--attempt-id") ?? env.SOUTHSTAR_ATTEMPT_ID ?? "attempt-1",
+    attemptId,
     torkJobId: flagValue(argv, "--tork-job-id") ?? env.SOUTHSTAR_TORK_JOB_ID ?? env.TORK_JOB_ID,
     torkTaskId: flagValue(argv, "--tork-task-id") ?? env.SOUTHSTAR_TORK_TASK_ID ?? env.TORK_TASK_ID,
     materializationRoot: flagValue(argv, "--materialization-root") ?? env.SOUTHSTAR_MATERIALIZATION_ROOT,
@@ -157,14 +158,11 @@ export function parseAgentRunnerArgs(argv: string[], env: Record<string, string 
   };
 }
 
-function createAgentHarness(options: ReturnType<typeof parseAgentRunnerArgs>, envelope: AnyTaskEnvelope): AgentHarness {
-  if (options.harnessKind === "builtin") return createBuiltinAgentHarness();
+function createAgentHarness(options: ReturnType<typeof parseAgentRunnerArgs>, envelope: TaskEnvelopeV2): AgentHarness {
   if (options.harnessEndpoint) return createHttpHarness(options.harnessEndpoint);
   const harnessKind = options.harnessKind ?? defaultHarnessKindFromEnvelope(envelope);
   if (harnessKind !== "pi-sdk") {
-    const harness = envelope.schemaVersion === "southstar.task-envelope.v2"
-      ? `${envelope.harness.id} (${envelope.harness.kind})`
-      : "legacy task envelope";
+    const harness = `${envelope.harness.id} (${envelope.harness.kind})`;
     throw new Error(
       `No executable harness adapter is configured for ${harness}; custom harnesses require SOUTHSTAR_HARNESS_ENDPOINT or an explicit supported SOUTHSTAR_HARNESS_KIND`,
     );
@@ -175,8 +173,7 @@ function createAgentHarness(options: ReturnType<typeof parseAgentRunnerArgs>, en
   });
 }
 
-function defaultHarnessKindFromEnvelope(envelope: AnyTaskEnvelope): string | undefined {
-  if (envelope.schemaVersion !== "southstar.task-envelope.v2") return "pi-sdk";
+function defaultHarnessKindFromEnvelope(envelope: TaskEnvelopeV2): string | undefined {
   if (envelope.harness.kind === "pi-agent" || envelope.agentProfile.provider === "pi") return "pi-sdk";
   return undefined;
 }
@@ -214,10 +211,10 @@ async function postCallback(callbackUrl: string, result: TaskRunResult): Promise
   }
 }
 
-async function postLiveDelta(options: ReturnType<typeof parseAgentRunnerArgs>, envelope: AnyTaskEnvelope, text: string): Promise<void> {
+async function postLiveDelta(options: ReturnType<typeof parseAgentRunnerArgs>, envelope: TaskEnvelopeV2, text: string): Promise<void> {
   if (!options.liveEventUrl) return;
-  const taskId = envelope.schemaVersion === "southstar.task-envelope.v2" ? envelope.taskId : envelope.task.id;
-  const sessionId = envelope.schemaVersion === "southstar.task-envelope.v2" ? envelope.session.sessionId : envelope.rootSession.id;
+  const taskId = envelope.taskId;
+  const sessionId = envelope.session.sessionId;
   try {
     await fetch(options.liveEventUrl, {
       method: "POST",
@@ -239,7 +236,7 @@ async function postLiveDelta(options: ReturnType<typeof parseAgentRunnerArgs>, e
   }
 }
 
-function startHeartbeatLoop(options: ReturnType<typeof parseAgentRunnerArgs>, envelope: AnyTaskEnvelope): () => Promise<void> {
+function startHeartbeatLoop(options: ReturnType<typeof parseAgentRunnerArgs>, envelope: TaskEnvelopeV2): () => Promise<void> {
   if (!options.heartbeatUrl) {
     return async () => undefined;
   }
@@ -257,12 +254,12 @@ function startHeartbeatLoop(options: ReturnType<typeof parseAgentRunnerArgs>, en
         signal: AbortSignal.timeout(5_000),
         body: JSON.stringify({
           runId: envelope.runId,
-          taskId: envelope.schemaVersion === "southstar.task-envelope.v2" ? envelope.taskId : envelope.task.id,
+          taskId: envelope.taskId,
           attemptId: options.attemptId,
           executorType: "tork",
           torkJobId: options.torkJobId,
           torkTaskId: options.torkTaskId,
-          rootSessionId: envelope.schemaVersion === "southstar.task-envelope.v2" ? envelope.session.sessionId : envelope.rootSession.id,
+          rootSessionId: envelope.session.sessionId,
           heartbeatSeq: seq,
           phase,
           message,
@@ -289,8 +286,7 @@ function startHeartbeatLoop(options: ReturnType<typeof parseAgentRunnerArgs>, en
   };
 }
 
-export async function refreshEnvelopeContext(url: string, envelope: AnyTaskEnvelope): Promise<AnyTaskEnvelope> {
-  if (envelope.schemaVersion !== "southstar.task-envelope.v2") return envelope;
+export async function refreshEnvelopeContext(url: string, envelope: TaskEnvelopeV2): Promise<TaskEnvelopeV2> {
   const response = await fetch(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -336,18 +332,13 @@ function flagValue(argv: string[], flag: string): string | undefined {
   return value;
 }
 
-export function timeoutFromEnvelope(envelope: AnyTaskEnvelope): number {
-  const taskTimeoutMs = envelope.schemaVersion === "southstar.task-envelope.v2"
-    ? (envelope.agentProfile.budgetPolicy.maxWallTimeSeconds ?? 180) * 1000
-    : envelope.task.execution.timeoutSeconds * 1000;
+export function timeoutFromEnvelope(envelope: TaskEnvelopeV2): number {
+  const taskTimeoutMs = (envelope.agentProfile.budgetPolicy.maxWallTimeSeconds ?? 180) * 1000;
   return Math.max(120_000, taskTimeoutMs - 30_000);
 }
 
-function requiredFieldsFromEnvelope(envelope: AnyTaskEnvelope): string[] {
-  if (envelope.schemaVersion === "southstar.task-envelope.v2") {
-    return [...new Set(envelope.artifactContracts.flatMap((contract) => contract.requiredFields))];
-  }
-  return envelope.artifactContract?.requiredFields ?? [];
+function requiredFieldsFromEnvelope(envelope: TaskEnvelopeV2): string[] {
+  return [...new Set(envelope.artifactContracts.flatMap((contract) => contract.requiredFields))];
 }
 
 function numberFromEnv(value: string | undefined): number | undefined {

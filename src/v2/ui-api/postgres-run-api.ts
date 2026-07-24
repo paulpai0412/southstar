@@ -19,7 +19,6 @@ import type { WorkflowComposer } from "../orchestration/composer.ts";
 import { createWorkflowComposerRegistry, type WorkflowComposerMode } from "../orchestration/composer-registry.ts";
 import { runCompositionRepairLoop } from "../orchestration/composition-repair-loop.ts";
 import { runtimeBindingCapabilitiesFromEnv, type RuntimeBindingCapabilities } from "../orchestration/runtime-binding-capabilities.ts";
-import { parseWorkflowCompositionPlanFromText } from "../orchestration/llm-composer.ts";
 import {
   goalContractHash,
   requirementSpecFromGoalContract,
@@ -1375,48 +1374,6 @@ async function markPlannerDraftNeedsValidation(db: SouthstarDb, draftId: string)
   };
 }
 
-async function applyProfileOverridesToPlannerDraft(
-  db: SouthstarDb,
-  input: { draftId: string; profileOverridesByTaskId: Map<string, PlannerDraftTaskProfileOverride> },
-): Promise<PostgresPlannerDraftResult | null> {
-  const draft = await getResourceByKeyPg(db, "planner_draft", input.draftId);
-  if (!draft) throw new Error(`planner draft not found: ${input.draftId}`);
-  const payload = asRecord(draft.payload);
-  const workflow = asWorkflowManifest(payload.workflow);
-  const tasks = Array.isArray(workflow.tasks) ? workflow.tasks.map((task) => ({ ...task } as WorkflowTaskWithProfileOverride)) : [];
-  let applied = false;
-
-  for (const task of tasks) {
-    const override = input.profileOverridesByTaskId.get(task.id);
-    if (!override) continue;
-    task.profileOverride = cloneProfileOverride(override);
-    if (override.skillRefs !== undefined) task.skillRefs = [...override.skillRefs];
-    if (override.mcpGrantRefs !== undefined) task.mcpGrantRefs = [...override.mcpGrantRefs];
-    applied = true;
-  }
-
-  if (!applied) return null;
-  await upsertRuntimeResourcePg(db, {
-    id: draft.id,
-    resourceType: "planner_draft",
-    resourceKey: input.draftId,
-    ...(draft.runId ? { runId: draft.runId } : {}),
-    ...(draft.taskId ? { taskId: draft.taskId } : {}),
-    ...(draft.sessionId ? { sessionId: draft.sessionId } : {}),
-    scope: draft.scope,
-    status: draft.status,
-    ...(draft.title ? { title: draft.title } : {}),
-    payload: {
-      ...payload,
-      workflow: { ...workflow, tasks },
-    },
-    summary: draft.summary,
-    metrics: draft.metrics,
-    ...(draft.expiresAt ? { expiresAt: draft.expiresAt } : {}),
-  });
-  return await markPlannerDraftNeedsValidation(db, input.draftId);
-}
-
 async function refreshPlannerDraftCompilation(
   db: SouthstarDb,
   input: {
@@ -1885,11 +1842,6 @@ function asRecord(value: unknown): Record<string, unknown> {
   return isRecord(value) ? value : {};
 }
 
-function required<T>(value: T | undefined, message: string): T {
-  if (!value) throw new Error(message);
-  return value;
-}
-
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
@@ -1913,19 +1865,4 @@ function taskSemanticSummary(promptInputs: unknown): Pick<PlannerDraftTaskSummar
     ...(nodeType ? { nodeType } : {}),
     ...(expectedOutputs.length > 0 ? { expectedOutputs } : {}),
   };
-}
-
-function inferDraftOrchestrationMode(summary: Record<string, unknown>): "llm-constrained" {
-  const planner = stringValue(summary.planner);
-  if (planner && planner !== "library-constrained-llm" && planner !== "existing-composition-compiler") {
-    throw new Error(`planner draft uses retired planner mode: ${planner}`);
-  }
-  return "llm-constrained";
-}
-
-function inferDraftComposerMode(payload: Record<string, unknown>): WorkflowComposerMode | undefined {
-  const plannerTrace = asRecord(payload.plannerTrace);
-  const composerMode = stringValue(plannerTrace.composerMode);
-  if (composerMode === "llm") return composerMode;
-  return undefined;
 }

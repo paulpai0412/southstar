@@ -474,6 +474,7 @@ function managedLoopManifest(workflowId: string, taskId: string): unknown {
       roleRef: "maker",
       agentProfileRef: "software-maker-pi",
       evaluatorPipelineRef: "software-feature-quality",
+      workspaceMutation: { mode: "read_only", resourceKeys: [] },
       requiredArtifactRefs: ["implementation_report"],
       skillRefs: ["skill.software-implementation"],
       mcpGrantRefs: [],

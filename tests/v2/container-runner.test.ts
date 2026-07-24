@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { runTaskEnvelope } from "../../src/v2/agent-runner/task-runner.ts";
-import type { TaskEnvelope, TaskEnvelopeV2 } from "../../src/v2/agent-runner/task-envelope.ts";
+import type { TaskEnvelopeV2 } from "../../src/v2/agent-runner/task-envelope.ts";
 import type { AgentHarness } from "../../src/v2/harness/types.ts";
 
 test("container runner emits root session, repair, evaluator, and subagent events", async () => {
@@ -24,7 +24,9 @@ test("container runner emits root session, repair, evaluator, and subagent event
     },
   };
 
-  const result = await runTaskEnvelope(envelope(), harness, {
+  const taskEnvelope = envelopeV2();
+  taskEnvelope.session.maxRepairAttempts = 2;
+  const result = await runTaskEnvelope(taskEnvelope, harness, {
     requiredFields: ["summary", "commandsRun", "risks"],
   });
 
@@ -222,39 +224,6 @@ test("container runner runtime fault can attach failed upstream artifact refs", 
     failedArtifactRefs: ["artifact-ref-producer-1"],
   });
 });
-
-function envelope(): TaskEnvelope {
-  return {
-    schemaVersion: "southstar.task-envelope.v1",
-    runId: "run-1",
-    workflowId: "workflow-1",
-    task: {
-      id: "task-1",
-      name: "Implement",
-      domain: "software",
-      dependsOn: [],
-      execution: {
-        engine: "tork",
-        image: "image",
-        command: ["southstar-agent-runner"],
-        env: {},
-        mounts: [],
-        timeoutSeconds: 60,
-        infraRetry: { maxAttempts: 1 },
-      },
-      rootSession: { validator: "schema-evaluator-v1", maxRepairAttempts: 2 },
-      subagents: [{ id: "impl", harnessId: "codex", prompt: "implement", requiredArtifacts: ["implementation-report"] }],
-    },
-    rootSession: { id: "session-root", validator: "schema-evaluator-v1", maxRepairAttempts: 2 },
-    subagents: [{ id: "impl", harnessId: "codex", prompt: "implement", requiredArtifacts: ["implementation-report"] }],
-    memory: { items: [], capturedAt: "now" },
-    skills: [],
-    vaultLeases: [],
-    mcpGrants: [],
-    artifactContracts: ["implementation-report"],
-    artifactContract: { artifactTypes: ["implementation-report"], requiredFields: ["summary", "commandsRun", "risks"] },
-  };
-}
 
 function envelopeV2(): TaskEnvelopeV2 {
   return {

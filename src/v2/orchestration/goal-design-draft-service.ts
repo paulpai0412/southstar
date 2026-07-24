@@ -34,7 +34,6 @@ import {
   confirmGoalRequirementDraft,
   goalRequirementDraftReadiness,
   reviseGoalRequirementDraft,
-  validateGoalRequirementDraft,
   validateGoalRequirementDraftForRevision,
   type GoalRequirementDraftInterpreter,
   type GoalRequirementDraftIssue,
@@ -539,7 +538,7 @@ export async function reviseUiInteractionContractPg(
     const payload = asRecord(row.payload_json);
     const requirementDraft = goalRequirementDraftFromStored(payload.goalRequirementDraft);
     if (!requirementDraft) throw new Error(`Goal Requirement draft not found: ${input.draftId}`);
-    const phase = goalDesignPhaseFromPayload(payload) ?? "requirements_review";
+    const phase = requiredGoalDesignPhase(payload, input.draftId);
     if (phase !== "requirements_review") throw new Error(`ui_interaction_contract_frozen: ${input.draftId}`);
     await assertNoMaterializedGoalRequirementRunTx(tx, input.draftId);
 
@@ -688,7 +687,7 @@ export async function preparePostgresGoalRequirementDraft(
         ...(input.sessionId !== undefined ? { sessionId: input.sessionId } : {}),
         ...(input.projectRef !== undefined ? { projectRef: input.projectRef } : {}),
         ...(input.mode !== undefined ? { goalDesignMode: input.mode } : {}),
-        ...(input.templatePolicy !== undefined ? { templatePolicy: input.templatePolicy } : {}),
+        templatePolicy: input.templatePolicy ?? { mode: "auto" },
       },
       goalDesignSkillRef: skill.objectKey,
       goalDesignSkillVersionRef: skill.versionRef,
@@ -716,7 +715,7 @@ export async function preparePostgresGoalRequirementDraft(
         cwd: input.cwd,
         ...(input.projectRef !== undefined ? { projectRef: input.projectRef } : {}),
         ...(input.mode !== undefined ? { goalDesignMode: input.mode } : {}),
-        ...(input.templatePolicy !== undefined ? { templatePolicy: input.templatePolicy } : {}),
+        templatePolicy: input.templatePolicy ?? { mode: "auto" },
       },
     },
   }, persistDraft);
@@ -764,7 +763,7 @@ export async function reviseGoalRequirementPg(
     if (current.draftHash !== input.expectedDraftHash) {
       throw new Error(`goal_requirement_draft_stale: ${input.draftId}`);
     }
-    const phase = goalDesignPhaseFromPayload(payload) ?? "requirements_review";
+    const phase = requiredGoalDesignPhase(payload, input.draftId);
     if (phase === "composing") {
       throw new Error(`goal_requirements_frozen: ${input.draftId}:${phase}`);
     }
@@ -916,7 +915,7 @@ export async function confirmGoalRequirementsPg(
   if (preflightDraft.draftHash !== input.expectedDraftHash) {
     throw new Error(`goal_requirement_draft_stale: ${input.draftId}`);
   }
-  const preflightPhase = goalDesignPhaseFromPayload(preflightPayload) ?? "requirements_review";
+  const preflightPhase = requiredGoalDesignPhase(preflightPayload, input.draftId);
   const preflightUiContracts = uiInteractionContractsFromStored(preflightPayload.uiInteractionContracts, preflightDraft);
   if (preflightPhase === "requirements_review") {
     const readiness = goalRequirementReviewReadiness(preflightDraft, preflightPhase, preflightUiContracts);
@@ -951,7 +950,7 @@ export async function confirmGoalRequirementsPg(
     if (current.draftHash !== input.expectedDraftHash) {
       throw new Error(`goal_requirement_draft_stale: ${input.draftId}`);
     }
-    const phase = goalDesignPhaseFromPayload(payload) ?? "requirements_review";
+    const phase = requiredGoalDesignPhase(payload, input.draftId);
     const uiInteractionContracts = uiInteractionContractsFromStored(payload.uiInteractionContracts, current);
     const existingContract = storedGoalContract(payload.goalContract);
     const existingContractNeedsReconfirmation = existingContract
@@ -1587,7 +1586,7 @@ async function persistValidatedGoalDesignRevisionPg(
     if (draft.status !== "ready_for_review") {
       throw new Error(`goal design draft is not ready for review: ${input.draftId}`);
     }
-    const phase = goalDesignPhaseFromPayload(draft.payload_json) ?? "slice_review";
+    const phase = requiredGoalDesignPhase(draft.payload_json, input.draftId);
     if (phase === "composing" || phase === "dag_validated") {
       throw new Error(`goal_design_frozen: ${input.draftId}:${phase}`);
     }
@@ -1773,6 +1772,12 @@ function goalDesignPhaseFromPayload(payload: Record<string, unknown>): GoalDesig
   return typeof value === "string" && GOAL_DESIGN_PHASES.has(value as GoalDesignPhase)
     ? value as GoalDesignPhase
     : undefined;
+}
+
+function requiredGoalDesignPhase(payload: Record<string, unknown>, draftId: string): GoalDesignPhase {
+  const phase = goalDesignPhaseFromPayload(payload);
+  if (!phase) throw new Error(`goal_design_phase_missing: ${draftId}`);
+  return phase;
 }
 
 function assertGoalRequirementDraftMatchesRequest(
@@ -2317,12 +2322,13 @@ function storedGoalValidationResolution(value: unknown): GoalValidationResolutio
 
 function storedTemplatePolicy(value: unknown): WorkflowTemplatePolicyV1 {
   const policy = asRecord(value);
+  if (policy.mode === "auto") return { mode: "auto" };
   if (policy.mode === "prefer" || policy.mode === "require") {
     const templateRef = optionalNonEmptyString(policy.templateRef);
     const versionRef = optionalNonEmptyString(policy.versionRef);
     if (templateRef && versionRef) return { mode: policy.mode, templateRef, versionRef };
   }
-  return { mode: "auto" };
+  throw new Error("stored planner request requires a valid templatePolicy");
 }
 
 function optionalNonEmptyString(value: unknown): string | undefined {

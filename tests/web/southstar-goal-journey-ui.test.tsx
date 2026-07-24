@@ -71,7 +71,7 @@ test("Goal Journey timeline links Chat, Library, Workflow, and Operator selectio
       return;
     }
     if (pathname === "/api/models") {
-      await json(route, { models: [], providers: [], defaults: {} });
+      await json(route, { modelList: [], defaultModel: null, thinkingLevels: {}, thinkingLevelMaps: {} });
       return;
     }
     if (pathname === "/api/skills") {

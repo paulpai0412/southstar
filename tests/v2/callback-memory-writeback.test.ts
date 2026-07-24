@@ -23,6 +23,7 @@ test("callback ingestion writes run-local memory and long-term memory delta with
       rootSessionId: "session-1",
       ok: true,
       attempts: 1,
+      attemptId: "attempt-1",
       artifact: {
         kind: "implementation_report",
         summary: "Validated callback writeback records memory lineage.",
@@ -113,6 +114,33 @@ test("callback ingestion writes run-local memory and long-term memory delta with
       memoryItemIds: [runLocalMemory.rows[0]?.id],
       memoryDeltaIds: [memoryDeltas.rows[0]?.id],
     });
+  });
+});
+
+test("callback memory writeback rejects candidates without explicit evidence metrics", async () => {
+  await withDb(async (db) => {
+    const runId = "run-callback-memory-writeback-invalid";
+    const taskId = "task-invalid";
+    await seedRunTask(db, runId, taskId);
+
+    await assert.rejects(
+      () => ingestTaskRunResultPg(db, {
+        runId,
+        taskId,
+        rootSessionId: "session-invalid",
+        ok: true,
+        attempts: 1,
+        attemptId: "attempt-invalid",
+        artifact: {
+          kind: "implementation_report",
+          memoryCandidates: [{ scope: "software", kind: "lesson", text: "missing confidence" }],
+        },
+        metrics: { tokens: 1 },
+        receivedAt: "2026-06-22T10:06:00.000Z",
+        events: [],
+      }),
+      /memory candidate confidence must be a number between 0 and 1/i,
+    );
   });
 });
 

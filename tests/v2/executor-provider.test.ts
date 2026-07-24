@@ -22,6 +22,7 @@ test("TorkExecutorProvider submits through Tork without leaking provider details
   const result = await provider.submit({
     runId: "run-wf-provider",
     workflow,
+    attemptId: "attempt-1",
   });
 
   assert.equal(result.executorType, "tork");

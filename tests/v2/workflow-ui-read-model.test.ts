@@ -831,6 +831,7 @@ test("ui route exposes draft workflow canvas via /api/v2/ui/workflow", async () 
         },
         workflow: {
           workflowId: "wf-draft-ui",
+          domain: "software",
           tasks: [
             { id: "task-plan", name: "Plan", dependsOn: [] },
             {
@@ -923,6 +924,7 @@ test("workflow ui draft validation issues target explicit task indexes without b
       payload: {
         workflow: {
           workflowId: "wf-indexed-validation",
+          domain: "software",
           tasks: [
             { id: "task-plan", name: "Plan", dependsOn: [], roleRef: "missing-role" },
             { id: "task-build", name: "Build", dependsOn: ["task-plan"], roleRef: "builder" },

@@ -220,10 +220,11 @@ async function provisionAndPersistHand(
   input: ManagedRecoveryInput,
   recoveryKey: string,
 ): Promise<string> {
+  if (!input.handName) throw new Error("managed hand recovery requires handName");
   const binding = await deps.handProvider.provision({
     runId: input.runId,
     taskId: input.taskId,
-    handName: input.handName ?? "workspace",
+    handName: input.handName,
     resources: input.handResources ?? {},
     recoveryKey,
   });

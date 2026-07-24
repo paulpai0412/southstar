@@ -11,7 +11,7 @@ const CANONICAL_FILES = [
   "src/v2/scheduler/runnable-task-scheduler.ts",
   "src/v2/meta-harness/postgres-bindings.ts",
   "src/v2/read-models/managed-agents.ts",
-  "src/v2/tool-proxy/tool-proxy.ts",
+  "src/v2/tool-proxy/runtime-enforcement.ts",
 ];
 
 test("managed-agent canonical files do not import legacy SQLite surfaces", () => {

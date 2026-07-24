@@ -1,7 +1,7 @@
 import type { AgentHarness, HarnessRunResult } from "../harness/types.ts";
 import { evaluateArtifactGate } from "./root-session.ts";
 import type { ArtifactRepairContext } from "./root-session.ts";
-import type { AnyTaskEnvelope } from "./task-envelope.ts";
+import type { TaskEnvelopeV2 } from "./task-envelope.ts";
 
 export type TaskRunnerEvent = {
   eventType: string;
@@ -40,14 +40,14 @@ export type TaskRunnerRuntimeFault = {
 };
 
 export async function runTaskEnvelope(
-  envelope: AnyTaskEnvelope,
+  envelope: TaskEnvelopeV2,
   harness: AgentHarness,
   input: { requiredFields: string[]; runtimeFault?: TaskRunnerRuntimeFault; attemptId?: string },
 ): Promise<TaskRunResult> {
   const startedAt = Date.now();
-  const rootSessionId = envelopeRootSessionId(envelope);
-  const taskId = envelopeTaskId(envelope);
-  const maxRepairAttempts = envelopeMaxRepairAttempts(envelope);
+  const rootSessionId = envelope.session.sessionId;
+  const taskId = envelope.taskId;
+  const maxRepairAttempts = envelope.session.maxRepairAttempts ?? 1;
   const events: TaskRunnerEvent[] = [{
     eventType: "session.entry",
     actorType: "root-session",
@@ -55,9 +55,7 @@ export async function runTaskEnvelope(
     payload: {
       rootSessionId,
       taskId,
-      memoryItemCount: envelope.schemaVersion === "southstar.task-envelope.v2"
-        ? envelope.contextPacket.selectedMemories.length
-        : envelope.memory.items.length,
+      memoryItemCount: envelope.contextPacket.selectedMemories.length,
     },
   }, {
     eventType: "task.started",
@@ -116,7 +114,7 @@ export async function runTaskEnvelope(
         eventType: "subagent.completed",
         actorType: "subagent",
         sessionId: rootSessionId,
-        payload: { subagentIds: envelopeSubagentIds(envelope), attempt },
+        payload: { subagentIds: [envelope.agentProfile.id], attempt },
       });
       return {
         runId: envelope.runId,
@@ -152,24 +150,6 @@ export async function runTaskEnvelope(
   };
 }
 
-function envelopeTaskId(envelope: AnyTaskEnvelope): string {
-  return envelope.schemaVersion === "southstar.task-envelope.v2" ? envelope.taskId : envelope.task.id;
-}
-
-function envelopeRootSessionId(envelope: AnyTaskEnvelope): string {
-  return envelope.schemaVersion === "southstar.task-envelope.v2" ? envelope.session.sessionId : envelope.rootSession.id;
-}
-
-function envelopeMaxRepairAttempts(envelope: AnyTaskEnvelope): number {
-  return envelope.schemaVersion === "southstar.task-envelope.v2" ? envelope.session.maxRepairAttempts ?? 1 : envelope.rootSession.maxRepairAttempts;
-}
-
-function envelopeSubagentIds(envelope: AnyTaskEnvelope): string[] {
-  return envelope.schemaVersion === "southstar.task-envelope.v2"
-    ? [envelope.agentProfile.id]
-    : envelope.subagents.map((subagent) => subagent.id);
-}
-
 function emptyMetrics(): TaskRunMetrics {
   return { durationMs: 0, toolCalls: 0, retryCount: 0, tokens: 0, costMicrosUsd: 0 };
 }
@@ -183,22 +163,16 @@ function addMetrics(target: TaskRunMetrics, next: HarnessRunResult["metrics"]): 
   target.costMicrosUsd += numberValue(next.costMicrosUsd);
 }
 
-function finalizeRuntimeMetrics(metrics: TaskRunMetrics, envelope: AnyTaskEnvelope, startedAt: number): TaskRunMetrics {
+function finalizeRuntimeMetrics(metrics: TaskRunMetrics, envelope: TaskEnvelopeV2, startedAt: number): TaskRunMetrics {
   const finalized = { ...metrics };
   finalized.durationMs = Math.max(finalized.durationMs, Date.now() - startedAt, 1);
   if (finalized.tokens <= 0) {
-    finalized.tokens = envelopeInputTokenEstimate(envelope);
+    finalized.tokens = Math.max(0, numberValue(envelope.contextPacket.tokenEstimate.total));
   }
   return finalized;
 }
 
-function envelopeInputTokenEstimate(envelope: AnyTaskEnvelope): number {
-  if (envelope.schemaVersion !== "southstar.task-envelope.v2") return 0;
-  return Math.max(0, numberValue(envelope.contextPacket.tokenEstimate.total));
-}
-
-function repairContextFromEnvelope(envelope: AnyTaskEnvelope): ArtifactRepairContext | undefined {
-  if (envelope.schemaVersion !== "southstar.task-envelope.v2") return undefined;
+function repairContextFromEnvelope(envelope: TaskEnvelopeV2): ArtifactRepairContext | undefined {
   const contract = envelope.artifactContracts[0];
   if (!contract) return undefined;
 

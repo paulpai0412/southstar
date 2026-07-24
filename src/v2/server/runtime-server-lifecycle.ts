@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { Socket } from "node:net";
@@ -80,7 +80,6 @@ export type RuntimeServerLifecycleInput = {
   now?: () => Date;
   sleep?: (ms: number) => Promise<void>;
   processKill?: (pid: number, signal?: NodeJS.Signals | 0) => void;
-  spawnChild?: (command: string, args: string[], options: SpawnOptions) => Pick<ChildProcess, "pid" | "unref">;
   readTextFile?: (path: string) => Promise<string>;
   writeTextFile?: (path: string, text: string) => Promise<void>;
   ensureDirectory?: (path: string) => Promise<void>;
@@ -114,7 +113,6 @@ export function createRuntimeServerLifecycle(input: RuntimeServerLifecycleInput 
   const now = input.now ?? (() => new Date());
   const sleep = input.sleep ?? ((ms: number) => new Promise<void>((resolveSleep) => setTimeout(resolveSleep, ms)));
   const processKill = input.processKill ?? ((pid: number, signal?: NodeJS.Signals | 0) => process.kill(pid, signal));
-  const spawnChild = input.spawnChild ?? ((command: string, args: string[], options: SpawnOptions) => spawn(command, args, options));
   const readTextFile = input.readTextFile ?? ((path: string) => readFile(path, "utf8"));
   const writeTextFile = input.writeTextFile ?? ((path: string, text: string) => writeFile(path, text, "utf8"));
   const ensureDirectory = input.ensureDirectory ?? ((path: string) => mkdir(path, { recursive: true }));

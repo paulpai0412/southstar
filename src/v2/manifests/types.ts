@@ -41,7 +41,7 @@ export type TaskExecutionSpec = {
 export type WorkflowTaskDefinition = {
   id: string;
   name: string;
-  domain: "software" | "research" | "data-analysis" | "general";
+  domain: string;
   roleRef?: string;
   agentProfileRef?: string;
   providerRef?: string;

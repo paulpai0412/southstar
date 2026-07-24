@@ -427,7 +427,7 @@ async function buildRuntimeWorkflowUiReadModel(db: SouthstarDb, runId: string, p
   const overlayRows = await runtimeOverlayRows(db, runId);
   const workflowTasks = workflowTasksFromWorkflowManifest(run.workflow_manifest_json);
   const selectedTaskId = selectTaskId(tasks.map((task) => task.id), preferredTaskId);
-  const domain = run.domain ?? "general";
+  const domain = requiredDomain(run.domain);
   const { nodes, edges } = buildRuntimeWorkflowCanvasProjection({
     tasks,
     workflowTasks,
@@ -517,7 +517,7 @@ async function buildDraftWorkflowUiReadModel(db: SouthstarDb, draftId: string, p
   const workflowTasks = workflowTasksFromUnknown(workflow.tasks);
   const selectedTaskId = selectTaskId(workflowTasks.map((task) => task.id), preferredTaskId);
   const selectedTask = selectedTaskId ? workflowTasks.find((task) => task.id === selectedTaskId) ?? null : null;
-  const domain = stringValue(workflow.domain) ?? "general";
+  const domain = requiredDomain(stringValue(workflow.domain));
   const issues = validationIssues(summary.validationIssues ?? payload.validationIssues);
   const repairDetails = repairAttemptDetails(payload.repairAttempts ?? summary.repairAttempts);
   const mission = await buildGoalMissionReadModelPg(db, { draftId });
@@ -899,10 +899,10 @@ async function runtimeSelectedDefinition(
   const workflowTask = input.workflowTasks.find((candidate) => candidate.id === input.selectedTaskId);
   const envelope = await latestTaskEnvelope(db, input.runId, input.selectedTaskId);
   const envelopeRefs = asRecord(envelope.materializedLibraryRefs);
-  const skillRefs = envelopeStringArray(envelopeRefs, "skillRefs", stringArray(workflowTask?.skillRefs));
-  const mcpGrantRefs = envelopeStringArray(envelopeRefs, "mcpGrantRefs", stringArray(workflowTask?.mcpGrantRefs));
-  const toolGrantRefs = envelopeStringArray(envelopeRefs, "toolGrantRefs", stringArray(workflowTask?.toolGrantRefs));
-  const vaultLeasePolicyRefs = envelopeStringArray(envelopeRefs, "vaultLeasePolicyRefs", stringArray(workflowTask?.vaultLeasePolicyRefs));
+  const skillRefs = envelopeStringArray(envelopeRefs, "skillRefs");
+  const mcpGrantRefs = envelopeStringArray(envelopeRefs, "mcpGrantRefs");
+  const toolGrantRefs = envelopeStringArray(envelopeRefs, "toolGrantRefs");
+  const vaultLeasePolicyRefs = envelopeStringArray(envelopeRefs, "vaultLeasePolicyRefs");
   const nodePromptSpec = asRecord(workflowTask?.promptInputs).nodePromptSpec;
   const libraryDetails = libraryDefinitionDetails({
     domain: input.domain,
@@ -974,8 +974,8 @@ async function latestTaskEnvelope(db: SouthstarDb, runId: string, taskId: string
   const payload = asRecord(row?.payload_json);
   const envelope = asRecord(payload.envelope);
   const source = Object.keys(envelope).length > 0 ? envelope : payload;
-  const roleDefinition = source.roleDefinition ?? source.role;
-  const materializedLibraryRefs = source.materializedLibraryRefs ?? source.libraryRefs ?? source.refs;
+  const roleDefinition = source.role;
+  const materializedLibraryRefs = source.materializedLibraryRefs;
   return {
     ...(roleDefinition !== undefined ? { roleDefinition } : {}),
     ...(source.agentProfile !== undefined ? { agentProfile: source.agentProfile } : {}),
@@ -1020,6 +1020,11 @@ function agentLibrarySummary(domain: string, workflowManifest: unknown): Workflo
     artifactContractCount: workflowArray(workflowManifest, "artifactContracts").length,
     evaluatorPipelineCount: workflowArray(workflowManifest, "evaluatorPipelines").length,
   };
+}
+
+function requiredDomain(value: string | undefined): string {
+  if (!value || value.trim().length === 0) throw new Error("workflow domain is required");
+  return value;
 }
 
 function taskDefinitionSummary(task: DraftTaskShape, domain: string, workflowManifest: unknown): WorkflowTaskDefinitionSummary {
@@ -1242,8 +1247,8 @@ function asRecord(value: unknown): Record<string, unknown> {
   return isRecord(value) ? value : {};
 }
 
-function envelopeStringArray(refs: Record<string, unknown>, key: string, fallback: string[]): string[] {
-  return Object.prototype.hasOwnProperty.call(refs, key) ? stringArray(refs[key]) : fallback;
+function envelopeStringArray(refs: Record<string, unknown>, key: string): string[] {
+  return stringArray(refs[key]);
 }
 
 function taskIndexFromIssuePath(path: string): number | null {
@@ -1279,8 +1284,4 @@ function objectArray(value: unknown): Array<Record<string, unknown>> {
 function workflowArray<T>(workflowManifest: unknown, key: string): T[] {
   const value = asRecord(workflowManifest)[key];
   return Array.isArray(value) ? value as T[] : [];
-}
-
-function optionalStringArray(value: unknown): string[] | undefined {
-  return Array.isArray(value) ? stringArray(value) : undefined;
 }

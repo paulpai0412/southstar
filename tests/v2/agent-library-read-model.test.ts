@@ -90,6 +90,10 @@ test("agent library routes expose /api/v2/agent-library and /api/v2/agent-librar
       assert.equal(libraryEnvelope.result.domain, "software");
       assert.ok(libraryEnvelope.result.roles.length > 0);
 
+      const missingDomainResponse = await fetch(`${server.url}/api/v2/agent-library`);
+      assert.equal(missingDomainResponse.status, 400);
+      assert.match(await missingDomainResponse.text(), /domain is required/i);
+
       const candidatesResponse = await fetch(
         `${server.url}/api/v2/agent-library/candidates?draftId=${encodeURIComponent(draftId)}&taskId=task-build`,
       );

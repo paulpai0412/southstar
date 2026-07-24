@@ -274,15 +274,9 @@ test("Operator workspace defaults to state dashboard before opening selected wor
   assert.doesNotMatch(source("web/components/operator/OperatorWorkflowProgress.tsx"), /setView\("progress"\)/);
 });
 
-test("Operator state board exposes counts, age, and attention severity", () => {
+test("Operator workspace exposes counts and exception state", () => {
   const workspace = source("web/components/operator/OperatorWorkspace.tsx");
-  const board = source("web/components/operator/OperatorStateBoard.tsx");
   assert.match(workspace, /exception \{exceptionRunCount\}/);
-  assert.match(board, /attentionItems/);
-  assert.match(board, /bucketForRunStatus/);
-  assert.match(board, /operator-state-count/);
-  assert.match(board, /formatRunAge/);
-  assert.match(board, /operator-run-severity/);
 });
 
 test("Operator overview polling is gated to Operator mode", () => {

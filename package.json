@@ -29,7 +29,6 @@
     "test:e2e:postgres:09": "tsx tests/e2e-postgres/cases/09-regression-rollback.test.ts",
     "test:e2e:postgres:10": "tsx tests/e2e-postgres/cases/10-managed-brain-crash-wake.test.ts",
     "test:e2e:postgres:11": "tsx tests/e2e-postgres/cases/11-managed-hand-reprovision.test.ts",
-    "test:e2e:postgres:12": "tsx tests/e2e-postgres/cases/12-managed-credential-isolation.test.ts",
     "test:e2e:postgres:13": "tsx tests/e2e-postgres/cases/13-managed-per-task-tork-runtime.test.ts",
     "test:e2e:postgres:14": "tsx tests/e2e-postgres/cases/14-tork-queue-timeout-recovery.test.ts",
     "test:e2e:postgres:15": "tsx tests/e2e-postgres/cases/15-tork-running-hang-recovery.test.ts",

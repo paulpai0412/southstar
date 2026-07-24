@@ -11,6 +11,7 @@ test("records structured learning signals as graph nodes and run history", async
     await seedRun(db, "run-signal-1");
     const result = await recordLearningSignal(db, {
       signalKind: "repair_success",
+      scope: "software",
       runId: "run-signal-1",
       taskId: "implement-feature",
       roleRef: "maker",
@@ -22,6 +23,8 @@ test("records structured learning signals as graph nodes and run history", async
       repairInstruction: "include commandsRun and risks",
       outcome: "passed_after_repair",
       sourceRefs: ["artifact-1", "eval-1"],
+      confidence: 0.9,
+      successScore: 1,
     });
 
     assert.match(result.nodeId, /^learning_signal-/);
@@ -55,6 +58,8 @@ test("records multiple signals and redacts token-shaped payload values", async (
           artifactType: "implementation_report",
           failureKind: "missing_required_field",
           sourceRefs: ["eval-1"],
+          confidence: 0.8,
+          successScore: 0,
           secretLikeValue: "ghp_abcdefghijklmnopqrstuvwxyz1234567890",
         },
         {
@@ -63,6 +68,8 @@ test("records multiple signals and redacts token-shaped payload values", async (
           artifactType: "implementation_report",
           failureKind: "missing_required_field",
           sourceRefs: ["eval-2"],
+          confidence: 0.9,
+          successScore: 1,
         },
       ],
     });
@@ -78,10 +85,26 @@ test("records multiple signals and redacts token-shaped payload values", async (
 test("rejects raw transcript and oversized learning signal payloads", async () => {
   await withDb(async (db) => {
     await assert.rejects(() => recordLearningSignal(db, {
+      signalKind: "missing_scope",
+      sourceRefs: ["evidence-1"],
+      confidence: 0.5,
+      successScore: 0.5,
+    } as never), /scope is required/i);
+
+    await assert.rejects(() => recordLearningSignal(db, {
+      signalKind: "missing_confidence",
+      scope: "software",
+      sourceRefs: ["evidence-2"],
+      successScore: 0.5,
+    } as never), /confidence must be a number between 0 and 1/i);
+
+    await assert.rejects(() => recordLearningSignal(db, {
       signalKind: "session_checkpoint",
       scope: "software",
       rawTranscript: "user: full transcript should not enter long-term learning memory",
       sourceRefs: ["checkpoint-1"],
+      confidence: 0.5,
+      successScore: 0,
     }), /raw transcript/i);
 
     await assert.rejects(() => recordLearningSignal(db, {
@@ -89,6 +112,8 @@ test("rejects raw transcript and oversized learning signal payloads", async () =
       scope: "software",
       summary: "x".repeat(70_000),
       sourceRefs: ["artifact-big"],
+      confidence: 0.5,
+      successScore: 0,
     }), /too large/i);
   });
 });

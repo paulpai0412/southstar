@@ -6,13 +6,19 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { runAgentRunnerCli } from "../../src/v2/agent-runner/cli.ts";
 import { parseAgentRunnerArgs, timeoutFromEnvelope } from "../../src/v2/agent-runner/cli.ts";
-import type { TaskEnvelope, TaskEnvelopeV2 } from "../../src/v2/agent-runner/task-envelope.ts";
+import type { TaskEnvelopeV2 } from "../../src/v2/agent-runner/task-envelope.ts";
 
 test("agent runner CLI reads envelope, calls HTTP harness, and writes task result", async () => {
   const root = await mkdtemp(join(tmpdir(), "southstar-agent-runner-"));
   const envelopePath = join(root, "envelope.json");
   const resultPath = join(root, "result.json");
-  await writeFile(envelopePath, JSON.stringify(envelope()), "utf8");
+  const taskEnvelope = envelopeV2();
+  taskEnvelope.session.maxRepairAttempts = 2;
+  taskEnvelope.artifactContracts = [{
+    ...taskEnvelope.artifactContracts[0]!,
+    requiredFields: ["summary", "commandsRun", "risks"],
+  }];
+  await writeFile(envelopePath, JSON.stringify(taskEnvelope), "utf8");
   let attempts = 0;
   const server = createServer(async (request, response) => {
     assert.equal(request.method, "POST");
@@ -44,6 +50,8 @@ test("agent runner CLI reads envelope, calls HTTP harness, and writes task resul
     const exitCode = await runAgentRunnerCli([
       "--envelope",
       envelopePath,
+      "--attempt-id",
+      "attempt-1",
       "--result",
       resultPath,
       "--harness-endpoint",
@@ -77,6 +85,8 @@ test("agent runner CLI fails closed when a custom harness has no executable adap
   const exitCode = await runAgentRunnerCli([
     "--envelope",
     envelopePath,
+    "--attempt-id",
+    "attempt-1",
     "--result",
     resultPath,
   ], {
@@ -135,6 +145,8 @@ test("agent runner CLI refreshes v2 context packet before harness run", async ()
     const exitCode = await runAgentRunnerCli([
       "--envelope",
       envelopePath,
+      "--attempt-id",
+      "attempt-1",
       "--result",
       resultPath,
       "--harness-endpoint",
@@ -176,6 +188,8 @@ test("agent runner CLI validates only fields declared by a dynamic contract", as
     const exitCode = await runAgentRunnerCli([
       "--envelope",
       envelopePath,
+      "--attempt-id",
+      "attempt-1",
       "--result",
       resultPath,
       "--harness-endpoint",
@@ -196,15 +210,15 @@ test("agent runner CLI sends heartbeat without a Tork job id", async () => {
   const root = await mkdtemp(join(tmpdir(), "southstar-agent-runner-heartbeat-"));
   const envelopePath = join(root, "envelope-heartbeat.json");
   const resultPath = join(root, "result-heartbeat.json");
-  await writeFile(envelopePath, JSON.stringify(envelope()), "utf8");
+  await writeFile(envelopePath, JSON.stringify(envelopeV2()), "utf8");
   let heartbeatCalls = 0;
   const server = createServer(async (request, response) => {
     const body = await readRequestBody(request);
     if (request.method === "POST" && request.url === "/heartbeat") {
       heartbeatCalls += 1;
       const payload = JSON.parse(body) as { runId?: string; taskId?: string; attemptId?: string; torkJobId?: string };
-      assert.equal(payload.runId, "run-1");
-      assert.equal(payload.taskId, "task-1");
+      assert.equal(payload.runId, "run-v2");
+      assert.equal(payload.taskId, "task-v2");
       assert.equal(payload.attemptId, "attempt-no-job-id");
       assert.equal(payload.torkJobId, undefined);
       response.setHeader("content-type", "application/json");
@@ -255,9 +269,8 @@ test("agent runner CLI runtime fault keeps harness execution but fails artifact 
   const root = await mkdtemp(join(tmpdir(), "southstar-agent-runner-fault-"));
   const envelopePath = join(root, "envelope-fault.json");
   const resultPath = join(root, "result-fault.json");
-  const faultyEnvelope = envelope();
-  faultyEnvelope.rootSession.maxRepairAttempts = 1;
-  faultyEnvelope.task.rootSession.maxRepairAttempts = 1;
+  const faultyEnvelope = envelopeV2();
+  faultyEnvelope.session.maxRepairAttempts = 1;
   await writeFile(envelopePath, JSON.stringify(faultyEnvelope), "utf8");
   let harnessCalls = 0;
   const server = createServer(async (_request, response) => {
@@ -278,6 +291,8 @@ test("agent runner CLI runtime fault keeps harness execution but fails artifact 
     const exitCode = await runAgentRunnerCli([
       "--envelope",
       envelopePath,
+      "--attempt-id",
+      "attempt-1",
       "--result",
       resultPath,
       "--harness-endpoint",
@@ -315,9 +330,8 @@ test("agent runner CLI exits zero after delivering failed callback", async () =>
   const root = await mkdtemp(join(tmpdir(), "southstar-agent-runner-failed-callback-"));
   const envelopePath = join(root, "envelope-failed-callback.json");
   const resultPath = join(root, "result-failed-callback.json");
-  const faultyEnvelope = envelope();
-  faultyEnvelope.rootSession.maxRepairAttempts = 1;
-  faultyEnvelope.task.rootSession.maxRepairAttempts = 1;
+  const faultyEnvelope = envelopeV2();
+  faultyEnvelope.session.maxRepairAttempts = 1;
   await writeFile(envelopePath, JSON.stringify(faultyEnvelope), "utf8");
   let callbackBody: { ok?: boolean; artifact?: Record<string, unknown> } | undefined;
   const server = createServer(async (request, response) => {
@@ -348,6 +362,8 @@ test("agent runner CLI exits zero after delivering failed callback", async () =>
     const exitCode = await runAgentRunnerCli([
       "--envelope",
       envelopePath,
+      "--attempt-id",
+      "attempt-1",
       "--result",
       resultPath,
       "--harness-endpoint",
@@ -373,55 +389,41 @@ test("agent runner CLI exits zero after delivering failed callback", async () =>
 });
 
 test("agent runner CLI args allow Pi SDK harness when HTTP endpoint is absent", () => {
-  const parsed = parseAgentRunnerArgs(["--envelope", "/tmp/envelope.json"], {});
+  const parsed = parseAgentRunnerArgs(["--envelope", "/tmp/envelope.json", "--attempt-id", "attempt-1"], {});
 
   assert.equal(parsed.envelopePath, "/tmp/envelope.json");
   assert.equal(parsed.harnessEndpoint, undefined);
   assert.equal(parsed.harnessProvider, "pi-sdk");
 });
 
+test("agent runner CLI requires a durable attempt identity", () => {
+  assert.throws(
+    () => parseAgentRunnerArgs(["--envelope", "/tmp/envelope.json"], {}),
+    /--attempt-id or SOUTHSTAR_ATTEMPT_ID is required/,
+  );
+});
+
+test("agent runner rejects the removed builtin harness", async () => {
+  const root = await mkdtemp(join(tmpdir(), "southstar-agent-runner-builtin-"));
+  const envelopePath = join(root, "envelope.json");
+  await writeFile(envelopePath, JSON.stringify(envelopeV2()), "utf8");
+  const errors: string[] = [];
+
+  const exitCode = await runAgentRunnerCli(
+    ["--envelope", envelopePath, "--attempt-id", "attempt-1", "--harness-kind", "builtin"],
+    { writeError: (text) => errors.push(text) },
+  );
+
+  assert.equal(exitCode, 1);
+  assert.match(errors[0] ?? "", /No executable harness adapter is configured/);
+});
+
 test("agent runner harness timeout follows the task timeout budget", () => {
-  const longEnvelope = envelope();
-  longEnvelope.task.execution.timeoutSeconds = 900;
+  const longEnvelope = envelopeV2();
+  longEnvelope.agentProfile.budgetPolicy = { ...longEnvelope.agentProfile.budgetPolicy, maxWallTimeSeconds: 900 };
 
   assert.equal(timeoutFromEnvelope(longEnvelope), 870_000);
 });
-
-function envelope(): TaskEnvelope {
-  return {
-    schemaVersion: "southstar.task-envelope.v1",
-    runId: "run-1",
-    workflowId: "workflow-1",
-    task: {
-      id: "task-1",
-      name: "Implement",
-      domain: "software",
-      dependsOn: [],
-      execution: {
-        engine: "tork",
-        image: "image",
-        command: ["southstar-agent-runner"],
-        env: {},
-        mounts: [],
-        timeoutSeconds: 60,
-        infraRetry: { maxAttempts: 1 },
-      },
-      rootSession: { validator: "schema-evaluator-v1", maxRepairAttempts: 2 },
-      subagents: [{ id: "impl", harnessId: "codex", prompt: "implement", requiredArtifacts: ["implementation-report"] }],
-    },
-    rootSession: { id: "session-root", validator: "schema-evaluator-v1", maxRepairAttempts: 2 },
-    subagents: [{ id: "impl", harnessId: "codex", prompt: "implement", requiredArtifacts: ["implementation-report"] }],
-    memory: { items: [], capturedAt: "now" },
-    skills: [],
-    vaultLeases: [],
-    mcpGrants: [],
-    artifactContracts: ["implementation-report"],
-    artifactContract: {
-      artifactTypes: ["implementation-report"],
-      requiredFields: ["summary", "commandsRun", "risks"],
-    },
-  };
-}
 
 function envelopeV2(): TaskEnvelopeV2 {
   return {

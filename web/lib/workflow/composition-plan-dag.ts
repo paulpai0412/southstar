@@ -38,30 +38,35 @@ export function buildWorkflowCompositionPlanDisplay(text: string): WorkflowCompo
       agentProfileRef: task.agentProfileRef,
     }));
   if (tasks.length === 0) return null;
+  const titleSlug = stableSlug(parsed.title);
+  if (!titleSlug) return null;
+  const hasUnboundTask = tasks.some((task) => !task.agentDefinitionRef || !task.agentProfileRef);
 
   const levels = dependencyLevels(tasks);
   const dag: WorkflowDag = {
-    id: `composition-${stableSlug(parsed.title)}`,
+    id: `composition-${titleSlug}`,
     mode: "draft",
     compositionPlan: parsed,
     ...(parsed.selectedWorkflowTemplateRef ? { templateId: parsed.selectedWorkflowTemplateRef } : {}),
     templateTitle: parsed.title,
     prompt: parsed.title,
     expandedByDefault: true,
-    readiness: "ready",
+    readiness: hasUnboundTask ? "blocked" : "ready",
     nodes: tasks.map((task, index) => {
       const profileRef = task.agentProfileRef;
-      const role = roleFromRefs(task.agentDefinitionRef, profileRef);
+      const profileResourcePath = profileRef ? profileResourcePathFromRef(profileRef) : undefined;
       return {
         id: task.id,
         taskId: task.id,
         mode: "draft",
-        label: task.name || task.id,
-        role,
-        agentRef: task.agentDefinitionRef || `agent.${role}`,
-        ...(profileRef ? { profileRef, profileResourcePath: profileResourcePathFromRef(profileRef, role) } : {}),
+        label: task.name,
+        ...(task.agentDefinitionRef ? { agentRef: task.agentDefinitionRef } : {}),
+        ...(profileRef ? {
+          profileRef,
+          ...(profileResourcePath ? { profileResourcePath } : {}),
+        } : {}),
         level: levels.get(task.id) ?? index,
-        state: "ready",
+        state: task.agentDefinitionRef && task.agentProfileRef ? "ready" : "blocked",
       };
     }),
     edges: tasks.flatMap((task) => task.dependsOn.map((dependency) => ({ from: dependency, to: task.id }))),
@@ -115,8 +120,8 @@ function isWorkflowCompositionPlanTask(value: unknown): value is {
   id: string;
   name: string;
   dependsOn: string[];
-  agentDefinitionRef: string;
-  agentProfileRef: string;
+  agentDefinitionRef?: string;
+  agentProfileRef?: string;
 } {
   if (!value || typeof value !== "object") return false;
   const task = value as WorkflowCompositionPlanTask;
@@ -124,8 +129,8 @@ function isWorkflowCompositionPlanTask(value: unknown): value is {
     typeof task.name === "string" &&
     Array.isArray(task.dependsOn) &&
     task.dependsOn.every((dependency) => typeof dependency === "string") &&
-    typeof task.agentDefinitionRef === "string" &&
-    typeof task.agentProfileRef === "string";
+    (task.agentDefinitionRef === undefined || typeof task.agentDefinitionRef === "string") &&
+    (task.agentProfileRef === undefined || typeof task.agentProfileRef === "string");
 }
 
 function dependencyLevels(tasks: Array<{ id: string; dependsOn: string[] }>): Map<string, number> {
@@ -151,25 +156,17 @@ function dependencyLevels(tasks: Array<{ id: string; dependsOn: string[] }>): Ma
   return levels;
 }
 
-function roleFromRefs(agentDefinitionRef: string, profileRef: string): string {
-  const source = `${agentDefinitionRef} ${profileRef}`;
-  if (source.includes("explorer")) return "explorer";
-  if (source.includes("checker") || source.includes("reviewer")) return "checker";
-  if (source.includes("summarizer")) return "summarizer";
-  return "maker";
-}
-
-function profileResourcePathFromRef(profileRef: string, fallback: string): string {
+function profileResourcePathFromRef(profileRef: string): string | undefined {
   const segment = profileRef
     .replace(/^profile\./, "")
-    .replace(/[^a-zA-Z0-9._-]+/g, "-") || fallback;
-  return `profiles/${segment}.yaml`;
+    .replace(/[^a-zA-Z0-9._-]+/g, "-");
+  return segment ? `profiles/${segment}.yaml` : undefined;
 }
 
-function stableSlug(value: string): string {
+function stableSlug(value: string): string | undefined {
   return value
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "") || "workflow";
+    .replace(/^-+|-+$/g, "") || undefined;
 }

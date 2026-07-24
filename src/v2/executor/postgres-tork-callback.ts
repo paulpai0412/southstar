@@ -170,7 +170,7 @@ export async function ingestTaskRunResultPg(
       },
     });
 
-    const staleAttempt = await staleAttemptReasonPg(tx, result, task.root_session_id ?? undefined);
+    const staleAttempt = await staleAttemptReasonPg(tx, result);
     if (staleAttempt) {
       await appendHistoryEventPg(tx, {
         runId: result.runId,
@@ -840,7 +840,8 @@ function callbackReceiptToken(result: PostgresTaskRunCallbackResult, handExecuti
 }
 
 function normalizedAttemptId(result: PostgresTaskRunCallbackResult): string {
-  return result.attemptId ?? `attempt-${result.attempts}`;
+  if (!result.attemptId) throw new Error("executor callback requires attemptId");
+  return result.attemptId;
 }
 
 async function artifactContractRefsForTaskPg(
@@ -958,15 +959,11 @@ async function duplicateCallbackOutcome(
 async function staleAttemptReasonPg(
   db: SouthstarDb,
   result: PostgresTaskRunCallbackResult,
-  currentRootSessionId?: string,
 ): Promise<{ callbackAttemptId: string; latestAttemptId: string } | undefined> {
   const latestAttemptId = await latestCallbackAttemptIdPg(db, result.runId, result.taskId);
   if (!latestAttemptId) return undefined;
 
-  if (!result.attemptId) {
-    if (currentRootSessionId === result.rootSessionId) return undefined;
-    return runtimeAttemptNumber(latestAttemptId) > 1 ? { callbackAttemptId: "unknown", latestAttemptId } : undefined;
-  }
+  if (!result.attemptId) throw new Error("executor callback requires attemptId");
 
   if (runtimeAttemptNumber(result.attemptId) < runtimeAttemptNumber(latestAttemptId)) {
     return { callbackAttemptId: result.attemptId, latestAttemptId };
@@ -991,10 +988,6 @@ async function latestCallbackAttemptIdPg(db: SouthstarDb, runId: string, taskId:
 
 function isTaskTerminalStatus(status: string): boolean {
   return ["completed", "failed", "cancelled", "lost", "blocked"].includes(status);
-}
-
-function isHandExecutionTerminalStatus(status: string): boolean {
-  return ["completed", "failed", "cancelled", "lost", "superseded"].includes(status);
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

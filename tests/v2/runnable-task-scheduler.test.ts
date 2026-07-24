@@ -987,7 +987,7 @@ async function seedRun(
         roleRef: "maker",
         agentProfileRef: "software-maker-pi",
         evaluatorPipelineRef: "software-feature-quality",
-        ...(task.workspaceMutation ? { workspaceMutation: task.workspaceMutation } : {}),
+        workspaceMutation: task.workspaceMutation ?? { mode: "read_only", resourceKeys: [] },
         requiredArtifactRefs: ["implementation_report"],
         skillRefs: ["skill.software-implementation"],
         mcpGrantRefs: [],

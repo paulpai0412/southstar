@@ -41,12 +41,12 @@ export const LIBRARY_IMPORT_CANDIDATE_KIND_FIELDS: Record<LibraryImportCandidate
   domain: ["aliases"],
   capability: ["requiredOperations"],
   artifact: [
-    "artifactType", "mediaTypes", "evidenceKinds", "validationRules", "schemaRef", "requiredFields",
+    "artifactType", "mediaTypes", "evidenceKinds", "validationRules", "schemaRef", "requiredFields", "evidenceFields",
     "provenanceRequirements", "semanticTags",
   ],
   evaluator: [
     "validatesArtifactRefs", "requiredInputs", "evidenceKinds", "verificationModes", "verificationProcedures",
-    "independencePolicy", "resultSchemaRef", "failureClassifications", "semanticTags",
+    "evaluators", "onFailure", "independencePolicy", "resultSchemaRef", "failureClassifications", "semanticTags",
   ],
 };
 
@@ -113,6 +113,9 @@ export function normalizeLibraryImportCandidateKindFields(
       validationRules: strictStringArray(record.validationRules, `candidates.${objectKey}.validationRules`),
       schemaRef: requiredNonEmptyString(record.schemaRef, `candidates.${objectKey}.schemaRef`),
       requiredFields: strictStringArray(record.requiredFields, `candidates.${objectKey}.requiredFields`),
+      ...(record.evidenceFields === undefined
+        ? {}
+        : { evidenceFields: strictStringArray(record.evidenceFields, `candidates.${objectKey}.evidenceFields`) }),
       provenanceRequirements: strictStringArray(record.provenanceRequirements, `candidates.${objectKey}.provenanceRequirements`),
     };
   }
@@ -121,6 +124,12 @@ export function normalizeLibraryImportCandidateKindFields(
   const evidenceKinds = strictEvidenceKinds(record.evidenceKinds, `candidates.${objectKey}.evidenceKinds`);
   const semanticTags = optionalStringArray(record.semanticTags, `candidates.${objectKey}.semanticTags`);
   const procedures = normalizeVerificationProcedures(record.verificationProcedures, objectKey, verificationModes, evidenceKinds);
+  const evaluators = record.evaluators === undefined
+    ? undefined
+    : normalizeEvaluatorSteps(record.evaluators, objectKey);
+  const onFailure = record.onFailure === undefined
+    ? undefined
+    : normalizeEvaluatorOnFailure(record.onFailure, objectKey);
   const validatesArtifactRefs = strictStringArray(record.validatesArtifactRefs, `candidates.${objectKey}.validatesArtifactRefs`);
   if (validatesArtifactRefs.some((ref) => !ref.startsWith("artifact."))) {
     throw new Error(`library import evaluator ${objectKey} has invalid validatesArtifactRefs`);
@@ -140,9 +149,47 @@ export function normalizeLibraryImportCandidateKindFields(
     evidenceKinds,
     verificationModes,
     verificationProcedures: procedures,
+    ...(evaluators ? { evaluators } : {}),
+    ...(onFailure ? { onFailure } : {}),
     independencePolicy: "independent",
     resultSchemaRef: REQUIREMENT_EVALUATOR_RESULT_SCHEMA_REF,
     failureClassifications: strictStringArray(record.failureClassifications, `candidates.${objectKey}.failureClassifications`),
+  };
+}
+
+function normalizeEvaluatorSteps(
+  value: unknown,
+  objectKey: string,
+): NonNullable<LibraryImportCandidate["evaluators"]> {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error(`candidates.${objectKey}.evaluators must be a non-empty array`);
+  }
+  return value.map((raw, index) => {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      throw new Error(`candidates.${objectKey}.evaluators.${index} must be an object`);
+    }
+    const step = raw as Record<string, unknown>;
+    const id = requiredNonEmptyString(step.id, `candidates.${objectKey}.evaluators.${index}.id`);
+    const kind = requiredNonEmptyString(step.kind, `candidates.${objectKey}.evaluators.${index}.kind`);
+    if (!step.config || typeof step.config !== "object" || Array.isArray(step.config)) {
+      throw new Error(`candidates.${objectKey}.evaluators.${index}.config must be an object`);
+    }
+    if (typeof step.required !== "boolean") {
+      throw new Error(`candidates.${objectKey}.evaluators.${index}.required must be a boolean`);
+    }
+    return { id, kind, config: step.config as Record<string, unknown>, required: step.required };
+  });
+}
+
+function normalizeEvaluatorOnFailure(value: unknown, objectKey: string): { defaultStrategy: string } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`candidates.${objectKey}.onFailure must be an object`);
+  }
+  return {
+    defaultStrategy: requiredNonEmptyString(
+      (value as Record<string, unknown>).defaultStrategy,
+      `candidates.${objectKey}.onFailure.defaultStrategy`,
+    ),
   };
 }
 

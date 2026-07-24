@@ -53,7 +53,7 @@ export function LibraryFileViewer({
   );
   const hasValidationErrors = validationIssues.some((issue) => issue.severity === "error");
   const saveDisabled = !selectedFilePath || !dirty || saving || syncing || hasValidationErrors;
-  const graph = edgeGraph ?? fallbackGraphFromObjectDetail(objectDetail, parsedFile);
+  const graph = edgeGraph;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
@@ -171,7 +171,7 @@ function EdgesPanel({
   content,
   onSelectGraphNode,
 }: {
-  graph: LibraryGraphReadModel | null;
+  graph: LibraryGraphReadModel | null | undefined;
   objectDetail: LibraryObjectDetail | null;
   parsedFile: LibraryFileRecord | null;
   selectedFilePath?: string;
@@ -186,7 +186,12 @@ function EdgesPanel({
         <span>{nodes.length} nodes / {edges.length} edges</span>
         <span>{graph?.activeScope ?? parsedFile?.scope ?? stringValue(objectDetail?.object.state?.scope) ?? "all"}</span>
       </div>
-      {nodes.length > 0 ? (
+      {graph === null || graph === undefined ? (
+        <section data-testid="library-graph-unavailable" style={{ display: "grid", gap: 6, fontSize: 12 }}>
+          <div style={{ fontWeight: 700 }}>Library graph unavailable</div>
+          <span style={{ color: "var(--text-muted)" }}>The Library graph read model was not returned; no client-side graph was inferred.</span>
+        </section>
+      ) : nodes.length > 0 ? (
         <LibraryGraphChart
           nodes={nodes}
           edges={edges}
@@ -200,9 +205,6 @@ function EdgesPanel({
       ) : (
         <section style={{ display: "grid", gap: 6, fontSize: 12 }}>
           <div style={{ fontWeight: 700 }}>No graph edges</div>
-          <pre style={{ margin: 0, whiteSpace: "pre-wrap", fontFamily: "var(--font-mono)" }}>
-            {JSON.stringify(objectDetail ? { inboundEdges: objectDetail.inboundEdges, outboundEdges: objectDetail.outboundEdges } : edgeRefs(parsedFile?.frontmatter), null, 2)}
-          </pre>
         </section>
       )}
       <NodeContentPanel objectDetail={objectDetail} parsedFile={parsedFile} content={content} />
@@ -527,45 +529,6 @@ function lineIssue(
 
 function formatLineIssue(issue: LibraryFileValidationIssue): string {
   return `${issue.severity}: ${issue.path} - ${issue.message}`;
-}
-
-function fallbackGraphFromObjectDetail(
-  objectDetail: LibraryObjectDetail | null | undefined,
-  parsedFile: LibraryFileRecord | null,
-): LibraryGraphReadModel | null {
-  const objectKey = objectDetail?.object.objectKey ?? parsedFile?.objectKey;
-  if (!objectKey) return null;
-  const objectNode = {
-    objectKey,
-    objectKind: objectDetail?.object.objectKind ?? parsedFile?.objectKind,
-    status: objectDetail?.object.status ?? parsedFile?.status,
-    title: stringValue(objectDetail?.object.state?.title) ?? parsedFile?.title ?? objectKey,
-    scope: stringValue(objectDetail?.object.state?.scope) ?? parsedFile?.scope,
-  };
-  const edges = [...(objectDetail?.inboundEdges ?? []), ...(objectDetail?.outboundEdges ?? [])];
-  const nodeKeys = new Set([objectKey]);
-  for (const edge of edges) {
-    nodeKeys.add(edge.fromObjectKey);
-    nodeKeys.add(edge.toObjectKey);
-  }
-  const nodes = [...nodeKeys].map((key) => key === objectKey ? objectNode : {
-    objectKey: key,
-    title: key,
-  });
-  return {
-    activeScope: objectNode.scope,
-    nodes,
-    edges,
-  };
-}
-
-function edgeRefs(frontmatter: Record<string, unknown> | undefined): Record<string, unknown> {
-  if (!frontmatter) return {};
-  const refs: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(frontmatter)) {
-    if (key.endsWith("Refs") || key.endsWith("Ref")) refs[key] = value;
-  }
-  return refs;
 }
 
 function firstBodyParagraph(content: string): string | undefined {

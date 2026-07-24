@@ -126,48 +126,6 @@ export async function getKnowledgeCardEvidence(db: SouthstarDb, cardId: string):
   return await getEvidenceSubgraph(db, cardId, 2, { edgeTypes: ["SUPPORTED_BY", "DERIVED_FROM", "EVALUATED_BY", "FOUND_FAILURE", "FIXED_FAILURE"] });
 }
 
-async function getDirectionalSubgraph(
-  db: SouthstarDb,
-  nodeId: string,
-  direction: "incoming" | "outgoing",
-  edgeTypes: string[],
-): Promise<GraphReadModel> {
-  const joinCondition = direction === "incoming"
-    ? "edge.to_node_id = walk.id"
-    : "edge.from_node_id = walk.id";
-  const nextId = direction === "incoming" ? "edge.from_node_id" : "edge.to_node_id";
-  const rows = await db.query<GraphEdgeRow>(
-    `with recursive walk(id, depth) as (
-      select $1::text, 0
-      union
-      select ${nextId}, walk.depth + 1
-      from walk
-      join southstar.learning_edges edge on ${joinCondition}
-      where walk.depth < 4 and edge.edge_type = any($2::text[])
-    ), nodes as (
-      select distinct node.* from southstar.learning_nodes node join walk on walk.id = node.id limit 200
-    )
-    select
-      node.id as node_id,
-      node.node_type,
-      node.status as node_status,
-      node.summary_text,
-      node.payload_jsonb,
-      edge.id as edge_id,
-      edge.from_node_id,
-      edge.to_node_id,
-      edge.edge_type,
-      edge.weight
-    from nodes node
-    left join southstar.learning_edges edge
-      on edge.from_node_id in (select id from nodes)
-     and edge.to_node_id in (select id from nodes)
-     and edge.edge_type = any($2::text[])`,
-    [nodeId, edgeTypes],
-  );
-  return graphFromRows(nodeId, rows.rows);
-}
-
 type GraphEdgeRow = {
   node_id: string;
   node_type: string;

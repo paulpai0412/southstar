@@ -1,6 +1,6 @@
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import type { AnyTaskEnvelope, TaskEnvelopeV2 } from "../agent-runner/task-envelope.ts";
+import type { TaskEnvelopeV2 } from "../agent-runner/task-envelope.ts";
 
 export type VaultRuntimeMaterialization = {
   hostEnvDir?: string;
@@ -9,11 +9,10 @@ export type VaultRuntimeMaterialization = {
 };
 
 export async function materializeVaultRuntime(
-  envelope: AnyTaskEnvelope,
+  envelope: TaskEnvelopeV2,
   input: { runRoot: string; envelopeBasePath: string },
   env: Record<string, string | undefined> = process.env,
 ): Promise<VaultRuntimeMaterialization> {
-  if (envelope.schemaVersion !== "southstar.task-envelope.v2") return { env: {} };
   const bindings = vaultEnvBindings(envelope);
   if (bindings.length === 0) {
     return mcpRuntimeConfigEnv(envelope, input.envelopeBasePath);

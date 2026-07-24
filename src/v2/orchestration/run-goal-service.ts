@@ -1101,20 +1101,6 @@ async function requestGoalSchedulingPg(
   );
 }
 
-async function persistStagesPg(db: SouthstarDb, submissionId: string, stages: string[]): Promise<void> {
-  if (stages.length === 0) return;
-  await db.tx(async (tx) => {
-    const row = await tx.one<{ payload_json: Record<string, unknown> }>(
-      "select payload_json from southstar.runtime_resources where id = $1 for update",
-      [submissionId],
-    );
-    await tx.query(
-      "update southstar.runtime_resources set payload_json = $2::jsonb, updated_at = now() where id = $1",
-      [submissionId, JSON.stringify({ ...row.payload_json, stages: [...stringArray(row.payload_json.stages), ...stages] })],
-    );
-  });
-}
-
 async function completeSubmissionPg(
   db: SouthstarDb,
   submissionId: string,

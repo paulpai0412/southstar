@@ -353,7 +353,7 @@ async function evaluateCoveragePg(
           || (resultCheckKeys as string[]).sort().join("\u0000") !== expectedCheckKeys.join("\u0000")
         ) return false;
         const bindingCheckKey = criterionValidationCheckKey(binding.criterionId, binding.verificationMode);
-        const criterionResult = criteriaResults.find((result, index) => resultCheckKeys[index] === bindingCheckKey);
+        const criterionResult = criteriaResults.find((_, index) => resultCheckKeys[index] === bindingCheckKey);
         return criterionResult?.verdict === "passed" && stringArray(criterionResult.evidenceRefs).length > 0;
       }));
     if (passed) coveredRequirementIds.push(requirement.id);

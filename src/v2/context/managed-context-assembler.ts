@@ -70,11 +70,11 @@ export function createManagedContextAssembler(db: SouthstarDb, options: ManagedC
       );
       const artifactContracts = artifactContractsForTask(workflow, task);
       const contextPolicy = required(
-        contextPolicies.find((policy) => policy.id === (task.contextPolicyRef ?? agentProfile.contextPolicyRef)) ?? contextPolicies[0],
+        contextPolicies.find((policy) => policy.id === (task.contextPolicyRef ?? agentProfile.contextPolicyRef)),
         `missing context policy ${task.contextPolicyRef ?? agentProfile.contextPolicyRef ?? "(default)"}`,
       );
       const memoryPolicy = required(
-        memoryPolicies.find((policy) => policy.id === contextPolicy.memoryPolicyRef) ?? memoryPolicies[0],
+        memoryPolicies.find((policy) => policy.id === contextPolicy.memoryPolicyRef),
         `missing memory policy ${contextPolicy.memoryPolicyRef}`,
       );
       const sources = await collectContextSourcesPg(db, {

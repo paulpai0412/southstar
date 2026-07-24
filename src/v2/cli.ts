@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto";
 import { loadSouthstarEnv } from "./config/env.ts";
 import { createCliRuntimeClient, type CliRuntimeClient } from "./cli-client.ts";
 import { initializeSouthstarSchema } from "./db/init.ts";
+import { openSouthstarDb, type SouthstarDb } from "./db/postgres.ts";
+import { inspectLegacyContractsPg, migrateLegacyContractsPg } from "./db/legacy-contract-migration.ts";
 import type { ReadModelKind } from "./read-models/types.ts";
 import { createSouthstarInfraLifecycle, type SouthstarInfraLifecycle } from "./server/infra-lifecycle.ts";
 import { createRuntimeServerLifecycle, type RuntimeServerLifecycle } from "./server/runtime-server-lifecycle.ts";
@@ -10,6 +12,7 @@ import { createWebServerLifecycle, type WebServerLifecycle } from "./server/web-
 
 export type V2Command =
   | { command: "db:init"; databaseUrl?: string; configPath?: string }
+  | { command: "db:migrate-legacy-contracts"; databaseUrl?: string; configPath?: string; apply: boolean }
   | { command: "plan"; goal: string }
   | { command: "run"; draftId: string }
   | { command: "status"; runId: string }
@@ -36,6 +39,7 @@ export type V2CliDependencies = {
   serverLifecycle?: RuntimeServerLifecycle;
   webServerLifecycle?: WebServerLifecycle;
   initializeSchema?: (databaseUrl: string) => Promise<{ version: string }>;
+  openDatabase?: (databaseUrl: string) => Promise<SouthstarDb>;
   readFile?: (path: string) => Promise<string>;
 };
 
@@ -50,6 +54,15 @@ export function parseV2Command(argv: string[]): V2Command {
       if (!databaseUrl && !configPath) throw new Error("--database-url or --config is required");
       if (configPath && databaseUrl) return { command, databaseUrl, configPath };
       return configPath ? { command, configPath } : { command, databaseUrl };
+    }
+    case "db:migrate-legacy-contracts": {
+      const databaseUrl = optionalFlag(args, "--database-url");
+      const configPath = optionalFlag(args, "--config");
+      if (!databaseUrl && !configPath) throw new Error("--database-url or --config is required");
+      if (configPath && databaseUrl) return { command, databaseUrl, configPath, apply: args.includes("--apply") };
+      return configPath
+        ? { command, configPath, apply: args.includes("--apply") }
+        : { command, databaseUrl, apply: args.includes("--apply") };
     }
     case "plan":
       return { command, goal: requireFlag(args, "--goal") };
@@ -120,6 +133,18 @@ export async function executeV2Command(command: V2Command, dependencies: V2CliDe
     const initializer = dependencies.initializeSchema ?? initializeSouthstarSchema;
     const initialized = await initializer(databaseUrl);
     return { kind: "db:init", result: { type: "db:init", schemaVersion: initialized.version } };
+  }
+  if (command.command === "db:migrate-legacy-contracts") {
+    const databaseUrl = command.databaseUrl ?? await readDatabaseUrlFromConfig(command.configPath!, dependencies);
+    const db = await (dependencies.openDatabase ?? openSouthstarDb)(databaseUrl);
+    try {
+      const result = command.apply
+        ? await migrateLegacyContractsPg(db)
+        : await inspectLegacyContractsPg(db);
+      return { kind: "db:migrate-legacy-contracts", result: { apply: command.apply, ...result } };
+    } finally {
+      await db.close();
+    }
   }
   if (command.command === "serve") {
     const lifecycle = requireRuntimeServerLifecycle(dependencies);
@@ -233,6 +258,7 @@ export async function main(argv = process.argv.slice(2), dependencies?: Partial<
     const parsed = parseV2Command(argv);
     const env = loadSouthstarEnv();
     const needsRuntimeClient = parsed.command !== "db:init"
+      && parsed.command !== "db:migrate-legacy-contracts"
       && parsed.command !== "serve"
       && parsed.command !== "start"
       && parsed.command !== "stop"

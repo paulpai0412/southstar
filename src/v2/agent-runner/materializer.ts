@@ -1,6 +1,6 @@
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import type { AnyTaskEnvelope } from "./task-envelope.ts";
+import type { TaskEnvelopeV2 } from "./task-envelope.ts";
 import type { ContextBlock } from "../context/types.ts";
 
 export type TaskMaterializerOptions = {
@@ -41,50 +41,41 @@ type RuntimeBundleManifest = {
 const DEFAULT_RUN_ROOT = "/tmp/southstar-runs";
 
 export async function materializeTaskEnvelope(
-  envelope: AnyTaskEnvelope,
+  envelope: TaskEnvelopeV2,
   options: TaskMaterializerOptions = {},
 ): Promise<TaskMaterialization> {
   const runRoot = options.runRoot ?? DEFAULT_RUN_ROOT;
   const runDir = resolveChildDir(runRoot, envelope.runId, "run id");
-  const taskId = envelope.schemaVersion === "southstar.task-envelope.v2" ? envelope.taskId : envelope.task.id;
+  const taskId = envelope.taskId;
   const taskDir = resolveChildDir(runDir, taskId, "task id");
   const envelopePath = join(taskDir, "envelope.json");
   const manifestFiles: RuntimeBundleManifest["files"] = [{ label: "Task envelope", relativePath: "envelope.json", kind: "envelope" }];
   await mkdir(taskDir, { recursive: true });
   await writeFile(envelopePath, JSON.stringify(envelope, null, 2));
-  if (envelope.schemaVersion === "southstar.task-envelope.v2") {
-    if (envelope.contextPacket) {
-      await writeFile(join(taskDir, "context-packet.json"), JSON.stringify(envelope.contextPacket, null, 2));
-      manifestFiles.push({ label: "Context packet", relativePath: "context-packet.json", kind: "context" });
-      const agentsMd = renderAgentsMd(envelope.contextPacket.agentsMdBlocks);
-      if (agentsMd) {
-        await writeFile(join(taskDir, "AGENTS.md"), agentsMd);
-        manifestFiles.push({ label: "Agent instructions", relativePath: "AGENTS.md", kind: "agents_md" });
-      }
-    }
-    if (envelope.agentProfile) {
-      await mkdir(join(taskDir, "agent-profile"), { recursive: true });
-      await writeFile(join(taskDir, "agent-profile", "profile.json"), JSON.stringify(envelope.agentProfile, null, 2));
-      manifestFiles.push({ label: "Agent profile", relativePath: "agent-profile/profile.json", kind: "agent_profile" });
-    }
-    if (envelope.toolProxyPolicy) {
-      await mkdir(join(taskDir, "tools"), { recursive: true });
-      await writeFile(join(taskDir, "tools", "tool-policy.json"), JSON.stringify(envelope.toolProxyPolicy, null, 2));
-      manifestFiles.push({ label: "Tool proxy policy", relativePath: "tools/tool-policy.json", kind: "tool_policy" });
-    }
-    if (Array.isArray(envelope.mcpGrants)) {
-      await mkdir(join(taskDir, "mcp"), { recursive: true });
-      await writeFile(join(taskDir, "mcp", "grants.json"), JSON.stringify(envelope.mcpGrants, null, 2));
-      manifestFiles.push({ label: "MCP grants", relativePath: "mcp/grants.json", kind: "mcp_grants" });
-    }
-    if (envelope.mcpRuntimeConfig) {
-      await mkdir(join(taskDir, "mcp"), { recursive: true });
-      await writeFile(join(taskDir, "mcp", "runtime-config.json"), JSON.stringify(envelope.mcpRuntimeConfig, null, 2));
-      manifestFiles.push({ label: "MCP runtime config", relativePath: "mcp/runtime-config.json", kind: "mcp_runtime_config" });
-    }
+  await writeFile(join(taskDir, "context-packet.json"), JSON.stringify(envelope.contextPacket, null, 2));
+  manifestFiles.push({ label: "Context packet", relativePath: "context-packet.json", kind: "context" });
+  const agentsMd = renderAgentsMd(envelope.contextPacket.agentsMdBlocks);
+  if (agentsMd) {
+    await writeFile(join(taskDir, "AGENTS.md"), agentsMd);
+    manifestFiles.push({ label: "Agent instructions", relativePath: "AGENTS.md", kind: "agents_md" });
+  }
+  await mkdir(join(taskDir, "agent-profile"), { recursive: true });
+  await writeFile(join(taskDir, "agent-profile", "profile.json"), JSON.stringify(envelope.agentProfile, null, 2));
+  manifestFiles.push({ label: "Agent profile", relativePath: "agent-profile/profile.json", kind: "agent_profile" });
+  if (envelope.toolProxyPolicy) {
+    await mkdir(join(taskDir, "tools"), { recursive: true });
+    await writeFile(join(taskDir, "tools", "tool-policy.json"), JSON.stringify(envelope.toolProxyPolicy, null, 2));
+    manifestFiles.push({ label: "Tool proxy policy", relativePath: "tools/tool-policy.json", kind: "tool_policy" });
+  }
+  await mkdir(join(taskDir, "mcp"), { recursive: true });
+  await writeFile(join(taskDir, "mcp", "grants.json"), JSON.stringify(envelope.mcpGrants, null, 2));
+  manifestFiles.push({ label: "MCP grants", relativePath: "mcp/grants.json", kind: "mcp_grants" });
+  if (envelope.mcpRuntimeConfig) {
+    await writeFile(join(taskDir, "mcp", "runtime-config.json"), JSON.stringify(envelope.mcpRuntimeConfig, null, 2));
+    manifestFiles.push({ label: "MCP runtime config", relativePath: "mcp/runtime-config.json", kind: "mcp_runtime_config" });
   }
   const skillsRoot = join(taskDir, "skills");
-  for (const skill of envelope.skills ?? []) {
+  for (const skill of envelope.skills) {
     const skillDir = resolveSkillDir(skillsRoot, skill.skillId);
     await mkdir(skillDir, { recursive: true });
     await writeFile(join(skillDir, "SKILL.md"), skill.instructions);

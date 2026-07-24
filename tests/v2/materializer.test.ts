@@ -4,22 +4,22 @@ import { mkdtemp, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupTaskMaterialization, materializeTaskEnvelope } from "../../src/v2/agent-runner/materializer.ts";
-import type { TaskEnvelope, TaskEnvelopeV2 } from "../../src/v2/agent-runner/task-envelope.ts";
+import type { TaskEnvelopeV2 } from "../../src/v2/agent-runner/task-envelope.ts";
 
 test("materializes task envelope only under configured ephemeral run root", async () => {
   const root = await mkdtemp(join(tmpdir(), "southstar-materializer-"));
-  const envelope = minimalEnvelope();
+  const envelope = minimalEnvelopeV2();
 
   const result = await materializeTaskEnvelope(envelope, { runRoot: root });
 
-  assert.equal(result.taskDir, join(root, "run-1", "task-1"));
-  assert.equal(result.envelopePath, join(root, "run-1", "task-1", "envelope.json"));
+  assert.equal(result.taskDir, join(root, "run-v2", "task-v2"));
+  assert.equal(result.envelopePath, join(root, "run-v2", "task-v2", "envelope.json"));
   assert.deepEqual(JSON.parse(await readFile(result.envelopePath, "utf8")), envelope);
 });
 
 test("cleanup removes materialized task directory", async () => {
   const root = await mkdtemp(join(tmpdir(), "southstar-materializer-"));
-  const result = await materializeTaskEnvelope(minimalEnvelope(), { runRoot: root });
+  const result = await materializeTaskEnvelope(minimalEnvelopeV2(), { runRoot: root });
 
   await cleanupTaskMaterialization(result);
 
@@ -60,39 +60,6 @@ test("materializes v2 task profile, tools, MCP grants, and skill bundle files fo
   assert.equal(manifest.files.some((file: { relativePath: string }) => file.relativePath === "mcp/runtime-config.json"), true);
   assert.equal(manifest.files.some((file: { relativePath: string }) => file.relativePath === "skills/skill.react-ui/references/patterns.md"), true);
 });
-
-function minimalEnvelope(): TaskEnvelope {
-  return {
-    schemaVersion: "southstar.task-envelope.v1",
-    runId: "run-1",
-    workflowId: "workflow-1",
-    task: {
-      id: "task-1",
-      name: "Task",
-      domain: "software",
-      dependsOn: [],
-      execution: {
-        engine: "tork",
-        image: "image",
-        command: ["southstar-agent-runner"],
-        env: {},
-        mounts: [],
-        timeoutSeconds: 60,
-        infraRetry: { maxAttempts: 1 },
-      },
-      rootSession: { validator: "schema-evaluator-v1", maxRepairAttempts: 2 },
-      subagents: [],
-    },
-    rootSession: { id: "session-1", validator: "schema-evaluator-v1", maxRepairAttempts: 2 },
-    subagents: [],
-    memory: { items: [], capturedAt: "now" },
-    skills: [],
-    vaultLeases: [],
-    mcpGrants: [],
-    artifactContracts: [],
-    artifactContract: { artifactTypes: [], requiredFields: [] },
-  };
-}
 
 function minimalEnvelopeV2(): TaskEnvelopeV2 {
   return {

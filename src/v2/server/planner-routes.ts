@@ -1133,10 +1133,6 @@ function optionalStringArray(value: unknown): string[] | undefined {
   return value as string[];
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function json<T>(kind: string, result: T, status = 200): Response {
   const envelope: ApiEnvelope<T> = { ok: true, kind, result };
   return new Response(JSON.stringify(envelope), { status, headers: { "content-type": "application/json", ...corsHeaders() } });

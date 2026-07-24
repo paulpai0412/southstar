@@ -70,8 +70,25 @@ test("Git worktree writers still serialize when their declared boundaries overla
   assert.equal(decision.strategy, "serialized_write");
 });
 
-test("legacy tasks without mutation metadata retain existing scheduler behavior", () => {
+test("tasks without mutation metadata are blocked until the current contract is present", () => {
   const decision = decideWorkspaceClaim(task("legacy"), [task("other", { mode: "shared_write" })]);
 
-  assert.deepEqual(decision, { allowed: true, strategy: "legacy_unclassified" });
+  assert.deepEqual(decision, {
+    allowed: false,
+    strategy: "missing_contract",
+    reason: "task legacy is missing workspaceMutation metadata",
+  });
+});
+
+test("active tasks without mutation metadata block a new claim", () => {
+  const decision = decideWorkspaceClaim(
+    task("new-read", { mode: "read_only", resourceKeys: ["catalog"] }),
+    [task("legacy-active")],
+  );
+
+  assert.deepEqual(decision, {
+    allowed: false,
+    strategy: "missing_contract",
+    reason: "active task legacy-active is missing workspaceMutation metadata",
+  });
 });

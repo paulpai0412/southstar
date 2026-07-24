@@ -254,29 +254,31 @@ function clusterSignals(signals: SignalRow[]): Map<string, SignalRow[]> {
 
 function clusterKey(payload: Record<string, unknown>): string {
   const required = [
-    stringValue(payload.scope, "general"),
-    stringValue(payload.intent, "unknown_intent"),
-    stringValue(payload.roleRef, "unknown_role"),
-    stringValue(payload.artifactType, "unknown_artifact"),
-    stringValue(payload.failureKind, "unknown_failure"),
+    requiredString(payload.scope, "scope"),
+    requiredString(payload.intent, "intent"),
+    requiredString(payload.roleRef, "roleRef"),
+    requiredString(payload.artifactType, "artifactType"),
+    requiredString(payload.failureKind, "failureKind"),
     stringArray(payload.missingFields).sort().join("-"),
-    stringValue(payload.agentProfileRef, "unknown_profile"),
+    requiredString(payload.agentProfileRef, "agentProfileRef"),
   ];
   const optional = [
-    stringValue(payload.skillRef, ""),
-    stringValue(payload.promptTemplateRef, ""),
-    stringValue(payload.flowTemplateRef, ""),
-  ].filter((item) => item.length > 0);
+    optionalString(payload.skillRef),
+    optionalString(payload.promptTemplateRef),
+    optionalString(payload.flowTemplateRef),
+  ].filter((item): item is string => Boolean(item));
   return [...required, ...optional].join(":");
 }
 
 function buildCard(cluster: SignalRow[]): KnowledgeCard {
   const first = cluster[0]!.payload_jsonb;
   const evidenceNodeRefs = cluster.map((signal) => signal.id);
-  const scope = stringValue(first.scope, "general");
-  const artifactType = stringValue(first.artifactType, "artifact");
-  const failureKind = stringValue(first.failureKind, "failure");
+  const scope = requiredString(first.scope, "scope");
+  const artifactType = requiredString(first.artifactType, "artifactType");
+  const failureKind = requiredString(first.failureKind, "failureKind");
   const missingFields = stringArray(first.missingFields).sort();
+  const confidence = averageSignalMetric(cluster, "confidence");
+  const successScore = averageSignalMetric(cluster, "successScore");
   const riskTier = riskTierFor(first);
   const status = riskTier === "high" ? "pending_approval" : "active";
   return {
@@ -286,13 +288,13 @@ function buildCard(cluster: SignalRow[]): KnowledgeCard {
     title: `${artifactType} ${failureKind} repair lesson`,
     summary: `Repeated ${failureKind} repair signals for ${artifactType} indicate prompts or skills should include a bounded final self-check.`,
     appliesTo: {
-      intents: [stringValue(first.intent, "unknown_intent")],
-      roles: [stringValue(first.roleRef, "unknown_role")],
+      intents: [requiredString(first.intent, "intent")],
+      roles: [requiredString(first.roleRef, "roleRef")],
       artifactTypes: [artifactType],
-      agentProfiles: [stringValue(first.agentProfileRef, "unknown_profile")],
-      promptTemplates: stringValue(first.promptTemplateRef, "") ? [stringValue(first.promptTemplateRef, "")] : [],
-      skills: stringValue(first.skillRef, "") ? [stringValue(first.skillRef, "")] : [],
-      flowTemplates: stringValue(first.flowTemplateRef, "") ? [stringValue(first.flowTemplateRef, "")] : [],
+      agentProfiles: [requiredString(first.agentProfileRef, "agentProfileRef")],
+      promptTemplates: optionalString(first.promptTemplateRef) ? [optionalString(first.promptTemplateRef)!] : [],
+      skills: optionalString(first.skillRef) ? [optionalString(first.skillRef)!] : [],
+      flowTemplates: optionalString(first.flowTemplateRef) ? [optionalString(first.flowTemplateRef)!] : [],
     },
     claims: [{
       text: missingFields.length > 0
@@ -300,8 +302,8 @@ function buildCard(cluster: SignalRow[]): KnowledgeCard {
         : "Adding a final self-check should reduce repeated repair loops.",
       evidenceNodeRefs,
     }],
-    confidence: Math.min(0.95, 0.55 + cluster.length * 0.15),
-    successScore: 0.75,
+    confidence,
+    successScore,
     status,
     riskTier,
   };
@@ -322,8 +324,26 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function stringValue(value: unknown, fallback: string): string {
-  return typeof value === "string" && value.length > 0 ? value : fallback;
+function requiredString(value: unknown, field: string): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`learning signal ${field} is required for Knowledge Card synthesis`);
+  }
+  return value;
+}
+
+function averageSignalMetric(signals: SignalRow[], field: "confidence" | "successScore"): number {
+  const values = signals.map((signal) => {
+    const value = signal.payload_jsonb[field];
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1) {
+      throw new Error(`learning signal ${field} is required for Knowledge Card synthesis`);
+    }
+    return value;
+  });
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function stringArray(value: unknown): string[] {

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { materializeTaskEnvelope } from "../agent-runner/materializer.ts";
-import type { AnyTaskEnvelope } from "../agent-runner/task-envelope.ts";
+import type { TaskEnvelopeV2 } from "../agent-runner/task-envelope.ts";
 import type { ExecutorProvider } from "../executor/provider.ts";
 import { withMaterializationMount } from "../executor/materialization-mount.ts";
 import { piAgentConfigMount, piAgentRuntimeEnv } from "../executor/pi-agent-runtime.ts";
@@ -63,7 +63,7 @@ export function createTorkHandProvider(input: {
           heartbeatUrl: input.heartbeatUrl,
           ...(input.liveEventUrl ? { liveEventUrl: input.liveEventUrl } : {}),
           envelopeBasePath: typeof call.input.envelopeBasePath === "string" ? call.input.envelopeBasePath : "/southstar-runs",
-          attemptId: typeof call.input.attemptId === "string" ? call.input.attemptId : "attempt-1",
+          attemptId: requiredAttemptId(call.input.attemptId),
         });
         binding.status = "running";
         binding.payload = {
@@ -279,7 +279,7 @@ function withPiAgentRuntimeConfig(workflow: SouthstarWorkflowManifest): Southsta
   };
 }
 
-function withWorkspaceMount(workflow: SouthstarWorkflowManifest, envelope: AnyTaskEnvelope): SouthstarWorkflowManifest {
+function withWorkspaceMount(workflow: SouthstarWorkflowManifest, envelope: TaskEnvelopeV2): SouthstarWorkflowManifest {
   const workspaceMount = workspaceMountFromEnvelope(envelope);
   if (!workspaceMount) return workflow;
   return {
@@ -294,8 +294,7 @@ function withWorkspaceMount(workflow: SouthstarWorkflowManifest, envelope: AnyTa
   };
 }
 
-function workspaceMountFromEnvelope(envelope: AnyTaskEnvelope): { source: string; target: string; readonly: boolean } | undefined {
-  if (envelope.schemaVersion !== "southstar.task-envelope.v2") return undefined;
+function workspaceMountFromEnvelope(envelope: TaskEnvelopeV2): { source: string; target: string; readonly: boolean } | undefined {
   const handle = envelope.workspace?.handle;
   const source = handle?.hostMountPath;
   if (!source || !isHostMountPath(source)) return undefined;
@@ -337,14 +336,18 @@ function upsertMountTarget(
   return [...mounts.filter((entry) => entry.target !== mount.target), mount];
 }
 
-function asTaskEnvelope(value: unknown): AnyTaskEnvelope | null {
+function asTaskEnvelope(value: unknown): TaskEnvelopeV2 | null {
   if (!value || typeof value !== "object") return null;
-  const envelope = value as Partial<AnyTaskEnvelope> & { task?: { id?: unknown } };
+  const envelope = value as Partial<TaskEnvelopeV2>;
   if (envelope.schemaVersion === "southstar.task-envelope.v2" && typeof envelope.runId === "string" && typeof envelope.taskId === "string") {
-    return value as AnyTaskEnvelope;
-  }
-  if (envelope.schemaVersion === "southstar.task-envelope.v1" && typeof envelope.runId === "string" && typeof envelope.task?.id === "string") {
-    return value as AnyTaskEnvelope;
+    return value as TaskEnvelopeV2;
   }
   return null;
+}
+
+function requiredAttemptId(value: unknown): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error("Tork hand execution requires attemptId");
+  }
+  return value;
 }

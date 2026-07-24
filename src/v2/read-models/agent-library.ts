@@ -4,7 +4,7 @@ import type { LibraryEdgeRecord, LibraryObjectSummary } from "../design-library/
 import type { AgentProfile, RoleDefinition } from "../design-library/runtime-types.ts";
 
 type AgentLibraryInput = {
-  domain?: string;
+  domain: string;
 };
 
 type AgentLibraryCandidatesInput = {
@@ -66,7 +66,7 @@ export type AgentLibraryCandidatesReadModel = {
 };
 
 export async function buildAgentLibraryReadModelPg(db: SouthstarDb, input: AgentLibraryInput): Promise<AgentLibraryReadModel> {
-  const domain = normalizeDomain(input.domain);
+  const domain = requiredDomain(input.domain);
   const library = await buildDomainLibrary(db, domain);
   return {
     domain,
@@ -106,7 +106,7 @@ export async function buildAgentLibraryCandidatesReadModelPg(
   const selectedTask = tasks.find((task) => task.id === selectedTaskId);
   if (!selectedTask) throw new Error(`planner draft task not found: ${selectedTaskId}`);
 
-  const domain = normalizeDomain(stringValue(workflow.domain));
+  const domain = requiredDomain(stringValue(workflow.domain));
   const library = await buildDomainLibrary(db, domain);
   const selectedRole = selectedTask.roleRef ? library.roles.find((role) => role.id === selectedTask.roleRef) : undefined;
   const allowedAgentProfileRefs = selectedRole?.allowedAgentProfileRefs ?? library.agentProfiles.map((profile) => profile.id);
@@ -287,8 +287,9 @@ function selectTaskId(taskIds: string[], preferredTaskId?: string): string | und
   return taskIds[0];
 }
 
-function normalizeDomain(value: string | undefined): string {
-  return value && value.length > 0 ? value : "general";
+function requiredDomain(value: string | undefined): string {
+  if (!value || value.trim().length === 0) throw new Error("workflow domain is required");
+  return value;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

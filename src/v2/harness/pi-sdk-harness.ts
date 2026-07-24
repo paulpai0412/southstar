@@ -1,4 +1,4 @@
-import type { AnyTaskEnvelope } from "../agent-runner/task-envelope.ts";
+import type { TaskEnvelopeV2 } from "../agent-runner/task-envelope.ts";
 import type {
   AgentHarness,
   HarnessCommandExecution,
@@ -125,8 +125,7 @@ async function createSessionWithTimeout(
   }
 }
 
-function sessionInputFromEnvelope(envelope: HarnessRunInput["envelope"], cwd: string): PiSdkHarnessSessionInput {
-  if (envelope.schemaVersion !== "southstar.task-envelope.v2") return { cwd };
+function sessionInputFromEnvelope(envelope: TaskEnvelopeV2, cwd: string): PiSdkHarnessSessionInput {
   const provider = envelope.agentProfile.provider?.trim();
   const modelId = envelope.agentProfile.model?.trim();
   const thinkingLevel = envelope.agentProfile.thinkingLevel?.trim();
@@ -157,29 +156,15 @@ async function configurePiSdkSession(
 }
 
 function buildHarnessPrompt(input: HarnessRunInput, cwd: string): string {
-  if (input.envelope.schemaVersion === "southstar.task-envelope.v2") {
-    return [
-      input.envelope.agentPrompt,
-      ...resolvedSkillInstructions(input.envelope.skills),
-      "",
-      ...runnerOutputContractDirective(input.envelope),
-      "",
-      ...workspaceDirective(cwd),
-      `Attempt: ${input.attempt}`,
-      input.repairInstruction ? `Repair instruction: ${input.repairInstruction}` : "",
-    ].filter(Boolean).join("\n");
-  }
   return [
-    "You are a Southstar container agent running inside a Tork task.",
-    "Execute the task described by the TaskEnvelope. Use the available Pi Agent tools as needed.",
-    "Return exactly one JSON object with keys: artifact, progress, metrics.",
-    "artifact must satisfy the required fields from artifactContract.",
+    input.envelope.agentPrompt,
+    ...resolvedSkillInstructions(input.envelope.skills),
+    "",
     ...runnerOutputContractDirective(input.envelope),
+    "",
     ...workspaceDirective(cwd),
     `Attempt: ${input.attempt}`,
     input.repairInstruction ? `Repair instruction: ${input.repairInstruction}` : "",
-    "TaskEnvelope:",
-    JSON.stringify(input.envelope),
   ].filter(Boolean).join("\n");
 }
 
@@ -235,8 +220,7 @@ function runnerOutputContractDirective(envelope: HarnessRunInput["envelope"]): s
   ];
 }
 
-function expectedEvidenceKindsFromEnvelope(envelope: HarnessRunInput["envelope"]): Set<string> {
-  if (envelope.schemaVersion !== "southstar.task-envelope.v2") return new Set();
+function expectedEvidenceKindsFromEnvelope(envelope: TaskEnvelopeV2): Set<string> {
   return new Set(envelope.evaluatorPipeline.evaluators.flatMap((evaluator) => {
     const config = isRecord(evaluator.config) ? evaluator.config : {};
     return Array.isArray(config.expectedEvidenceKinds)
@@ -259,9 +243,7 @@ function resolvedSkillInstructions(skills: Array<{ skillId: string; version?: st
   ];
 }
 
-function harnessCwd(envelope: HarnessRunInput["envelope"]): string {
-  if (envelope.schemaVersion !== "southstar.task-envelope.v2") return process.cwd();
-
+function harnessCwd(envelope: TaskEnvelopeV2): string {
   const workspaceHandle = envelope.workspace?.handle;
   if (workspaceHandle?.worktreePath?.startsWith("/workspace/")) return workspaceHandle.worktreePath;
   if (workspaceHandle?.repoRoot?.startsWith("/workspace/")) return workspaceHandle.repoRoot;
@@ -381,14 +363,13 @@ function captureBashExecutionEvent(
   pendingBashCommands.delete(toolCallId);
 }
 
-function browserVerificationRequired(envelope: AnyTaskEnvelope): boolean {
-  if (envelope.schemaVersion !== "southstar.task-envelope.v2") return false;
+function browserVerificationRequired(envelope: TaskEnvelopeV2): boolean {
   return envelope.evaluatorPipeline.evaluators.some((evaluator) => (
     isRecord(evaluator.config) && evaluator.config.verificationMode === "browser_interaction"
   ));
 }
 
-function parseHarnessResult(raw: string, envelope: AnyTaskEnvelope): HarnessRunResult {
+function parseHarnessResult(raw: string, envelope: TaskEnvelopeV2): HarnessRunResult {
   const parsed = parseAssistantJson(raw);
   if (!isRecord(parsed)) {
     return {
@@ -447,7 +428,7 @@ function parseAssistantJson(raw: string): unknown {
 
 function completeArtifactForEnvelope(
   artifact: Record<string, unknown>,
-  envelope: AnyTaskEnvelope,
+  envelope: TaskEnvelopeV2,
   reason: string,
 ): Record<string, unknown> {
   const contract = primaryArtifactContract(envelope);
@@ -483,11 +464,7 @@ function completeArtifactForEnvelope(
   return next;
 }
 
-function primaryArtifactContract(envelope: AnyTaskEnvelope): { id: string; requiredFields: string[] } | undefined {
-  if (envelope.schemaVersion === "southstar.task-envelope.v1") {
-    const id = envelope.artifactContract.artifactTypes[0];
-    return id ? { id, requiredFields: envelope.artifactContract.requiredFields } : undefined;
-  }
+function primaryArtifactContract(envelope: TaskEnvelopeV2): { id: string; requiredFields: string[] } | undefined {
   const preferredRef = envelope.evaluatorPipeline.artifactContractRefs?.[0];
   const contract = (preferredRef
     ? envelope.artifactContracts.find((item) => item.id === preferredRef || item.libraryObjectRef === preferredRef)
@@ -495,7 +472,7 @@ function primaryArtifactContract(envelope: AnyTaskEnvelope): { id: string; requi
   return contract ? { id: contract.id, requiredFields: contract.requiredFields } : undefined;
 }
 
-function primaryContractArtifact(artifact: Record<string, unknown>, envelope: AnyTaskEnvelope): Record<string, unknown> {
+function primaryContractArtifact(artifact: Record<string, unknown>, envelope: TaskEnvelopeV2): Record<string, unknown> {
   const contractId = primaryArtifactContract(envelope)?.id;
   if (!contractId) return artifact;
   const nested = artifact[contractId];

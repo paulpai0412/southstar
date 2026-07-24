@@ -167,6 +167,9 @@ test("Evolution HTTP API registers assets, rolls back assets, and runs sandbox d
             candidateAssetRefs: ["prompt@v2"],
             regressionSuiteRefs: ["software-core-regression"],
             replayRunRefs: ["run-sandbox-api-1"],
+            caseRef: "run-sandbox-api-1",
+            maxCostRegressionPercent: 15,
+            maxDurationRegressionPercent: 15,
             baselineTrial: { status: "failed", targetedReplayFixed: false, metrics: { durationMs: 1000, costMicrosUsd: 1000, repairCount: 1, tokens: 1000, toolCalls: 4 } },
             candidateTrial: { status: "passed", targetedReplayFixed: true, metrics: { durationMs: 1050, costMicrosUsd: 1050, repairCount: 0, tokens: 1000, toolCalls: 4 } },
           }),
@@ -447,6 +450,8 @@ function repairSignal(runId: string, sourceRef: string) {
     repairInstruction: "include commandsRun and risks",
     outcome: "passed_after_repair",
     sourceRefs: [sourceRef],
+    confidence: 0.9,
+    successScore: 1,
   };
 }
 

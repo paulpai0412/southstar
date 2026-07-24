@@ -545,7 +545,11 @@ const SOFTWARE_OBJECTS: readonly SeedObject[] = [
   {
     objectKey: "artifact.implementation_plan",
     objectKind: "artifact_contract",
-    state: { artifactType: "implementation_plan" },
+    state: {
+      artifactType: "implementation_plan",
+      requiredFields: ["summary"],
+      evidenceFields: ["summary"],
+    },
   },
   {
     objectKey: "artifact.implementation_report",
@@ -565,17 +569,30 @@ const SOFTWARE_OBJECTS: readonly SeedObject[] = [
   {
     objectKey: "artifact.verification_report",
     objectKind: "artifact_contract",
-    state: { artifactType: "verification_report" },
+    state: {
+      artifactType: "verification_report",
+      requiredFields: ["summary"],
+      evidenceFields: ["summary"],
+    },
   },
   {
     objectKey: "artifact.completion_report",
     objectKind: "artifact_contract",
-    state: { artifactType: "completion_report" },
+    state: {
+      artifactType: "completion_report",
+      requiredFields: ["summary"],
+      evidenceFields: ["summary"],
+    },
   },
   {
     objectKey: "evaluator.software-plan-quality",
     objectKind: "evaluator_profile",
-    state: { stage: "understand", requiredArtifact: "artifact.implementation_plan" },
+    state: {
+      stage: "understand",
+      requiredArtifact: "artifact.implementation_plan",
+      evaluators: [{ id: "software-plan-quality-schema", kind: "schema", config: {}, required: true }],
+      onFailure: { defaultStrategy: "request-workflow-revision" },
+    },
   },
   {
     objectKey: "evaluator.software-feature-quality",
@@ -597,17 +614,29 @@ const SOFTWARE_OBJECTS: readonly SeedObject[] = [
       resultSchemaRef: "southstar.requirement_evaluator_result.v2",
       independencePolicy: "independent",
       failureClassifications: ["implementation_gap"],
+      evaluators: [{ id: "software-feature-quality-schema", kind: "schema", config: {}, required: true }],
+      onFailure: { defaultStrategy: "request-workflow-revision" },
     },
   },
   {
     objectKey: "evaluator.software-verification-quality",
     objectKind: "evaluator_profile",
-    state: { stage: "verify", requiredArtifact: "artifact.verification_report" },
+    state: {
+      stage: "verify",
+      requiredArtifact: "artifact.verification_report",
+      evaluators: [{ id: "software-verification-quality-schema", kind: "schema", config: {}, required: true }],
+      onFailure: { defaultStrategy: "request-workflow-revision" },
+    },
   },
   {
     objectKey: "evaluator.software-completion-quality",
     objectKind: "evaluator_profile",
-    state: { stage: "summarize", requiredArtifact: "artifact.completion_report" },
+    state: {
+      stage: "summarize",
+      requiredArtifact: "artifact.completion_report",
+      evaluators: [{ id: "software-completion-quality-schema", kind: "schema", config: {}, required: true }],
+      onFailure: { defaultStrategy: "request-workflow-revision" },
+    },
   },
   {
     objectKey: "policy.software-default",

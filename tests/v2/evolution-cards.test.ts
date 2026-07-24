@@ -261,6 +261,8 @@ function repairSignal(runId: string, sourceRef: string) {
     repairInstruction: "include commandsRun and risks",
     outcome: "passed_after_repair",
     sourceRefs: [sourceRef],
+    confidence: 0.9,
+    successScore: 1,
   };
 }
 

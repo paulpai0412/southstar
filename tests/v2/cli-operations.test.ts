@@ -2,7 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { executeV2Command, main, parseV2Command } from "../../src/v2/cli.ts";
 import type { CliRuntimeClient } from "../../src/v2/cli-client.ts";
-import { formatRunStatusSummary } from "../../src/v2/cli-format.ts";
 import { loadSouthstarEnv } from "../../src/v2/config/env.ts";
 import type { SouthstarInfraLifecycle } from "../../src/v2/server/infra-lifecycle.ts";
 import type { RuntimeServerLifecycle } from "../../src/v2/server/runtime-server-lifecycle.ts";
@@ -16,6 +15,16 @@ test("parses phase 1.5 CLI commands", () => {
   assert.deepEqual(parseV2Command(["db:init", "--config", "/tmp/southstar.yaml"]), {
     command: "db:init",
     configPath: "/tmp/southstar.yaml",
+  });
+  assert.deepEqual(parseV2Command(["db:migrate-legacy-contracts", "--database-url", "postgres://db/southstar"]), {
+    command: "db:migrate-legacy-contracts",
+    databaseUrl: "postgres://db/southstar",
+    apply: false,
+  });
+  assert.deepEqual(parseV2Command(["db:migrate-legacy-contracts", "--config", "/tmp/southstar.yaml", "--apply"]), {
+    command: "db:migrate-legacy-contracts",
+    configPath: "/tmp/southstar.yaml",
+    apply: true,
   });
   assert.deepEqual(parseV2Command(["serve"]), { command: "serve", host: undefined, port: undefined, pidFilePath: undefined });
   assert.deepEqual(parseV2Command(["start"]), { command: "start", host: undefined, port: undefined, pidFilePath: undefined });
@@ -486,19 +495,6 @@ test("main supports injected runtime lifecycle for server status", async () => {
 
   assert.equal(exitCode, 0);
   assert.equal(JSON.parse(writes[0]!).kind, "server:status");
-});
-
-test("formats run status summary for CLI diagnostics", () => {
-  assert.equal(formatRunStatusSummary({
-    canvas: { runId: "run-1", status: "running" },
-    runtime: { status: "running", latestProgress: "planner.completed", executorJobIds: ["job-1"], runningTaskIds: ["implementer"] },
-  }), [
-    "Run: run-1",
-    "Status: running",
-    "Running tasks: implementer",
-    "Executor jobs: job-1",
-    "Latest progress: planner.completed",
-  ].join("\n"));
 });
 
 test("loads runtime server URL for CLI clients", () => {

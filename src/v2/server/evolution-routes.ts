@@ -142,28 +142,43 @@ export async function handleEvolutionRoute(context: RuntimeServerContext, reques
       replayRunRefs?: string[];
       maxCostRegressionPercent?: number;
       maxDurationRegressionPercent?: number;
+      caseRef?: string;
       baselineTrial?: Record<string, unknown>;
       candidateTrial?: Record<string, unknown>;
     }>(request);
     requireCommand(body);
     const deltaProposalId = decodeURIComponent(sandboxMatch[1]!);
+    const baselineAssetRefs = requiredStringArray(body.baselineAssetRefs, "baselineAssetRefs");
+    const candidateAssetRefs = requiredStringArray(body.candidateAssetRefs, "candidateAssetRefs");
+    const regressionSuiteRefs = requiredStringArray(body.regressionSuiteRefs, "regressionSuiteRefs");
+    const replayRunRefs = requiredStringArray(body.replayRunRefs, "replayRunRefs");
+    const maxCostRegressionPercent = requiredFiniteNumber(body.maxCostRegressionPercent, "maxCostRegressionPercent");
+    const maxDurationRegressionPercent = requiredFiniteNumber(body.maxDurationRegressionPercent, "maxDurationRegressionPercent");
+    const baselineTrial = body.baselineTrial === undefined
+      ? undefined
+      : requiredRecord(body.baselineTrial, "baselineTrial");
+    const candidateTrial = body.candidateTrial === undefined
+      ? undefined
+      : requiredRecord(body.candidateTrial, "candidateTrial");
+    const inlineCaseRef = baselineTrial || candidateTrial
+      ? requiredString(body.caseRef, "caseRef")
+      : undefined;
     const experiment = await createSandboxExperiment(db, {
       deltaProposalId,
-      baselineAssetRefs: body.baselineAssetRefs ?? [],
-      candidateAssetRefs: body.candidateAssetRefs ?? [],
-      regressionSuiteRefs: body.regressionSuiteRefs ?? ["software-core-regression"],
-      replayRunRefs: body.replayRunRefs ?? [],
-      maxCostRegressionPercent: body.maxCostRegressionPercent ?? 10,
-      maxDurationRegressionPercent: body.maxDurationRegressionPercent ?? 15,
+      baselineAssetRefs,
+      candidateAssetRefs,
+      regressionSuiteRefs,
+      replayRunRefs,
+      maxCostRegressionPercent,
+      maxDurationRegressionPercent,
     });
-    const caseRef = (body.replayRunRefs ?? ["regression-case"])[0] ?? "regression-case";
-    if (body.baselineTrial) {
-      await recordSandboxTrial(db, sandboxTrialFromBody(experiment.experimentId, "baseline", caseRef, body.baselineTrial));
+    if (baselineTrial) {
+      await recordSandboxTrial(db, sandboxTrialFromBody(experiment.experimentId, "baseline", inlineCaseRef!, baselineTrial));
     }
-    if (body.candidateTrial) {
-      await recordSandboxTrial(db, sandboxTrialFromBody(experiment.experimentId, "candidate", caseRef, body.candidateTrial));
+    if (candidateTrial) {
+      await recordSandboxTrial(db, sandboxTrialFromBody(experiment.experimentId, "candidate", inlineCaseRef!, candidateTrial));
     }
-    const decision = body.baselineTrial && body.candidateTrial
+    const decision = baselineTrial && candidateTrial
       ? await evaluateSandboxExperiment(db, experiment.experimentId)
       : { experimentId: experiment.experimentId, decision: "queued" as const, reasons: [] };
     return json("evolution-sandbox", { ...experiment, ...decision });
@@ -443,6 +458,21 @@ function requiredString(value: unknown, field: string): string {
   return value;
 }
 
+function requiredStringArray(value: unknown, field: string): string[] {
+  if (!Array.isArray(value)) throw new Error(`${field} is required`);
+  return value.map((item, index) => requiredString(item, `${field}[${index}]`));
+}
+
+function requiredFiniteNumber(value: unknown, field: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(`${field} is required`);
+  return value;
+}
+
+function requiredRecord(value: unknown, field: string): Record<string, unknown> {
+  if (!isRecord(value)) throw new Error(`${field} is required`);
+  return value;
+}
+
 async function updateRuntimeResourceStatus(
   db: SouthstarDb,
   resourceType: string,
@@ -464,19 +494,26 @@ async function updateRuntimeResourceStatus(
 }
 
 function sandboxTrialFromBody(experimentId: string, variant: "baseline" | "candidate", caseRef: string, body: Record<string, unknown>) {
-  const metrics = isRecord(body.metrics) ? body.metrics : {};
+  const status = body.status;
+  if (status !== "passed" && status !== "failed" && status !== "cancelled") {
+    throw new Error(`${variant} trial status is required`);
+  }
+  if (typeof body.targetedReplayFixed !== "boolean") {
+    throw new Error(`${variant} trial targetedReplayFixed is required`);
+  }
+  const metrics = requiredRecord(body.metrics, `${variant} trial metrics`);
   return {
     experimentId,
     variant,
     caseRef,
-    status: (body.status === "passed" || body.status === "failed" || body.status === "cancelled" ? body.status : "failed") as "passed" | "failed" | "cancelled",
-    targetedReplayFixed: body.targetedReplayFixed === true,
+    status,
+    targetedReplayFixed: body.targetedReplayFixed,
     metrics: {
-      durationMs: numberValue(metrics.durationMs, 0),
-      tokens: numberValue(metrics.tokens, 0),
-      costMicrosUsd: numberValue(metrics.costMicrosUsd, 0),
-      repairCount: numberValue(metrics.repairCount, 0),
-      toolCalls: numberValue(metrics.toolCalls, 0),
+      durationMs: requiredFiniteNumber(metrics.durationMs, `${variant} trial metrics.durationMs`),
+      tokens: requiredFiniteNumber(metrics.tokens, `${variant} trial metrics.tokens`),
+      costMicrosUsd: requiredFiniteNumber(metrics.costMicrosUsd, `${variant} trial metrics.costMicrosUsd`),
+      repairCount: requiredFiniteNumber(metrics.repairCount, `${variant} trial metrics.repairCount`),
+      toolCalls: requiredFiniteNumber(metrics.toolCalls, `${variant} trial metrics.toolCalls`),
     },
   };
 }

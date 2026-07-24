@@ -96,7 +96,7 @@ The latest code is organized around a durable Postgres control plane, a runtime 
 
 ### Runtime Process
 
-`src/v2/cli.ts` exposes `start`, `serve`, `run-goal`, `plan`, `run`, `status`, and inspection commands. `start` launches the managed local stack; `serve` creates the runtime API server.
+`src/v2/cli.ts` exposes `start`, `serve`, `run-goal`, `plan`, `run`, `status`, inspection commands, and the fail-closed `db:migrate-legacy-contracts` audit/migration command. `start` launches the managed local stack; `serve` creates the runtime API server.
 
 At runtime startup:
 

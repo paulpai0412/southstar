@@ -272,7 +272,7 @@ test("compiler threads explicit scope into workflow domain, task domain, and har
   }
 });
 
-test("compiler preserves custom workflow scope while using general task domain", async () => {
+test("compiler preserves custom workflow scope and task domain", async () => {
   const db = await createTestPostgresDb();
   try {
     await seedSoftwareLibraryGraph(db);
@@ -297,7 +297,7 @@ test("compiler preserves custom workflow scope while using general task domain",
     });
 
     assert.equal(compiled.workflow.domain, "design/article");
-    assert.equal(compiled.workflow.tasks.every((task) => task.domain === "general"), true);
+    assert.equal(compiled.workflow.tasks.every((task) => task.domain === "design/article"), true);
     assert.equal(compiled.workflow.harnessDefinitions.every((harness) => harness.capabilities.includes("design/article")), true);
   } finally {
     await db.close();
@@ -333,6 +333,7 @@ test("compiler freezes approved Library artifact fields, evaluator procedures, c
         scope: "software",
         title: "Frozen output",
         artifactType: "verified_output",
+        evidenceFields: ["content"],
         mediaTypes: ["application/json"],
         requiredFields: ["content"],
         validationRules: ["rule.output-complete"],
@@ -362,6 +363,8 @@ test("compiler freezes approved Library artifact fields, evaluator procedures, c
         resultSchemaRef: "southstar.requirement_evaluator_result.v2",
         independencePolicy: "independent",
         failureClassifications: ["output_incomplete"],
+        evaluators: [{ id: "frozen-output-schema", kind: "schema", config: {}, required: true }],
+        onFailure: { defaultStrategy: "request-workflow-revision" },
       },
     });
     const packageValue = frozenValidationPackage(goalContract, {
@@ -434,6 +437,7 @@ test("compiler freezes approved Library artifact fields, evaluator procedures, c
         artifactType: "verified_output",
         mediaTypes: ["application/json"],
         requiredFields: ["content"],
+        evidenceFields: ["content"],
         validationRules: ["rule.output-complete"],
         evidenceKinds: ["screenshot"],
         schemaRef: "schema.verified-output.v3",

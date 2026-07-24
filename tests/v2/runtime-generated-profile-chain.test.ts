@@ -306,7 +306,7 @@ async function seedExecutableGraph(db: Awaited<ReturnType<typeof createTestPostg
     state: {
       scope: "software",
       title: "Web App Evaluator",
-      evaluators: [],
+      evaluators: [{ id: "web-app-schema", kind: "schema", config: {}, required: true }],
       onFailure: { defaultStrategy: "ask-human" },
     },
   });

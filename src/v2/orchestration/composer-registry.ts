@@ -1,4 +1,4 @@
-import type { ComposeWorkflowInput, WorkflowComposer } from "./composer.ts";
+import type { WorkflowComposer } from "./composer.ts";
 
 export type WorkflowComposerMode = "llm";
 

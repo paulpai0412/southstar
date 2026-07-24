@@ -1319,13 +1319,13 @@ test("dynamic repair revision reconnects pending downstream tasks after generate
   }
 });
 
-test("dynamic repair reconnect selection skips tasks without profiles and keeps the last-task fallback", () => {
+test("dynamic repair reconnect selection skips tasks without profiles and does not guess a target", () => {
   const workflow = baseWorkflow();
   const unprofiled = { ...workflowTask("summarize", "Summarize", "summary", "profile.impl", []), agentProfileRef: undefined };
   const verifier = workflowTask("reverify", "Reverify", "verifier", "profile.verify", []);
 
   assert.equal(dynamicRepairReconnectTargetTaskId([unprofiled, verifier], workflow.agentProfiles), verifier.id);
-  assert.equal(dynamicRepairReconnectTargetTaskId([verifier, unprofiled], undefined), unprofiled.id);
+  assert.equal(dynamicRepairReconnectTargetTaskId([verifier, unprofiled], undefined), undefined);
 });
 
 test("dynamic repair limits consecutive reverify repair chain by root failed task", async () => {

@@ -36,7 +36,8 @@ export function buildTorkJobProjection(
   workflow: SouthstarWorkflowManifest,
   options: TorkProjectionOptions,
 ): TorkJobProjection {
-  const attemptId = options.attemptId ?? "attempt-1";
+  if (!options.attemptId) throw new Error("Tork projection requires a durable attemptId");
+  const attemptId = options.attemptId;
   const job = {
     name: options.runId,
     tasks: workflow.tasks.map((task): TorkTaskProjection => {

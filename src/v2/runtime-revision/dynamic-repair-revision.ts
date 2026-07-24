@@ -18,8 +18,8 @@ import { findLibraryObjectByKey } from "../design-library/library-graph-store.ts
 import { persistTerminalGoalOutcomePg } from "../evaluators/goal-outcome.ts";
 import { loadFrozenCoverageContextPg, type FrozenCoverageContext } from "../evaluators/requirement-evaluator-results.ts";
 import { applyWorkflowRevision } from "../manifests/workflow-revision.ts";
-import type { AgentProfile, RoleDefinition } from "../design-library/runtime-types.ts";
-import type { HarnessDefinition, SouthstarWorkflowManifest, WorkflowTaskDefinition } from "../manifests/types.ts";
+import type { AgentProfile } from "../design-library/runtime-types.ts";
+import type { SouthstarWorkflowManifest, WorkflowTaskDefinition } from "../manifests/types.ts";
 import { loadRunLibrarySnapshotPg, type RunLibrarySnapshotV1 } from "../orchestration/run-library-snapshot.ts";
 import { isLibraryBackedRef } from "../orchestration/composition-selection-summary.ts";
 import { isRecoveryStrategy } from "../session-recovery/types.ts";
@@ -137,6 +137,9 @@ export async function maybeApplyDynamicRepairRevisionPg(
     }
     const rootFailedTaskId = dynamicRepairRootFailedTaskId(failedTask, failedTaskRow) ?? input.failedTaskId;
     const repairSeedTask = findRepairSeedTask(run.workflow_manifest_json, failedTask);
+    if (!repairSeedTask) {
+      return { status: "skipped", reason: "dynamic-repair-repair-source-missing" };
+    }
     const profileHints = dynamicRepairProfileHints({
       workflow: run.workflow_manifest_json,
       failedTask,
@@ -706,7 +709,7 @@ function expandedRepairAuthority(
   compiled: SouthstarWorkflowManifest,
   newTasks: WorkflowTaskDefinition[],
   sources: {
-    repairSourceTask?: WorkflowTaskDefinition;
+    repairSourceTask: WorkflowTaskDefinition;
     reverifySourceTask: WorkflowTaskDefinition;
   },
 ): RepairAuthorityExpansion {
@@ -723,7 +726,7 @@ function expandedRepairAuthority(
     if (!proposedProfile) continue;
     const sourceTask = proposedProfile.workerKind === "validation_worker"
       ? sources.reverifySourceTask
-      : sources.repairSourceTask ?? sources.reverifySourceTask;
+      : sources.repairSourceTask;
     const sourceProfile = sourceTask.agentProfileRef ? currentProfiles.get(sourceTask.agentProfileRef) : undefined;
     const currentToolCapabilities = sourceProfile
       ? executableToolCapabilities([sourceTask], [sourceProfile])
@@ -1143,7 +1146,7 @@ export function dynamicRepairReconnectTargetTaskId(
       const profileRef = task.agentProfileRef;
       return profileRef ? profileById.get(profileRef)?.workerKind === "validation_worker" : false;
     });
-  return validationTask?.id ?? newTasks.at(-1)?.id;
+  return validationTask?.id;
 }
 
 function downstreamDependencyChangesFor(input: {
@@ -1301,8 +1304,7 @@ function findRepairSeedTask(
   return dependencies.find((task) => profileById.get(task.agentProfileRef ?? "")?.workerKind === "repair_worker")
     ?? dependencies.find((task) => profileById.get(task.agentProfileRef ?? "")?.workerKind === "execution_worker")
     ?? dependencies.find((task) => nodePromptType(task) === "implement")
-    ?? dependencies.find((task) => nodePromptType(task) === "repair")
-    ?? dependencies.at(0);
+    ?? dependencies.find((task) => nodePromptType(task) === "repair");
 }
 
 function profileSeedForTask(

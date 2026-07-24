@@ -54,6 +54,7 @@ test("11 managed hand reprovision: real Postgres hand failure can provision a ne
       strategy: "reprovision-hand",
       reason: "workspace container exited",
       contextPacketId: "ctx-real-hand",
+      handName: "workspace",
     });
 
     assert.ok(result.handBindingId);

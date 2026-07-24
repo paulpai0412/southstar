@@ -77,7 +77,6 @@ components/
   WorkflowSidebar.tsx              # workflow library/planner/run navigation
   ChatWindow.tsx                   # Pi chat UI and SSE reconnect
   WorkflowDagBlock.tsx             # workflow DAG block renderer
-  WorkflowLaunchPreview.tsx        # launch preview
   WorkflowResourceViewer.tsx       # runtime resources and artifacts
   operator/                        # operator dashboard components
   workflow-canvas/                 # DAG canvas layout and nodes

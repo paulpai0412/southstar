@@ -336,8 +336,7 @@ export interface AttachedImage {
 type SelectedModel = { provider: string; modelId: string };
 type ModelEntry = { id: string; name: string; provider: string };
 type ModelsResponse = {
-  models: Record<string, string>;
-  modelList?: ModelEntry[];
+  modelList: ModelEntry[];
   defaultModel?: SelectedModel | null;
   thinkingLevels?: Record<string, string[]>;
   thinkingLevelMaps?: Record<string, Record<string, string | null>>;
@@ -365,7 +364,6 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const [entryIds, setEntryIds] = useState<string[]>([]);
   const [streamState, dispatch] = useReducer(streamReducer, { isStreaming: false, streamingMessage: null });
   const [agentRunning, setAgentRunning] = useState(false);
-  const [modelNames, setModelNames] = useState<Record<string, string>>({});
   const [modelList, setModelList] = useState<ModelEntry[]>([]);
   const [modelThinkingLevels, setModelThinkingLevels] = useState<Record<string, string[]>>({});
   const [modelThinkingLevelMaps, setModelThinkingLevelMaps] = useState<Record<string, Record<string, string | null>>>({});
@@ -1874,16 +1872,15 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       return r.json();
     }).then((d: ModelsResponse) => {
-      setModelNames(d.models);
+      if (!Array.isArray(d.modelList)) throw new Error("Model registry response is missing modelList");
       setModelThinkingLevels(d.thinkingLevels ?? {});
       setModelThinkingLevelMaps(d.thinkingLevelMaps ?? {});
-      const nextModelList = d.modelList ?? [];
+      const nextModelList = d.modelList;
       setModelList(nextModelList);
       const match = d.defaultModel
         ? nextModelList.find((m) => m.id === d.defaultModel?.modelId && m.provider === d.defaultModel?.provider)
         : undefined;
-      const fallbackModel = match ?? nextModelList[0];
-      setNewSessionDefaultModel(fallbackModel ? { provider: fallbackModel.provider, modelId: fallbackModel.id } : null);
+      setNewSessionDefaultModel(match ? { provider: match.provider, modelId: match.id } : null);
     }).catch((e) => {
       if (e instanceof DOMException && e.name === "AbortError") return;
     });
@@ -1927,7 +1924,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   return {
     // State
     data, loading, error, activeLeafId, messages, entryIds, streamState,
-    agentRunning, modelNames, modelList, modelThinkingLevels, modelThinkingLevelMaps, newSessionModel, toolPreset, thinkingLevel,
+    agentRunning, modelList, modelThinkingLevels, modelThinkingLevelMaps, newSessionModel, toolPreset, thinkingLevel,
     retryInfo, contextUsage, systemPrompt, forkingEntryId,
     isCompacting, compactError, compactResult, currentModel, displayModel, sessionStats,
     slashCommands, slashCommandsLoading,

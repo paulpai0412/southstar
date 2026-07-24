@@ -227,6 +227,7 @@ async function seedRun(
       requiredArtifactRefs: ["implementation_report"],
       skillRefs: ["skill.software-implementation"],
       mcpGrantRefs: [],
+      workspaceMutation: { mode: "shared_write", resourceKeys: ["workspace"] },
       rootSession: { validator: "schema-evaluator-v1", maxRepairAttempts: 1 },
       execution: {
         engine: "tork",

@@ -7,9 +7,9 @@ type WorkflowTaskFlowNode = Node<WorkflowTaskNodeData>;
 export function WorkflowTaskNode(props: NodeProps<WorkflowTaskFlowNode>) {
   const status = normalizeWorkflowStatus(props.data.status);
   const colors = statusColorFor(status);
-  const roleRef = props.data.roleRef ?? "unassigned";
-  const agentProfileRef = props.data.agentProfileRef ?? "default";
-  const artifactKind = props.data.artifactKind ?? "implementation_report";
+  const roleRef = props.data.roleRef?.trim() || null;
+  const agentProfileRef = props.data.agentProfileRef?.trim() || null;
+  const artifactKind = props.data.artifactKind?.trim() || null;
   const purpose = props.data.purpose?.trim();
   const requirementIds = props.data.requirementIds ?? [];
   const sliceId = props.data.sliceId?.trim();
@@ -71,13 +71,13 @@ export function WorkflowTaskNode(props: NodeProps<WorkflowTaskFlowNode>) {
         taskId: {props.data.id}
       </p>
       <p className="ss-flow-node-ref" data-node-field="roleRef">
-        roleRef: {roleRef}
+        roleRef: {roleRef ?? "Unbound"}
       </p>
       <p className="ss-flow-node-ref" data-node-field="agentProfileRef">
-        agentProfileRef: {agentProfileRef}
+        agentProfileRef: {agentProfileRef ?? "Unbound"}
       </p>
       <p className="ss-flow-node-ref" data-node-field="artifactKind">
-        artifactKind: {artifactKind}
+        artifactKind: {artifactKind ?? "Unbound"}
       </p>
       </> : null}
       {badges.length > 0 ? (

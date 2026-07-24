@@ -33,11 +33,11 @@ type V2Envelope<T> = {
   result?: T;
 };
 
-function profileResourcePathFromProfileRef(profileRef: string): string {
+function profileResourcePathFromProfileRef(profileRef: string): string | undefined {
   const segment = profileRef
     .replace(/^profile\./, "")
-    .replace(/[^a-zA-Z0-9._-]+/g, "-") || "agent";
-  return `profiles/${segment}.yaml`;
+    .replace(/[^a-zA-Z0-9._-]+/g, "-");
+  return segment ? `profiles/${segment}.yaml` : undefined;
 }
 
 function readinessFromDraftStatus(
@@ -95,6 +95,9 @@ export function buildWorkflowDagFromPlannerDraft(input: V2PlannerDraftOrchestrat
   const readiness = readinessFromDraftStatus(input.status, input.validationIssues.length);
   const levels = dependencyLevels(input.taskSummaries);
   const nodes = input.taskSummaries.map((task, index) => {
+    const profileResourcePath = task.agentProfileRef
+      ? profileResourcePathFromProfileRef(task.agentProfileRef)
+      : undefined;
     return {
       id: task.taskId,
       taskId: task.taskId,
@@ -106,7 +109,7 @@ export function buildWorkflowDagFromPlannerDraft(input: V2PlannerDraftOrchestrat
       ...(task.agentRef ? { agentRef: task.agentRef } : {}),
       ...(task.agentProfileRef ? {
         profileRef: task.agentProfileRef,
-        profileResourcePath: profileResourcePathFromProfileRef(task.agentProfileRef),
+        ...(profileResourcePath ? { profileResourcePath } : {}),
       } : {}),
       ...(task.harnessRef ? { harnessRef: task.harnessRef } : {}),
       ...(task.provider ? { provider: task.provider } : {}),

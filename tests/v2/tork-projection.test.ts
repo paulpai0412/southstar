@@ -10,6 +10,7 @@ test("builds a Tork job projection from task execution specs only", () => {
     liveEventUrl: "http://127.0.0.1:3000/api/v2/executor/live-event",
     envelopeBasePath: "/southstar-runs",
     runId: "run-wf-software-mvp",
+    attemptId: "attempt-1",
   });
 
   assert.equal(projection.executor, "tork");
@@ -40,6 +41,7 @@ test("does not leak agent/session/memory/vault semantics into Tork projection", 
     callbackUrl: "http://127.0.0.1:3000/api/v2/tork/callback",
     envelopeBasePath: "/southstar/envelope",
     runId: "run-wf-software-mvp",
+    attemptId: "attempt-1",
   }));
 
   assert.doesNotMatch(projectionText, /rootSession/);
@@ -47,6 +49,17 @@ test("does not leak agent/session/memory/vault semantics into Tork projection", 
   assert.doesNotMatch(projectionText, /memoryPolicy/);
   assert.doesNotMatch(projectionText, /vaultPolicy/);
   assert.doesNotMatch(projectionText, /secret-value/);
+});
+
+test("requires a durable attempt identity for every Tork projection", () => {
+  assert.throws(
+    () => buildTorkJobProjection(workflow(), {
+      callbackUrl: "http://127.0.0.1:3000/api/v2/tork/callback",
+      envelopeBasePath: "/southstar/envelope",
+      runId: "run-wf-software-mvp",
+    }),
+    /durable attemptId/,
+  );
 });
 
 function workflow(): SouthstarWorkflowManifest {

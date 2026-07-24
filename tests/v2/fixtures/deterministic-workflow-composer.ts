@@ -116,7 +116,7 @@ export async function seedDeterministicWorkflowGraph(db: SouthstarDb, scope = "s
       objectKind: "agent_definition",
       status: "approved",
       headVersionId: `${agentRef}@test`,
-      state: { scope, title: titleFromRef(agentRef) },
+      state: { scope, title: titleFromRef(agentRef), runtimeRole: runtimeRoleForAgent(agentRef) },
     });
   }
   for (const artifactRef of [
@@ -161,6 +161,8 @@ export async function seedDeterministicWorkflowGraph(db: SouthstarDb, scope = "s
         requiredInputs: ["accepted-artifact"],
         evidenceKinds: ["test-result"],
         verificationModes: ["deterministic"],
+        evaluators: [{ id: `${evaluatorRef}-schema`, kind: "schema", config: {}, required: true }],
+        onFailure: { defaultStrategy: "request-workflow-revision" },
         verificationProcedures: [{
           id: "procedure.test",
           checkKind: "deterministic",
@@ -190,6 +192,68 @@ export async function seedDeterministicWorkflowGraph(db: SouthstarDb, scope = "s
       scope,
     });
   }
+}
+
+function runtimeRoleForAgent(agentRef: string): Record<string, unknown> {
+  const roles: Record<string, Record<string, unknown>> = {
+    "agent.software-explorer": {
+      id: "explorer",
+      responsibility: "Inspect the repository and produce a scoped implementation plan.",
+      defaultAgentProfileRef: "profile.generated.software-understand-repo",
+      allowedAgentProfileRefs: ["profile.generated.software-understand-repo"],
+      artifactInputs: [],
+      artifactOutputs: ["implementation_plan"],
+      stopAuthority: "can-suggest",
+    },
+    "agent.software-spec-reviewer": {
+      id: "spec-reviewer",
+      responsibility: "Review the implementation plan for missing requirements and execution risk.",
+      defaultAgentProfileRef: "profile.generated.software-review-spec",
+      allowedAgentProfileRefs: ["profile.generated.software-review-spec"],
+      artifactInputs: ["implementation_plan"],
+      artifactOutputs: ["implementation_plan"],
+      stopAuthority: "can-reject",
+    },
+    "agent.software-maker": {
+      id: "maker",
+      responsibility: "Implement the requested feature and provide code-change evidence.",
+      defaultAgentProfileRef: "profile.generated.software-implement-feature",
+      allowedAgentProfileRefs: ["profile.generated.software-implement-feature"],
+      artifactInputs: ["implementation_plan"],
+      artifactOutputs: ["implementation_report"],
+      stopAuthority: "none",
+    },
+    "agent.software-checker": {
+      id: "checker",
+      responsibility: "Verify implementation behavior and test outcomes.",
+      defaultAgentProfileRef: "profile.generated.software-verify-feature",
+      allowedAgentProfileRefs: ["profile.generated.software-verify-feature"],
+      artifactInputs: ["implementation_report"],
+      artifactOutputs: ["verification_report"],
+      stopAuthority: "can-reject",
+    },
+    "agent.software-code-quality-reviewer": {
+      id: "code-quality-reviewer",
+      responsibility: "Assess maintainability, style, and regression risk of the implementation.",
+      defaultAgentProfileRef: "profile.generated.software-review-code-quality",
+      allowedAgentProfileRefs: ["profile.generated.software-review-code-quality"],
+      artifactInputs: ["implementation_report"],
+      artifactOutputs: ["verification_report"],
+      stopAuthority: "can-reject",
+    },
+    "agent.software-summarizer": {
+      id: "summarizer",
+      responsibility: "Synthesize completed work, verification, and follow-up notes.",
+      defaultAgentProfileRef: "profile.generated.software-summarize-completion",
+      allowedAgentProfileRefs: ["profile.generated.software-summarize-completion"],
+      artifactInputs: ["verification_report"],
+      artifactOutputs: ["completion_report"],
+      stopAuthority: "can-accept",
+    },
+  };
+  const role = roles[agentRef];
+  if (!role) throw new Error(`missing deterministic runtime role fixture: ${agentRef}`);
+  return role;
 }
 
 export function alignFixtureCompositionWithGoalDesignPackage(

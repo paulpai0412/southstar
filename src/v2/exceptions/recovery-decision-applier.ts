@@ -603,7 +603,7 @@ async function stageRequeueRecoveryEvidencePg(
     if (!exception) throw new Error(`runtime exception ${decision.payload.exceptionId} not found`);
 
     const handPayload = isPlainObject(hand.payload) ? hand.payload : {};
-    const providerId = typeof handPayload.providerId === "string" ? handPayload.providerId : "tork";
+    const providerId = requiredRecoveryField(handPayload.providerId, "hand binding providerId");
     const externalJobId = stringValue(handPayload.externalJobId);
     const cancelAction = requestedCancelAction({
       providerActions: input.providerActions,
@@ -781,7 +781,7 @@ async function applyRequeueMutation(
     if (!exception) throw new Error(`runtime exception ${decision.payload.exceptionId} not found`);
 
     const handPayload = hand.payload as Record<string, unknown>;
-    const providerId = typeof handPayload.providerId === "string" ? handPayload.providerId : "tork";
+    const providerId = requiredRecoveryField(handPayload.providerId, "hand binding providerId");
     let evidence = input.stagedEvidence;
     if (!evidence) {
       const cancelAction = requestedCancelAction({
@@ -1372,7 +1372,7 @@ async function performAndStageReprovisionRecovery(
     sessionId: context.sessionId,
     strategy: "reprovision-hand",
     reason: input.decision.payload.reason,
-    handName: handNameFromBinding(context.oldHandBinding) ?? "workspace",
+    handName: requiredRecoveryField(handNameFromBinding(context.oldHandBinding), "old hand binding handName"),
     handResources: handResourcesFromDecision(input.decision),
   });
 
@@ -1751,7 +1751,10 @@ async function reprovisionRecoveryExecutionEvidence(input: {
   providerActions?: RecoveryProviderActions;
   now: string;
 }): Promise<RecoveryExecutionEvidence> {
-  const oldBindingProviderId = providerIdFromBinding(input.context.oldHandBinding) ?? input.providerId;
+  const oldBindingProviderId = requiredRecoveryField(
+    providerIdFromBinding(input.context.oldHandBinding),
+    "old hand binding providerId",
+  );
   const stateChanges: RecoveryExecutionStateChange[] = [
     {
       resourceType: "hand_execution",
@@ -2416,6 +2419,12 @@ function requireDecisionString(value: string | undefined, path: string, label: s
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function requiredRecoveryField(value: unknown, label: string): string {
+  const normalized = stringValue(value);
+  if (!normalized) throw new Error(`recovery requires ${label}`);
+  return normalized;
 }
 
 function firstEvidenceRef(values: string[], pattern: RegExp): string | undefined {

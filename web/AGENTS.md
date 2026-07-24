@@ -69,14 +69,13 @@ Workflow:
 
 - `components/WorkflowSidebar.tsx` - workflow library, planner drafts, and run launch entry points.
 - `components/WorkflowDagBlock.tsx` and `components/workflow-canvas/*` - workflow DAG visualization.
-- `components/WorkflowLaunchPreview.tsx` - launch preview and approval.
 - `components/WorkflowNodeProfile*` - task/profile recommendations and overrides.
 - `components/WorkflowResourceViewer.tsx` - runtime resources, artifacts, and envelopes.
 
 Operator:
 
 - `components/operator/OperatorWorkspace.tsx` - top-level operator surface.
-- `OperatorHealthStrip`, `OperatorStateBoard`, `OperatorWorkflowProgress`, `OperatorIncidentPanel`, `OperatorTaskTabs`, `OperatorActionsPanel`, `OperatorArtifactsPanel`, `OperatorHistoryPanel`, `OperatorLiveStream`.
+- `OperatorWorkflowProgress`, `OperatorTaskTabs`, `OperatorActionsPanel`, `OperatorArtifactsPanel`, `OperatorHistoryPanel`, `OperatorLiveStream`.
 
 ## Current Web Design Architecture
 

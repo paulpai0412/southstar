@@ -7,16 +7,19 @@ export type LearningSignalInput = Record<string, unknown> & {
   runId?: string;
   taskId?: string;
   sessionId?: string;
-  scope?: string;
+  scope: string;
   sourceRefs?: string[];
+  confidence: number;
+  successScore: number;
 };
 
 export async function recordLearningSignal(db: SouthstarDb, input: LearningSignalInput): Promise<{ nodeId: string }> {
   rejectUnsafeSignalPayload(input);
   const sanitized = redactSecrets(input) as LearningSignalInput;
+  validateSignalEvidence(sanitized);
   const node = await createLearningNode(db, {
     nodeType: "learning_signal",
-    scope: typeof sanitized.scope === "string" ? sanitized.scope : "general",
+    scope: sanitized.scope,
     status: "recorded",
     runId: sanitized.runId,
     taskId: sanitized.taskId,
@@ -89,6 +92,21 @@ function signalSummary(input: LearningSignalInput): string {
   if (typeof input.artifactType === "string") pieces.push(input.artifactType);
   if (typeof input.failureKind === "string") pieces.push(input.failureKind);
   return pieces.join(":");
+}
+
+function validateSignalEvidence(input: LearningSignalInput): void {
+  if (typeof input.scope !== "string" || input.scope.trim().length === 0) {
+    throw new Error("learning signal scope is required");
+  }
+  for (const field of ["confidence", "successScore"] as const) {
+    const value = input[field];
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1) {
+      throw new Error(`learning signal ${field} must be a number between 0 and 1`);
+    }
+  }
+  if (!Array.isArray(input.sourceRefs) || input.sourceRefs.length === 0) {
+    throw new Error("learning signal sourceRefs are required");
+  }
 }
 
 function rejectUnsafeSignalPayload(value: unknown): void {

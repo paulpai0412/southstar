@@ -37,7 +37,7 @@ test("Postgres task envelope API builds TaskEnvelopeV2 from Postgres run, task, 
     assert.equal(envelope.schemaVersion, "southstar.task-envelope.v2");
     assert.equal(envelope.runId, run.runId);
     assert.equal(envelope.taskId, "implement-feature");
-    assert.equal(envelope.role.id, "software-maker");
+    assert.equal(envelope.role.id, "maker");
     assert.equal(envelope.agentProfile.id, "profile.generated.software-implement-feature");
     assert.equal(envelope.contextPacket.selectedKnowledgeCards[0]?.sourceRef, "card-envelope-self-check");
     assert.match(envelope.agentPrompt, /Knowledge Cards/);

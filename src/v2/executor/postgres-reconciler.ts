@@ -1,9 +1,9 @@
 import type { SouthstarDb } from "../db/postgres.ts";
-import { appendHistoryEventPg, listResourcesPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
+import { appendHistoryEventPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 import type { TorkObservationClient } from "./provider.ts";
 import { listExecutorBindingsForRunPg, updateExecutorBindingStatusPg, type ExecutorBindingRecordPg } from "./postgres-bindings.ts";
 import { actionsForExecutorClassification } from "./policy.ts";
-import { classifyExecutorTimeouts, normalizeTorkStatus, type ExecutorBindingPayload, type SouthstarExecutorStatus } from "./observability-types.ts";
+import { classifyExecutorTimeouts, normalizeTorkStatus, type SouthstarExecutorStatus } from "./observability-types.ts";
 
 export type ExecutorReconcileFindingPg = {
   bindingId: string;

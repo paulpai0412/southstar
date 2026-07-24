@@ -40,7 +40,6 @@ npm run test:e2e:postgres:08   # evolution sandbox baseline/candidate through To
 npm run test:e2e:postgres:09   # regression monitor rollback/alert policy
 npm run test:e2e:postgres:10   # managed brain crash wake
 npm run test:e2e:postgres:11   # managed hand reprovision
-npm run test:e2e:postgres:12   # managed credential isolation
 npm run test:e2e:postgres:13   # per-task Tork hand runtime scheduling
 npm run test:e2e:postgres:14   # stale queued Tork hand execution recovery
 npm run test:e2e:postgres:15   # stale running Tork hand execution recovery
@@ -81,7 +80,6 @@ npm run test:e2e:postgres:32   # one prompt article goal with offline screenshot
 | 09 regression rollback | implemented | Regression monitor auto-rolls back low-risk asset and raises high-risk approval alert | rolled_back/active asset statuses, rollback lineage edges, acknowledged alert |
 | 10 managed brain wake | implemented | Session log failure evidence wakes a replacement managed brain | brain binding resource, recovery decision |
 | 11 managed hand reprovision | implemented | Hand failure evidence provisions a replacement managed hand | hand binding resource, recovery decision |
-| 12 managed credential isolation | implemented | Tool proxy lease/call surfaces keep credential values out of persisted runtime evidence | vault lease, tool proxy call, redacted persisted surfaces |
 | 13 per-task Tork runtime | implemented | Runnable task scheduling queues a per-task hand execution and callback gates completion | hand execution, task intent, accepted artifact, completed run |
 | 14 Tork queue timeout recovery | implemented | Stale queued hand execution is observed and classified for requeue | `tork_queue_timeout`, `requeue-hand-execution`, history |
 | 15 Tork running hang recovery | implemented | Stale running hand execution is observed and classified for reprovision | `tork_running_hang`, `reprovision-hand`, read-model/history |

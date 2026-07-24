@@ -307,7 +307,7 @@ export async function persistGoalValidationResolutionPg(
       throw new Error(`goal_requirement_draft_stale: ${input.draftId}`);
     }
     assertGoalValidationResolutionMatches(snapshot, input.resolution);
-    const currentPhase = goalDesignPhaseFromPayload(row.payload_json) ?? "requirements_review";
+    const currentPhase = requiredGoalDesignPhase(row.payload_json, input.draftId);
     if (!["validation_resolving", "library_review", "validation_ready"].includes(currentPhase)) {
       throw new Error(`goal validation cannot be resolved in phase ${currentPhase}: ${input.draftId}`);
     }
@@ -649,7 +649,7 @@ function goalValidationSourceFromRow(row: PlannerDraftResourceRow): GoalValidati
   }
   return {
     draftId: row.resource_key,
-    phase: goalDesignPhaseFromPayload(row.payload_json) ?? "requirements_review",
+    phase: requiredGoalDesignPhase(row.payload_json, row.resource_key),
     goalContract,
     goalContractHash: computedContractHash,
     requirementDraft,
@@ -664,6 +664,12 @@ function goalRequirementDraftFromStored(value: unknown): GoalRequirementDraftV1 
 
 function goalDesignPhaseFromPayload(payload: Record<string, unknown>): string | undefined {
   return optionalString(payload.goalDesignPhase);
+}
+
+function requiredGoalDesignPhase(payload: Record<string, unknown>, draftId: string): string {
+  const phase = goalDesignPhaseFromPayload(payload);
+  if (!phase) throw new Error(`goal_design_phase_missing: ${draftId}`);
+  return phase;
 }
 
 function assertGoalValidationResolutionMatches(source: GoalValidationSource, resolution: GoalValidationResolutionV2): void {

@@ -95,13 +95,13 @@ export class GoalContractVocabularyGapError extends Error {
 /** Semantic requirement payload accepted by host finalization. It contains no lineage fields. */
 export type GoalRequirementSemanticV1 = Omit<GoalRequirementV1, "id" | "acceptanceCriteria" | "expectedArtifacts"> & {
   acceptanceCriteria: GoalCriterionInterpretationV1[];
-  expectedArtifacts?: GoalExpectedArtifactV1[];
+  expectedArtifacts: GoalExpectedArtifactV1[];
 };
 
 /**
- * Legacy Goal Contract interpretation input. The optional id is accepted only
- * when a host-owned, already-confirmed draft is projected into a contract;
- * LLM-facing interpreters must use GoalRequirementSemanticV1 and reject ids.
+ * Goal Contract interpretation input. The optional id is accepted only when a
+ * host-owned, already-confirmed draft is projected into a contract; LLM-facing
+ * interpreters must use GoalRequirementSemanticV1 and reject ids.
  */
 export type GoalRequirementInterpretationV1 = GoalRequirementSemanticV1 & {
   /** Host-provided lineage id. LLM interpretation payloads must not include this field. */
@@ -111,7 +111,7 @@ export type GoalRequirementInterpretationV1 = GoalRequirementSemanticV1 & {
 export type GoalContractInterpretationV1 = {
   domain: string;
   intent: string;
-  workType?: RequirementSpecV2["workType"];
+  workType: RequirementSpecV2["workType"];
   summary: string;
   requirements: GoalRequirementInterpretationV1[];
   expectedArtifactRefs: string[];
@@ -162,25 +162,9 @@ const INTERPRETATION_KEYS = [
   "riskTags",
   "requestedSideEffects",
 ] as const;
-const LEGACY_INTERPRETATION_KEYS = [
-  "domain",
-  "intent",
-  "summary",
-  "requirements",
-  "expectedArtifactRefs",
-  "requiredCapabilities",
-  "nonGoals",
-  "assumptions",
-  "blockingInputs",
-  "riskTags",
-  "requestedSideEffects",
-] as const;
-
 const REQUIREMENT_KEYS = ["statement", "acceptanceCriteria", "blocking", "source", "expectedArtifacts"] as const;
 const REQUIREMENT_KEYS_WITH_SEMANTIC_TAGS = [...REQUIREMENT_KEYS, "semanticTags"] as const;
-const LEGACY_REQUIREMENT_KEYS = ["statement", "acceptanceCriteria", "blocking", "source"] as const;
 const REQUIREMENT_KEYS_WITH_ID = ["id", ...REQUIREMENT_KEYS] as const;
-const LEGACY_REQUIREMENT_KEYS_WITH_ID = ["id", ...LEGACY_REQUIREMENT_KEYS] as const;
 const CRITERION_KEYS = ["observableClaim", "blocking", "verificationIntent", "requiredAssurance"] as const;
 const CRITERION_KEYS_WITH_ID = ["id", "version", ...CRITERION_KEYS] as const;
 const ASSURANCE_CLASSES = new Set<RequirementValidationMode>([
@@ -362,10 +346,10 @@ function materializeContract(
     },
     domain: interpretation.domain,
     intent: interpretation.intent,
-    workType: interpretation.workType ?? "general",
+    workType: interpretation.workType,
     summary: interpretation.summary,
     requirements,
-    expectedArtifactRefs: expectedArtifactRefsForRequirements(requirements, interpretation.expectedArtifactRefs),
+    expectedArtifactRefs: [...interpretation.expectedArtifactRefs],
     requiredCapabilities: [...interpretation.requiredCapabilities],
     nonGoals: [...interpretation.nonGoals],
     assumptions: [...interpretation.assumptions],
@@ -445,7 +429,7 @@ function materializedRequirements(
         verificationIntent: [...criterion.verificationIntent],
         requiredAssurance: [...criterion.requiredAssurance],
       })),
-      expectedArtifacts: [...(requirement.expectedArtifacts ?? [])],
+      expectedArtifacts: [...requirement.expectedArtifacts],
     };
   });
   const ids = new Set<string>();
@@ -459,13 +443,6 @@ function materializedRequirements(
     }
   }
   return materialized;
-}
-
-function expectedArtifactRefsForRequirements(requirements: GoalRequirementV1[], fallbackRefs: string[]): string[] {
-  const derived = requirements.flatMap((requirement) =>
-    requirement.expectedArtifacts.map((_artifact, index) => `artifact.goal.${requirement.id}.${index + 1}`)
-  );
-  return derived.length > 0 ? derived : [...fallbackRefs];
 }
 
 function goalContractInterpretationSchemaPrompt(): string {
@@ -556,25 +533,21 @@ function parseInterpretation(text: string): GoalContractInterpretationV1 {
   } catch {
     throw new Error("Goal Contract interpreter returned invalid JSON");
   }
-  return validateInterpretation(parsed, { requireWorkType: true });
+  return validateInterpretation(parsed);
 }
 
 function validateInterpretation(
   value: unknown,
-  options: { requireWorkType?: boolean; allowRequirementIds?: boolean } = {},
+  options: { allowRequirementIds?: boolean } = {},
 ): GoalContractInterpretationV1 {
   const object = requiredObject(value, "$");
-  if (options.requireWorkType && !("workType" in object)) {
-    throw new Error("$ is missing required fields: workType");
-  }
-  const allowedKeys = "workType" in object ? INTERPRETATION_KEYS : LEGACY_INTERPRETATION_KEYS;
-  exactKeys(object, allowedKeys, "$");
+  exactKeys(object, INTERPRETATION_KEYS, "$");
   const requirements = requiredArray(object.requirements, "requirements");
   if (requirements.length === 0) throw new Error("requirements must contain at least one requirement");
   return {
     domain: requiredString(object.domain, "domain"),
     intent: requiredString(object.intent, "intent"),
-    workType: optionalWorkType(object.workType),
+    workType: requiredWorkType(object.workType),
     summary: requiredString(object.summary, "summary"),
     requirements: requirements.map((requirement, index) => validateRequirement(requirement, index, options)),
     expectedArtifactRefs: libraryRefArray(object.expectedArtifactRefs, "expectedArtifactRefs", "artifact."),
@@ -621,11 +594,9 @@ function validateRequirement(
   const path = `requirements.${index}`;
   const object = requiredObject(value, path);
   const hasId = options.allowRequirementIds === true && "id" in object;
-  const allowedKeys = "expectedArtifacts" in object
-    ? ("semanticTags" in object
-      ? (hasId ? [...REQUIREMENT_KEYS_WITH_ID, "semanticTags"] : REQUIREMENT_KEYS_WITH_SEMANTIC_TAGS)
-      : (hasId ? REQUIREMENT_KEYS_WITH_ID : REQUIREMENT_KEYS))
-    : (hasId ? LEGACY_REQUIREMENT_KEYS_WITH_ID : LEGACY_REQUIREMENT_KEYS);
+  const allowedKeys = "semanticTags" in object
+    ? (hasId ? [...REQUIREMENT_KEYS_WITH_ID, "semanticTags"] : REQUIREMENT_KEYS_WITH_SEMANTIC_TAGS)
+    : (hasId ? REQUIREMENT_KEYS_WITH_ID : REQUIREMENT_KEYS);
   exactKeys(object, allowedKeys, path);
   const acceptanceCriteria = criterionArray(
     object.acceptanceCriteria,
@@ -720,8 +691,7 @@ function descriptiveStringArray(value: unknown, path: string): string[] {
   return requiredArray(value, path).filter(nonEmptyString) as string[];
 }
 
-function optionalWorkType(value: unknown): RequirementSpecV2["workType"] | undefined {
-  if (value === undefined) return undefined;
+function requiredWorkType(value: unknown): RequirementSpecV2["workType"] {
   if (typeof value !== "string" || !WORK_TYPES.has(value as RequirementSpecV2["workType"])) {
     throw new Error("workType must be one of software_feature, bugfix, research, data_analysis, migration, ops_recovery, or general");
   }
@@ -729,7 +699,6 @@ function optionalWorkType(value: unknown): RequirementSpecV2["workType"] | undef
 }
 
 function expectedArtifactsArray(value: unknown, path: string): GoalExpectedArtifactV1[] {
-  if (value === undefined) return [];
   return requiredArray(value, path).map((entry, index) => {
     const object = requiredObject(entry, `${path}.${index}`);
     const artifact: GoalExpectedArtifactV1 = {

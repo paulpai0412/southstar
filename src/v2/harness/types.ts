@@ -1,7 +1,7 @@
-import type { AnyTaskEnvelope } from "../agent-runner/task-envelope.ts";
+import type { TaskEnvelopeV2 } from "../agent-runner/task-envelope.ts";
 
 export type HarnessRunInput = {
-  envelope: AnyTaskEnvelope;
+  envelope: TaskEnvelopeV2;
   attempt: number;
   repairInstruction?: string;
 };

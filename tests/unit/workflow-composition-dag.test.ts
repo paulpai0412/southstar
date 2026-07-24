@@ -61,8 +61,8 @@ test("buildWorkflowDagFromCompositionPlanText maps composer JSON into a renderab
   assert.equal((dag.compositionPlan as { schemaVersion?: string }).schemaVersion, "southstar.workflow_composition_plan.v1");
   assert.deepEqual(dag.edges, [{ from: "task-understand", to: "task-implement" }]);
   assert.deepEqual(dag.nodes.map((node) => [node.id, node.label, node.role, node.provider, node.level]), [
-    ["task-understand", "Understand repo", "explorer", undefined, 0],
-    ["task-implement", "Implement feature", "maker", undefined, 1],
+    ["task-understand", "Understand repo", undefined, undefined, 0],
+    ["task-implement", "Implement feature", undefined, undefined, 1],
   ]);
 });
 
@@ -94,4 +94,19 @@ test("buildWorkflowDagFromCompositionPlanText accepts template-free primitive co
   assert.equal(dag.templateId, undefined);
   assert.equal(dag.templateTitle, "Primitive Workflow");
   assert.equal(dag.nodes[0]?.profileRef, "profile.generated.task-a");
+});
+
+test("composition plan display marks missing canonical bindings blocked without inventing refs", () => {
+  const dag = buildWorkflowDagFromCompositionPlanText(JSON.stringify({
+    schemaVersion: "southstar.workflow_composition_plan.v1",
+    title: "Unbound Workflow",
+    tasks: [{ id: "task-unbound", name: "Choose a profile", dependsOn: [] }],
+  }));
+
+  assert.ok(dag);
+  assert.equal(dag.readiness, "blocked");
+  assert.equal(dag.nodes[0]?.state, "blocked");
+  assert.equal(dag.nodes[0]?.agentRef, undefined);
+  assert.equal(dag.nodes[0]?.profileRef, undefined);
+  assert.equal(dag.nodes[0]?.role, undefined);
 });

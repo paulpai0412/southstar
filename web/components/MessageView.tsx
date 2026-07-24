@@ -34,11 +34,13 @@ import type {
 import { buildWorkflowDagFromPlannerDraft, type V2PlannerDraftOrchestrationView } from "@/lib/workflow/v2-library-adapter";
 import type { WorkflowDag, WorkflowDagNode } from "@/lib/workflow/types";
 
+type ModelEntry = { id: string; name: string; provider: string };
+
 interface Props {
   message: AgentMessage;
   isStreaming?: boolean;
   toolResults?: Map<string, ToolResultMessage>;
-  modelNames?: Record<string, string>;
+  modelList?: ModelEntry[];
   entryId?: string;
   onFork?: (entryId: string) => void;
   forking?: boolean;
@@ -96,12 +98,12 @@ function copyText(text: string): Promise<void> {
   }
 }
 
-export function MessageView({ message, isStreaming, toolResults, modelNames, entryId, onFork, forking, onNavigate, prevAssistantEntryId, onEditContent, showTimestamp, prevTimestamp, workflowCwd, onWorkflowDagNodeSelect, onGoalRequirements, onGoalSliceSelect, onCreateGoalSliceRevision, onConfirmGoalDesign, onGoalRequirementSelect, onConfirmRequirements, goalRequirementContentOverride, goalLibraryImportCandidatesOverride, onGoalValidationResume, onGoalContractSelect, onWorkflowGoalRevise, onLibraryGraphNodeSelect, onWorkspaceSurfaceChange }: Props) {
+export function MessageView({ message, isStreaming, toolResults, modelList, entryId, onFork, forking, onNavigate, prevAssistantEntryId, onEditContent, showTimestamp, prevTimestamp, workflowCwd, onWorkflowDagNodeSelect, onGoalRequirements, onGoalSliceSelect, onCreateGoalSliceRevision, onConfirmGoalDesign, onGoalRequirementSelect, onConfirmRequirements, goalRequirementContentOverride, goalLibraryImportCandidatesOverride, onGoalValidationResume, onGoalContractSelect, onWorkflowGoalRevise, onLibraryGraphNodeSelect, onWorkspaceSurfaceChange }: Props) {
   if (message.role === "user") {
     return <UserMessageView message={message as UserMessage} entryId={entryId} onFork={onFork} forking={forking} onNavigate={onNavigate} prevAssistantEntryId={prevAssistantEntryId} onEditContent={onEditContent} />;
   }
   if (message.role === "assistant") {
-    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} workflowCwd={workflowCwd} onWorkflowDagNodeSelect={onWorkflowDagNodeSelect} onGoalRequirements={onGoalRequirements} onGoalSliceSelect={onGoalSliceSelect} onCreateGoalSliceRevision={onCreateGoalSliceRevision} onConfirmGoalDesign={onConfirmGoalDesign} onGoalRequirementSelect={onGoalRequirementSelect} onConfirmRequirements={onConfirmRequirements} goalRequirementContentOverride={goalRequirementContentOverride} goalLibraryImportCandidatesOverride={goalLibraryImportCandidatesOverride} onGoalValidationResume={onGoalValidationResume} onGoalContractSelect={onGoalContractSelect} onWorkflowGoalRevise={onWorkflowGoalRevise} onLibraryGraphNodeSelect={onLibraryGraphNodeSelect} onWorkspaceSurfaceChange={onWorkspaceSurfaceChange} />;
+    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelList={modelList} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} workflowCwd={workflowCwd} onWorkflowDagNodeSelect={onWorkflowDagNodeSelect} onGoalRequirements={onGoalRequirements} onGoalSliceSelect={onGoalSliceSelect} onCreateGoalSliceRevision={onCreateGoalSliceRevision} onConfirmGoalDesign={onConfirmGoalDesign} onGoalRequirementSelect={onGoalRequirementSelect} onConfirmRequirements={onConfirmRequirements} goalRequirementContentOverride={goalRequirementContentOverride} goalLibraryImportCandidatesOverride={goalLibraryImportCandidatesOverride} onGoalValidationResume={onGoalValidationResume} onGoalContractSelect={onGoalContractSelect} onWorkflowGoalRevise={onWorkflowGoalRevise} onLibraryGraphNodeSelect={onLibraryGraphNodeSelect} onWorkspaceSurfaceChange={onWorkspaceSurfaceChange} />;
   }
   if (message.role === "toolResult") {
     // Rendered inline under its toolCall — skip standalone rendering if paired
@@ -315,7 +317,7 @@ function AssistantMessageView({
   message,
   isStreaming,
   toolResults,
-  modelNames,
+  modelList,
   showTimestamp,
   prevTimestamp,
   workflowCwd,
@@ -337,7 +339,7 @@ function AssistantMessageView({
   message: AssistantMessage;
   isStreaming?: boolean;
   toolResults?: Map<string, ToolResultMessage>;
-  modelNames?: Record<string, string>;
+  modelList?: ModelEntry[];
   showTimestamp?: boolean;
   prevTimestamp?: number;
   workflowCwd?: string | null;
@@ -476,7 +478,7 @@ function AssistantMessageView({
         }}
       >
         {message.provider && (
-          <span>{modelNames?.[`${message.provider}:${message.model}`] ?? modelNames?.[message.model] ?? message.model}</span>
+          <span>{modelList?.find((entry) => entry.provider === message.provider && entry.id === message.model)?.name ?? message.model}</span>
         )}
         {isStreaming && (() => {
           let chars = 0;

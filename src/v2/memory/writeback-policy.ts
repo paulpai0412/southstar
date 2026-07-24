@@ -93,17 +93,26 @@ export async function writeCallbackMemoryPg(db: SouthstarDb, input: CallbackMemo
 function normalizedMemoryCandidates(value: unknown, requiredSourceRefs: string[]): NormalizedCandidate[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((candidate): NormalizedCandidate[] => {
-    const record = objectPayload(candidate);
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+      throw new Error("memory candidate must be an object");
+    }
+    const record = candidate as Record<string, unknown>;
+    const scope = nonEmptyString(record.scope);
+    const kind = nonEmptyString(record.kind);
     const text = nonEmptyString(record.text);
-    if (!text) return [];
+    const confidence = boundedNumber(record.confidence, "confidence");
+    const successScore = boundedNumber(record.successScore, "successScore");
+    if (!scope || !kind || !text) {
+      throw new Error("memory candidate requires scope, kind, and text");
+    }
     return [{
-      scope: nonEmptyString(record.scope) ?? "general",
-      kind: nonEmptyString(record.kind) ?? "workflow_learning",
+      scope,
+      kind,
       text,
       tags: stringArray(record.tags),
       sourceRefs: uniqueStrings([...requiredSourceRefs, ...stringArray(record.sourceRefs)]),
-      confidence: finiteNumber(record.confidence) ?? 0.5,
-      successScore: finiteNumber(record.successScore) ?? 0.5,
+      confidence,
+      successScore,
     }];
   });
 }
@@ -164,6 +173,9 @@ function uniqueStrings(values: string[]): string[] {
   return [...new Set(values)];
 }
 
-function finiteNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+function boundedNumber(value: unknown, field: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1) {
+    throw new Error(`memory candidate ${field} must be a number between 0 and 1`);
+  }
+  return value;
 }

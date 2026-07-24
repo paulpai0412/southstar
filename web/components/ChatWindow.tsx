@@ -174,7 +174,7 @@ function Typewriter({ phrases }: { phrases: string[] }) {
 export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, sessionKind, libraryScope, workflowMode, workflowTemplate, workflowCwd, onWorkflowDagNodeSelect, onGoalRequirements, onGoalDesignComposed, onGoalSliceSelect, onCreateGoalSliceRevision, onConfirmGoalDesign, onGoalRequirementSelect, onConfirmRequirements, goalDesignRevisionAnchor, goalRequirementRevisionAnchor, goalRequirementContentOverride, goalDesignContentOverride, goalLibraryImportCandidatesOverride, onGoalValidationResume, onGoalContractSelect, onWorkflowGoalRevise, onLibraryGraphNodeSelect, onWorkspaceSurfaceChange }: Props) {
   const {
     loading, error, messages, entryIds, streamState,
-    agentRunning, modelNames, modelList, modelThinkingLevels, modelThinkingLevelMaps, toolPreset, thinkingLevel,
+    agentRunning, modelList, modelThinkingLevels, modelThinkingLevelMaps, toolPreset, thinkingLevel,
     retryInfo, contextUsage, forkingEntryId,
     isCompacting, compactError, compactResult, displayModel: displayModelValue, sessionStats,
     slashCommands, slashCommandsLoading,
@@ -333,7 +333,6 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
       isStreaming={agentRunning}
       model={displayModelValue}
       isAutoModelSelection={isAutoModelSelection}
-      modelNames={modelNames}
       modelList={modelList}
       onModelChange={handleModelChange}
       onCompact={session || isNew ? handleCompact : undefined}
@@ -537,7 +536,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
                     key={idx}
                     message={keepCurrentGoalDesign(msg, goalDesignContentForViewer)}
                     toolResults={toolResultsMap}
-                    modelNames={modelNames}
+                    modelList={modelList}
                     entryId={entryIds[idx]}
                     onFork={agentRunning || isNew || (idx === 0 && msg.role === "user") ? undefined : handleFork}
                     forking={forkingEntryId === entryIds[idx]}
@@ -576,7 +575,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
             })()}
 
             {streamState.isStreaming && streamState.streamingMessage && (
-              <MessageView message={streamState.streamingMessage as AgentMessage} isStreaming modelNames={modelNames} workflowCwd={workflowCwd} onWorkflowDagNodeSelect={onWorkflowDagNodeSelect} onGoalRequirements={onGoalRequirements} onGoalSliceSelect={onGoalSliceSelect} onCreateGoalSliceRevision={onCreateGoalSliceRevision} onConfirmGoalDesign={onConfirmGoalDesign ?? handleConfirmGoalDesign} onGoalRequirementSelect={onGoalRequirementSelect} onConfirmRequirements={onConfirmRequirements} goalRequirementContentOverride={goalRequirementContentForViewer} goalLibraryImportCandidatesOverride={goalLibraryImportCandidatesOverride} onGoalValidationResume={onGoalValidationResume} onGoalContractSelect={onGoalContractSelect} onWorkflowGoalRevise={onWorkflowGoalRevise} onLibraryGraphNodeSelect={onLibraryGraphNodeSelect} onWorkspaceSurfaceChange={onWorkspaceSurfaceChange} />
+              <MessageView message={streamState.streamingMessage as AgentMessage} isStreaming modelList={modelList} workflowCwd={workflowCwd} onWorkflowDagNodeSelect={onWorkflowDagNodeSelect} onGoalRequirements={onGoalRequirements} onGoalSliceSelect={onGoalSliceSelect} onCreateGoalSliceRevision={onCreateGoalSliceRevision} onConfirmGoalDesign={onConfirmGoalDesign ?? handleConfirmGoalDesign} onGoalRequirementSelect={onGoalRequirementSelect} onConfirmRequirements={onConfirmRequirements} goalRequirementContentOverride={goalRequirementContentForViewer} goalLibraryImportCandidatesOverride={goalLibraryImportCandidatesOverride} onGoalValidationResume={onGoalValidationResume} onGoalContractSelect={onGoalContractSelect} onWorkflowGoalRevise={onWorkflowGoalRevise} onLibraryGraphNodeSelect={onLibraryGraphNodeSelect} onWorkspaceSurfaceChange={onWorkspaceSurfaceChange} />
             )}
 
             {goalDesignContentForViewer && !goalDesignAlreadyRendered ? (

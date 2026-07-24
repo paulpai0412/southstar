@@ -94,7 +94,7 @@ function selectRankedNodes(
     byKind.set(node.kind, bucket);
   }
   const selected: GraphMetadataNodeCandidate[] = [];
-  for (const [kind, candidates] of byKind) {
+  for (const candidates of byKind.values()) {
     candidates.sort((left, right) => {
       const scoreDelta = relevanceScore(right, input) - relevanceScore(left, input);
       return scoreDelta || left.ref.localeCompare(right.ref);
