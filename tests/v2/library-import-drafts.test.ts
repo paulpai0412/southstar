@@ -330,6 +330,7 @@ test("library import candidate prompt and host parser support governed vocabular
       validationRules: ["rule.subscription-verification"],
       schemaRef: "schema.subscription-verification.v1",
       requiredFields: ["summary", "commandsRun"],
+      evidenceFields: ["summary", "commandsRun"],
       provenanceRequirements: ["workspace-artifact"],
       selectedByDefault: true,
     },
@@ -1659,6 +1660,7 @@ test("installLibraryImportCandidates writes and syncs governed vocabulary files"
       validationRules: ["rule.subscription-verification"],
       schemaRef: "schema.subscription-verification.v1",
       requiredFields: ["summary", "commandsRun"],
+      evidenceFields: ["summary", "commandsRun"],
       provenanceRequirements: ["workspace-artifact"],
       selectedByDefault: true,
     },
@@ -1678,6 +1680,13 @@ test("installLibraryImportCandidates writes and syncs governed vocabulary files"
         instruction: "Run the subscription verification rules and record the result.",
         allowedEvidenceKinds: ["test-result"],
       }],
+      evaluators: [{
+        id: "step.subscription-schema",
+        kind: "schema",
+        config: { artifactType: "verification_report" },
+        required: true,
+      }],
+      onFailure: { defaultStrategy: "request-workflow-revision" },
       independencePolicy: "independent" as const,
       resultSchemaRef: "southstar.requirement_evaluator_result.v2",
       failureClassifications: ["test_failure"],
@@ -1731,6 +1740,7 @@ test("installLibraryImportCandidates writes and syncs governed vocabulary files"
     assert.deepEqual(artifact?.state.provenanceRequirements, ["workspace-artifact"]);
     assert.equal(artifact?.state.schemaRef, "schema.subscription-verification.v1");
     assert.deepEqual(artifact?.state.requiredFields, ["summary", "commandsRun"]);
+    assert.deepEqual(artifact?.state.evidenceFields, ["summary", "commandsRun"]);
     assert.deepEqual(evaluator?.state.verificationModes, ["deterministic"]);
     assert.equal(evaluator?.state.description, "Evaluator for subscription quality evidence.");
     assert.deepEqual(evaluator?.state.verificationProcedures, [{
@@ -1739,6 +1749,13 @@ test("installLibraryImportCandidates writes and syncs governed vocabulary files"
       instruction: "Run the subscription verification rules and record the result.",
       allowedEvidenceKinds: ["test-result"],
     }]);
+    assert.deepEqual(evaluator?.state.evaluators, [{
+      id: "step.subscription-schema",
+      kind: "schema",
+      config: { artifactType: "verification_report" },
+      required: true,
+    }]);
+    assert.deepEqual(evaluator?.state.onFailure, { defaultStrategy: "request-workflow-revision" });
     const validationEdge = (await findLibraryEdgesFrom(db, "evaluator.subscription-quality", "validates_artifact")).find((edge) =>
       edge.fromObjectKey === "evaluator.subscription-quality"
         && edge.edgeType === "validates_artifact"

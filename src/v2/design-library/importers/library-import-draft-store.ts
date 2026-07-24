@@ -1090,6 +1090,7 @@ function renderLibraryImportCandidate(
             ...yamlArray("validationRules", candidate.validationRules),
             `schemaRef: ${yamlScalar(candidate.schemaRef ?? "")}`,
             ...yamlArray("requiredFields", candidate.requiredFields),
+            ...(candidate.evidenceFields ? yamlArray("evidenceFields", candidate.evidenceFields) : []),
             ...yamlArray("provenanceRequirements", candidate.provenanceRequirements),
           ]
           : candidate.kind === "evaluator"
@@ -1101,6 +1102,8 @@ function renderLibraryImportCandidate(
               ...yamlArray("evidenceKinds", candidate.evidenceKinds),
               ...yamlArray("verificationModes", candidate.verificationModes),
               ...yamlVerificationProcedures(candidate.verificationProcedures),
+              ...yamlEvaluatorSteps(candidate.evaluators),
+              ...yamlObject("onFailure", candidate.onFailure),
               `independencePolicy: ${yamlScalar(candidate.independencePolicy ?? "")}`,
               `resultSchemaRef: ${yamlScalar(candidate.resultSchemaRef ?? "")}`,
               ...yamlArray("failureClassifications", candidate.failureClassifications),
@@ -1463,6 +1466,25 @@ function yamlVerificationProcedures(
     }
   }
   return lines;
+}
+
+function yamlEvaluatorSteps(
+  evaluators: LibraryImportCandidate["evaluators"],
+): string[] {
+  if (!evaluators || evaluators.length === 0) return [];
+  const lines = ["evaluators:"];
+  for (const evaluator of evaluators) {
+    lines.push(`  - id: ${yamlScalar(evaluator.id)}`);
+    lines.push(`    kind: ${yamlScalar(evaluator.kind)}`);
+    lines.push(`    config: ${JSON.stringify(evaluator.config)}`);
+    lines.push(`    required: ${evaluator.required ? "true" : "false"}`);
+  }
+  return lines;
+}
+
+function yamlObject(key: string, value: Record<string, string> | undefined): string[] {
+  if (!value) return [];
+  return [`${key}:`, ...Object.entries(value).map(([name, item]) => `  ${name}: ${yamlScalar(item)}`)];
 }
 
 function requiredBoolean(value: unknown, label: string): boolean {

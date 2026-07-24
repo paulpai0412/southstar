@@ -359,12 +359,20 @@ function parseKeyValue(line: string): { key: string; value: string } | undefined
   return { key, value: line.slice(separatorIndex + 1).trim() };
 }
 
-function scalar(value: string): string | boolean | number | [] {
+function scalar(value: string): unknown {
   if (value === "[]") return [];
   if (value === "true") return true;
   if (value === "false") return false;
   if (/^-?\d+$/.test(value)) return Number(value);
-  return value.replace(/^"(.*)"$/, "$1").replace(/^'(.*)'$/, "$1");
+  const normalized = value.replace(/^"(.*)"$/, "$1").replace(/^'(.*)'$/, "$1");
+  if (normalized.startsWith("{") && normalized.endsWith("}")) {
+    try {
+      return JSON.parse(normalized) as Record<string, unknown>;
+    } catch {
+      // Keep malformed flow values as strings so contract validation reports the field path.
+    }
+  }
+  return normalized;
 }
 
 function stringValue(value: unknown): string | undefined {
